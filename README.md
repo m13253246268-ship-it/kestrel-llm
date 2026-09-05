@@ -36,7 +36,7 @@ Qwen3-VL 系列（2B/8B）纯文本与多模态（图片/视频帧）输入。�
 |---|---|
 | 可执行文件 | `vllm_kestrel` ≈ **0.8 MB**（RK3588 Release, `-O2 -s`，板端实测 818,872 B）；`-DVLLM_STATIC=ON` 全静态 ≈ 1.5 MB，`ldd` 零 .so 依赖 |
 | 源码 | **28 个 C 文件**（main + core 11 + common 2 + serve 6 + model 6 + npu 2），C11，单工程单产物 |
-| 运行时依赖 | **无**——标准构建仅需 gcc + libm |
+| 运行时依赖 | **无第三方运行时**——标准构建仅需 gcc + libm（`-fopenmp` 仅 NPU pack 并行区使用 libgomp，系 gcc 自带；全静态构建一并内联，零 .so） |
 | 代码内第三方 | 仅 `stb_image.h`（MIT, Sean Barrett）与 llama.cpp 派生 4x4 asm 内核（MIT, The ggml authors），见 [LICENSE](LICENSE) 第三节 |
 | 自研件 | NEON 量化 GEMM/GEMV、线程池 `vllm_tp`（替代 OpenMP）、国密 SM3/SM4/SM2、VQF v2 mmap 格式、NPU 直驱 `/dev/rknpu` |
 | 部署 | 单文件 + 可选 `vocab.bin`，拷贝即运行；VQF mmap 冷启动 **2.0 s** |
@@ -45,6 +45,22 @@ Qwen3-VL 系列（2B/8B）纯文本与多模态（图片/视频帧）输入。�
 长上下文 decode 与 KV 恢复优势，见 [RK3588_性能基准报告.md](docs/RK3588_性能基准报告.md)。
 > 诚实边界：二进制体积仅列本引擎自身（llama.cpp 动态/静态构建口径不同，未做同口径对比，
 > 不作跨框架体积比较）。
+
+### 零第三方依赖（自证清单）
+
+「零第三方依赖」不是说"没写什么"，而是说**下面这些常见组件栈都没有引入**：
+
+| 常见依赖项 | 本项目实际情况 |
+|---|---|
+| 推理框架运行时（Python / PyTorch / vLLM 栈） | 无——单一 C11 可执行文件即完整 HTTP 服务 |
+| GPU 计算栈（CUDA / ROCm） | 无——纯 CPU + NEON 量化内核；NPU 仅走系统内核公共 UAPI 直驱 |
+| 第三方推理/矩阵库（ggml、OpenBLAS、oneDNN…） | 无——GEMM/GEMV 手写（llama.cpp 派生 4x4 asm 为 MIT 提取件，文件头署名，见 LICENSE 第三节） |
+| 密码学库（OpenSSL / GmSSL / MbedTLS…） | 无——SM3 / SM4-CTR / HMAC-SM3 / SM2 全自研并经国密标准 KAT 验证 |
+| 图像/视频解码库（OpenCV / FFmpeg…） | 无——图片解码用单头 `stb_image.h`（MIT）；H.264 模块独立且默认不启用 |
+| Web/HTTP 框架与 JSON 库 | 无——自研 select 轮询 HTTP + SSE、自研最小 JSON 解析 |
+| OpenMP 运行时 | 引擎核心并行用自研线程池 `vllm_tp`；`-fopenmp` 仅 NPU direct 后端 pack 并行（libgomp 为 gcc 自带） |
+
+依赖上限一句话：**动态构建只碰系统工具链标准件（glibc / libgomp）；全静态构建（`-DVLLM_STATIC=ON`）产物 `ldd` 报 not a dynamic executable，可拷到任意 aarch64 Linux 直接运行**——没有任何第三方项目运行时随引擎分发。
 
 ---
 
