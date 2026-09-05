@@ -169,5 +169,4 @@ NPU 加速（可选）：默认后端为**零第三方依赖直驱**（自研写
 
 ## 联系
 
-For research collaborations / commercial licensing / data requests, please
-open an issue in this repository or contact the authors.
+398152090@qq.com
