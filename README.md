@@ -8,8 +8,8 @@
 > 请勿以 MIT/Apache 等标准开源协议理解，完整条款见 [LICENSE](LICENSE)）。
 
 vllm_kestrel 是一个从零自研、面向边缘设备（RK3588 / 4×Cortex-A76 + 4×Cortex-A55）的
-大语言模型推理引擎：单文件 `vllm_kestrel` 即可服务 OpenAI 兼容 HTTP API，支持
-Qwen3-VL 系列（2B/8B）纯文本与多模态（图片/视频帧）输入。核心亮点：
+大语言模型推理引擎：单文件 `vllm_kestrel` 即可服务 OpenAI 兼容 HTTP API，
+面向 **Qwen3-VL 系列（2B/8B）** 开发并实测（纯文本与图片/视频帧多模态输入，支持范围声明见下文）。核心亮点：
 
 - **纯 CPU 推理**：手写 NEON 量化 GEMM/GEMV（8x8 / 4x4 / SDOT），不依赖 GPU/NPU
   即可运行；NPU 直驱（自研 `/dev/rknpu` 驱动）为可选透明加速。
@@ -180,6 +180,12 @@ NPU 加速（可选）：默认后端为**零第三方依赖直驱**（自研写
 用 `tools/verify_attest.py` 离线验签。
 
 ## 模型与复现
+
+> **模型支持范围（诚实声明）**：本引擎针对并实测验证的模型为 **Qwen3-VL 系列
+> （2B / 8B；纯文本与图片/视频多模态）**——tokenizer、mrope、DeepStack 视觉塔等均为
+> 该架构特化实现。**其他架构（Llama、旧版 Qwen / Qwen2 纯文本等）未经适配与验证**：
+> GGUF/VQF 转换可能报错或输出不可用，请勿据此推定为通用推理引擎。文中性能与安全数据
+> 均基于 Qwen3-VL-2B（RK3588 板端）与 Qwen3-VL-8B（x86 基准机）实测。
 
 - 模型权重不随仓库分发。Qwen3-VL 系列权重遵循其原始开源许可（Qwen 社区许可），
   下载后可用上文命令转换为 VQF/加载。
