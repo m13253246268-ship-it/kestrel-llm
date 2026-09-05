@@ -4,6 +4,8 @@
 
 > **Kestrel（红隼）** 为本引擎的品牌 / 对外名（取义：最小猛禽、俯冲精确——边缘小模型 + 可验证推理）。
 > 工程名与可执行文件为 `vllm_kestrel`：下文命令、日志与代码中的 `vllm_kestrel` / `vllm` 均指本引擎。
+> 许可：**source-available 双许可** —— 学习 / 学术研究免费，商业使用需授权（**非 OSI 开源许可**，
+> 请勿以 MIT/Apache 等标准开源协议理解，完整条款见 [LICENSE](LICENSE)）。
 
 vllm_kestrel 是一个从零自研、面向边缘设备（RK3588 / 4×Cortex-A76 + 4×Cortex-A55）的
 大语言模型推理引擎：单文件 `vllm_kestrel` 即可服务 OpenAI 兼容 HTTP API，支持
@@ -169,5 +171,9 @@ NPU 加速（可选）：默认后端为**零第三方依赖直驱**（自研写
 
 ## 联系
 
-For research collaborations / commercial licensing / data requests, please
-open an issue in this repository or contact the authors.
+商业授权 / 研究合作 / 复现数据：**398152090@qq.com**
+（也可通过 [Issues](https://gitee.com/pei-xiaoguang/kestrel-llm/issues) 或 Gitee 站内私信联系作者；
+商业许可协议与双许可条款见 [LICENSE](LICENSE)）
+
+For commercial licensing / research collaborations / data requests:
+**398152090@qq.com**, or open an issue at https://gitee.com/pei-xiaoguang/kestrel-llm/issues.
