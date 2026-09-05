@@ -15,6 +15,8 @@ Qwen3-VL 系列（2B/8B）纯文本与多模态（图片/视频帧）输入。�
   即可运行；NPU 直驱（自研 `/dev/rknpu` 驱动）为可选透明加速。
 - **零第三方依赖**：自研 SM3/SM4/SM2 国密原语、自研线程池 `vllm_tp`（替代 OpenMP）、
   单文件 mmap 权重格式 VQF；标准构建仅需 gcc + libm。
+- **精简单文件**：28 个 C 文件、单可执行产物——RK3588 Release（`-O2 -s`）约 **0.8 MB**，
+  glibc 全静态约 1.5 MB（零 .so 依赖），拷贝即跑（详见 [体量与依赖](#体量与依赖小而全)）。
 - **长上下文工程优化**：sparse-attention、prefix-KV 前缀复用、磁盘 KV 持久化
   （跨进程恢复）、推测解码、连续批处理（详见 [docs](docs/)）。
 - **权重保护与可验证推理**：VQF v2 存储态加密（SM4-CTR + HMAC-SM3）+ SM2 供应链签名
@@ -25,6 +27,24 @@ Qwen3-VL 系列（2B/8B）纯文本与多模态（图片/视频帧）输入。�
 > 仓库亦包含自研的**同态加密推理**核心（`src/core/vllm_ckks.c` / `vllm_fhe.c` /
 > `vllm_ntt.c` 等，RNS-CKKS 全同态加密 2B 级模型推理的独立研究实现），
 > 与明文引擎共享同一工程基础设施。
+
+---
+
+## 体量与依赖（小而全）
+
+| 项 | 数值 / 口径 |
+|---|---|
+| 可执行文件 | `vllm_kestrel` ≈ **0.8 MB**（RK3588 Release, `-O2 -s`，板端实测 818,872 B）；`-DVLLM_STATIC=ON` 全静态 ≈ 1.5 MB，`ldd` 零 .so 依赖 |
+| 源码 | **28 个 C 文件**（main + core 11 + common 2 + serve 6 + model 6 + npu 2），C11，单工程单产物 |
+| 运行时依赖 | **无**——标准构建仅需 gcc + libm |
+| 代码内第三方 | 仅 `stb_image.h`（MIT, Sean Barrett）与 llama.cpp 派生 4x4 asm 内核（MIT, The ggml authors），见 [LICENSE](LICENSE) 第三节 |
+| 自研件 | NEON 量化 GEMM/GEMV、线程池 `vllm_tp`（替代 OpenMP）、国密 SM3/SM4/SM2、VQF v2 mmap 格式、NPU 直驱 `/dev/rknpu` |
+| 部署 | 单文件 + 可选 `vocab.bin`，拷贝即运行；VQF mmap 冷启动 **2.0 s** |
+
+同机对照（板端实测口径）：冷启动 2.0 s vs llama.cpp 5.0 s、峰值 RSS 2.47 GB vs 3.03 GB、
+长上下文 decode 与 KV 恢复优势，见 [RK3588_性能基准报告.md](docs/RK3588_性能基准报告.md)。
+> 诚实边界：二进制体积仅列本引擎自身（llama.cpp 动态/静态构建口径不同，未做同口径对比，
+> 不作跨框架体积比较）。
 
 ---
 
