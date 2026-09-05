@@ -1,0 +1,563 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vLLM-Kestrel 推理客户端</title>
+<style>
+:root{
+  --bg:#0f1419; --panel:#1a212b; --panel2:#202a36; --bd:#2c3a4a;
+  --tx:#d7e0ea; --tx2:#8ea0b4; --acc:#4da3ff; --ok:#3ecf8e; --bad:#ff6b6b; --warn:#ffb020;
+  --user:#24466b; --ai:#202a36;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:14px/1.5 "SF Mono",Consolas,"Microsoft YaHei",monospace;height:100vh;display:flex;flex-direction:column}
+header{display:flex;align-items:center;gap:12px;padding:10px 18px;background:var(--panel);border-bottom:1px solid var(--bd)}
+header h1{font-size:15px;margin:0;font-weight:600}
+.badge{display:inline-block;padding:2px 10px;border-radius:10px;font-size:12px;border:1px solid var(--bd);background:var(--panel2)}
+.badge.ok{color:var(--ok);border-color:var(--ok)}
+.badge.stop{color:#7a8ba0}
+.badge.warn{color:var(--warn);border-color:var(--warn)}
+header select.ctxsel{background:var(--panel2);border:1px solid var(--bd);color:var(--tx);border-radius:6px;padding:6px 8px;font:inherit;font-size:12px;cursor:pointer}
+header select.ctxsel:hover{border-color:var(--acc)}
+header select.ctxsel:focus{outline:none;border-color:var(--acc)}
+a{color:var(--acc);text-decoration:none}
+#warnbar{display:none;background:#3a2a15;color:var(--warn);border-bottom:1px solid #5c471f;padding:6px 18px;font-size:12px}
+#warnbar.show{display:block}
+#main{flex:1;overflow-y:auto;padding:16px 18px;display:flex;flex-direction:column;gap:12px}
+.msg{max-width:78%;padding:10px 14px;border-radius:10px;white-space:pre-wrap;word-break:break-word;font-size:14px;line-height:1.55}
+.msg.user{align-self:flex-end;background:var(--user);border-bottom-right-radius:2px}
+.msg.ai{align-self:flex-start;background:var(--ai);border-bottom-left-radius:2px}
+.msg .meta{font-size:10px;color:var(--tx2);margin-bottom:4px;opacity:.8}
+.msg img, .msg video{max-width:240px;border-radius:8px;display:block;margin:4px 0}
+.msg .frames{display:flex;flex-wrap:wrap;gap:4px}
+.msg .frames img{max-width:110px}
+#metrics{display:flex;gap:6px;flex-wrap:wrap;align-items:center;padding:8px 18px;background:var(--panel);border-top:1px solid var(--bd);font-size:12px;color:var(--tx2);min-height:34px}
+#metrics .stat{display:inline-flex;align-items:baseline;gap:5px;background:var(--panel2);border:1px solid var(--bd);border-radius:6px;padding:3px 9px;white-space:nowrap}
+#metrics .stat .k{color:var(--tx2);font-size:11px}
+#metrics .stat b{color:var(--acc);font-weight:600;font-size:13px}
+#metrics .stat .u{color:var(--tx2);font-size:10px;opacity:.7}
+#metrics.hidden{display:none}
+#inputbar{display:flex;gap:10px;align-items:flex-end;padding:10px 18px 14px;background:var(--panel);border-top:1px solid var(--bd)}
+#attachments{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:6px}
+.att{position:relative;display:inline-flex}
+.att img,.att video{width:64px;height:64px;object-fit:cover;border-radius:8px;border:1px solid var(--bd)}
+.att .x{position:absolute;top:-6px;right:-6px;background:var(--bad);color:#fff;border:none;border-radius:50%;width:18px;height:18px;font-size:11px;line-height:1;cursor:pointer}
+textarea{flex:1;background:var(--panel2);border:1px solid var(--bd);color:var(--tx);border-radius:8px;padding:10px 12px;font-size:14px;font-family:inherit;resize:none;min-height:44px;max-height:140px}
+textarea:focus{outline:none;border-color:var(--acc)}
+button{background:var(--panel2);color:var(--tx);border:1px solid var(--bd);border-radius:6px;padding:7px 14px;font-size:13px;cursor:pointer;font-family:inherit;white-space:nowrap}
+button:hover{border-color:var(--acc);color:var(--acc)}
+button.primary{background:var(--acc);border-color:var(--acc);color:#08131f}
+button.primary:hover{filter:brightness(1.1);color:#08131f}
+button:disabled{opacity:.5;cursor:not-allowed}
+.toolbtn{font-size:12px;padding:7px 10px}
+.hidden{display:none !important}
+.spinner{display:inline-block;width:12px;height:12px;border:2px solid var(--bd);border-top-color:var(--acc);border-radius:50%;animation:sp .8s linear infinite;vertical-align:-2px}
+@keyframes sp{to{transform:rotate(360deg)}}
+.overlay{position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:50;padding:16px}
+.modal{background:var(--panel);border:1px solid var(--bd);border-radius:12px;padding:16px;width:100%;max-width:440px;max-height:86vh;overflow:auto;box-shadow:0 10px 40px rgba(0,0,0,.5)}
+.modal-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;font-size:14px;font-weight:600}
+.modal .fld{display:flex;flex-direction:column;gap:4px;margin:10px 0;font-size:12px;color:var(--tx2)}
+.modal .fld input[type=number],.modal .fld select,.modal input[type=text]{width:100%;background:var(--panel2);border:1px solid var(--bd);color:var(--tx);border-radius:6px;padding:7px 8px;font-family:inherit;font-size:13px}
+.modal .row{display:flex;gap:8px;justify-content:flex-end;margin-top:14px}
+#perf_list{max-height:52vh;overflow:auto;display:flex;flex-direction:column;gap:6px}
+.pf{background:var(--panel2);border:1px solid var(--bd);border-radius:8px;padding:7px 10px;font-size:12px}
+.pf .t{color:var(--tx2);font-size:10px;margin-bottom:3px}
+.pf .g{display:flex;gap:12px;flex-wrap:wrap}
+.pf .g span{color:var(--tx2)}
+.pf b{color:var(--acc);font-weight:600}
+@media (max-width:720px){
+  header{flex-wrap:wrap;gap:8px;padding:8px 12px}
+  header h1{font-size:14px}
+  #clock{display:none}
+  #main{padding:10px 10px 12px;gap:10px}
+  .msg{max-width:94%;font-size:15px;padding:9px 12px}
+  .msg img,.msg video{max-width:100%}
+  #inputbar{flex-direction:column;align-items:stretch;gap:8px;padding:8px 12px 12px}
+  textarea{flex:none;width:100%;min-height:52px}
+  #btn_send{width:100%;padding:12px}
+  #metrics{gap:4px;padding:6px 12px}
+  #metrics .stat{padding:2px 7px}
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>vLLM-Kestrel 推理客户端</h1>
+  <span id="engBadge" class="badge">引擎: 未知</span>
+  <span style="flex:1"></span>
+  <button id="btn_settings" class="toolbtn" title="推理参数设置">⚙ 设置</button>
+  <button id="btn_perf" class="toolbtn" title="性能指标历史">📊 性能</button>
+  <button id="btn_clear_hist" class="toolbtn" title="清空当前会话的历史记录（对话与上下文）">🗑 清理历史</button>
+  <select id="p_ctx" class="ctxsel" title="上下文关联模式：全关联=全部历史；关联前十条=最近10条消息；无关联=只看本轮（TTFT 最快）。控制每轮上下文计算量">
+    <option value="full">全关联</option>
+    <option value="last10">关联前十条</option>
+    <option value="none">无关联</option>
+  </select>
+  <a href="/admin/" target="_blank">管理页 /admin/</a>
+  <span id="clock" style="color:var(--tx2);font-size:12px"></span>
+</header>
+<div id="warnbar">模型未加载 —— 请到 <a href="/admin/" target="_blank" style="text-decoration:underline">管理页</a> 选择量化类型并点击「加载模型」，加载完成后即可在此对话。</div>
+<div id="main"></div>
+<div id="metrics" class="hidden"></div>
+<div id="settings" class="overlay hidden">
+  <div class="modal">
+    <div class="modal-head"><span>推理设置</span><button id="btn_close_set" class="toolbtn">✕</button></div>
+    <label class="fld">用户 ID（绑定独立上下文；切换后自动清空当前对话）
+      <input type="text" id="p_user" placeholder="留空 = 匿名（共享上下文）"></label>
+    <label class="fld">max_tokens<input type="number" id="p_max" min="1" max="4096" value="256"></label>
+    <label class="fld">temperature<input type="number" id="p_temp" min="0" max="2" step="0.1" value="0.7"></label>
+    <label class="fld">top_p<input type="number" id="p_topp" min="0" max="1" step="0.05" value="0.9"></label>
+    <label class="fld">输出模式
+      <select id="p_stream"><option value="1">流式 SSE</option><option value="0">一次性 JSON</option></select>
+    </label>
+    <div class="row">
+      <button id="btn_clear" class="toolbtn">清空对话</button>
+      <button id="btn_done_set" class="primary">完成</button>
+    </div>
+  </div>
+</div>
+<div id="perf" class="overlay hidden">
+  <div class="modal">
+    <div class="modal-head"><span>性能指标历史</span><div style="display:flex;gap:6px"><button id="btn_clear_perf" class="toolbtn" title="清空全部性能记录">清空记录</button><button id="btn_close_perf" class="toolbtn">✕</button></div></div>
+    <input type="text" id="perf_search" placeholder="搜索（时间 / token / 耗时 / 速度…）">
+    <div id="perf_meta" style="font-size:11px;color:var(--tx2);margin:6px 0"></div>
+    <div id="perf_list"></div>
+  </div>
+</div>
+<div id="inputbar">
+  <div style="display:flex;flex-direction:column;gap:6px">
+    <div id="attachments"></div>
+    <div style="display:flex;gap:8px">
+      <button id="btn_img" class="toolbtn" title="上传图片（可多张）">🖼 图片</button>
+      <button id="btn_vid" class="toolbtn" title="上传视频（自动抽帧）" style="display:none">🎬 视频</button>
+    </div>
+    <input type="file" id="file_img" accept="image/*" multiple style="display:none">
+    <input type="file" id="file_vid" accept="video/*" style="display:none">
+  </div>
+  <textarea id="input" placeholder="输入消息…（支持文字 / 图片 / 视频，Enter 发送，Shift+Enter 换行）"></textarea>
+  <button id="btn_send" class="primary">发送</button>
+</div>
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+let history = [];        /* OpenAI-format messages (for multi-turn) */
+let historyTokens = null; /* 引擎回传的完整历史 token 序列（下轮 context_tokens 复用） */
+let attachments = [];    /* {kind:'image', url} | {kind:'video', frames:[url...]} */
+let streaming = false;
+let genCount = 0;        /* tokens received in the current stream (progress) */
+let streamT0 = 0;        /* performance.now() at stream start */
+let progTimer = 0;       /* progress refresh interval id */
+const PERF_KEY = "vllm_perf_hist";
+let metricHistory = [];
+try { metricHistory = JSON.parse(localStorage.getItem(PERF_KEY) || "[]"); } catch (e) { metricHistory = []; }
+if (!Array.isArray(metricHistory)) metricHistory = [];
+
+const statusTxt = {
+  "-1":"未知", 0:"未加载", 1:"加载中", 2:"就绪", 3:"加载失败"
+};
+
+async function refreshStatus(){
+  try {
+    const s = await fetch("/admin/api/status").then(r => r.json());
+    const st = s.load_state;
+    const badge = $("engBadge");
+    badge.textContent = "模型: " + (statusTxt[st] || st) + (s.device_id ? " · " + s.device_id : "");
+    badge.className = "badge " + (st === 2 ? "ok" : st === 1 ? "warn" : "stop");
+    $("warnbar").classList.toggle("show", st !== 2);
+    /* 模型未加载(0)/加载失败(3)时仍允许发送：--load-on-use 会在请求到达时
+     * 自动重载模型（卸载→重载→上下文延续）；仅"加载中"或流式进行中禁用。 */
+    $("btn_send").disabled = streaming || (st === 1);
+  } catch (e) {
+    $("engBadge").textContent = "引擎: 已停止";
+    $("engBadge").className = "badge stop";
+    $("warnbar").classList.add("show");
+    $("btn_send").disabled = true;
+  }
+}
+
+/* ---------- message rendering ---------- */
+function addMsg(role, parts){
+  const box = document.createElement("div");
+  box.className = "msg " + (role === "user" ? "user" : "ai");
+  const meta = document.createElement("div");
+  meta.className = "meta";
+  meta.textContent = role === "user" ? "你" : "vllm-kestrel";
+  box.appendChild(meta);
+  const body = document.createElement("div");
+  body.className = "body";
+  box.appendChild(body);
+  for (const p of parts){
+    if (p.type === "text"){
+      const t = document.createElement("div");
+      t.textContent = p.text;
+      body.appendChild(t);
+    } else if (p.type === "image"){
+      const im = document.createElement("img");
+      im.src = p.url;
+      body.appendChild(im);
+    } else if (p.type === "video"){
+      const fr = document.createElement("div");
+      fr.className = "frames";
+      for (const u of p.frames){
+        const im = document.createElement("img");
+        im.src = u;
+        fr.appendChild(im);
+      }
+      body.appendChild(fr);
+    }
+  }
+  $("main").appendChild(box);
+  box.scrollIntoView({behavior:"smooth", block:"end"});
+  return body;
+}
+
+/* ---------- attachments (image / video) ---------- */
+function addAttachment(a){
+  attachments.push(a);
+  renderAttachments();
+}
+function renderAttachments(){
+  const box = $("attachments");
+  box.innerHTML = "";
+  attachments.forEach((a, i) => {
+    const w = document.createElement("span");
+    w.className = "att";
+    const el = document.createElement(a.kind === "image" ? "img" : "video");
+    if (a.kind === "image") el.src = a.url;
+    else { el.src = a.frames[0]; el.title = a.frames.length + " 帧"; }
+    const x = document.createElement("button");
+    x.className = "x";
+    x.textContent = "×";
+    x.onclick = () => { attachments.splice(i, 1); renderAttachments(); };
+    w.appendChild(el); w.appendChild(x);
+    box.appendChild(w);
+  });
+}
+$("btn_img").onclick = () => $("file_img").click();
+$("file_img").onchange = e => {
+  for (const f of e.target.files){
+    const r = new FileReader();
+    r.onload = () => addAttachment({kind:"image", url: r.result});
+    r.readAsDataURL(f);
+  }
+  e.target.value = "";
+};
+$("btn_vid").onclick = () => $("file_vid").click();
+$("file_vid").onchange = async e => {
+  const f = e.target.files[0];
+  e.target.value = "";
+  if (!f) return;
+  msgStatus("视频抽帧中…");
+  try {
+    const frames = await extractFrames(f, 8);
+    addAttachment({kind:"video", frames});
+    msgStatus("");
+  } catch (err) {
+    msgStatus("视频处理失败: " + err, true);
+  }
+};
+async function extractFrames(file, n){
+  const url = URL.createObjectURL(file);
+  const v = document.createElement("video");
+  v.src = url; v.muted = true; v.preload = "auto";
+  await new Promise((res, rej) => { v.onloadedmetadata = res; v.onerror = () => rej("decode"); });
+  await new Promise((res, rej) => { v.oncanplay = res; v.onerror = () => rej("decode"); });
+  const dur = v.duration || 0;
+  const frames = [];
+  for (let i = 0; i < n; i++){
+    v.currentTime = dur * (i + 0.5) / n;
+    await new Promise(res => { v.onseeked = res; });
+    const scale = Math.min(1, 448 / Math.max(v.videoWidth, v.videoHeight));
+    const c = document.createElement("canvas");
+    c.width = Math.max(1, Math.round(v.videoWidth * scale));
+    c.height = Math.max(1, Math.round(v.videoHeight * scale));
+    c.getContext("2d").drawImage(v, 0, 0, c.width, c.height);
+    frames.push(c.toDataURL("image/jpeg", 0.7));
+  }
+  URL.revokeObjectURL(url);
+  return frames;
+}
+
+/* ---------- status line (metrics) ---------- */
+function msgStatus(text, isErr){
+  const m = $("metrics");
+  if (!text){ m.classList.add("hidden"); return; }
+  m.classList.remove("hidden");
+  m.innerHTML = isErr
+    ? '<span style="color:var(--bad)">' + text + "</span>"
+    : '<span class="spinner"></span> ' + text;
+}
+function statChip(label, value, unit){
+  return '<span class="stat"><span class="k">' + label + '</span><b>' + value +
+         '</b>' + (unit ? '<span class="u">' + unit + '</span>' : "") + '</span>';
+}
+function showProgress(nTok, elapsedMs){
+  const m = $("metrics");
+  m.classList.remove("hidden");
+  m.innerHTML =
+    statChip("生成进度", nTok, "tok") +
+    statChip("已耗时", (elapsedMs / 1000).toFixed(1), "s") +
+    '<span class="spinner"></span>';
+}
+function stopProgress(){
+  if (progTimer){ clearInterval(progTimer); progTimer = 0; }
+}
+function saveMetric(met){
+  metricHistory.unshift({
+    t: new Date().toLocaleString(),
+    prompt_tokens: met.prompt_tokens, last_user_tokens: met.last_user_tokens,
+    n_tokens: met.n_tokens, ttft_ms: met.ttft_ms, tpot_ms: met.tpot_ms,
+    prefill_ms: met.prefill_ms, total_ms: met.total_ms, tok_s: met.tok_s
+  });
+  if (metricHistory.length > 200) metricHistory.length = 200;
+  try { localStorage.setItem(PERF_KEY, JSON.stringify(metricHistory)); } catch (e) {}
+}
+function perfText(e){
+  return [e.t, "上下文", e.prompt_tokens, "上一问", e.last_user_tokens, "生成", e.n_tokens,
+    "ttft", e.ttft_ms, "tpot", e.tpot_ms, "prefill", e.prefill_ms,
+    "总耗时", e.total_ms, "速度", e.tok_s].join(" ");
+}
+function renderPerfHistory(){
+  const q = ($("perf_search").value || "").trim().toLowerCase();
+  const list = $("perf_list");
+  const filtered = metricHistory.filter(e => !q || perfText(e).toLowerCase().indexOf(q) >= 0);
+  $("perf_meta").textContent = "共 " + metricHistory.length + " 条，匹配 " + filtered.length + " 条";
+  if (!filtered.length){
+    list.innerHTML = '<div style="color:var(--tx2);text-align:center;padding:12px">' +
+      (metricHistory.length ? "无匹配" : "暂无记录") + '</div>';
+    return;
+  }
+  list.innerHTML = filtered.map(e =>
+    '<div class="pf"><div class="t">' + e.t + '</div><div class="g">' +
+      '<span>上下文 <b>' + ((e.prompt_tokens || 0) * 4 / 1024).toFixed(2) + ' KB</b></span>' +
+      '<span>生成 <b>' + (e.n_tokens != null ? e.n_tokens : "—") + '</b> tok</span>' +
+      '<span>TTFT <b>' + (e.ttft_ms != null ? e.ttft_ms.toFixed(1) : "—") + '</b> ms</span>' +
+      '<span>TPOT <b>' + (e.tpot_ms != null ? e.tpot_ms.toFixed(1) : "—") + '</b> ms</span>' +
+      '<span>总耗时 <b>' + (e.total_ms != null ? e.total_ms.toFixed(1) : "—") + '</b> ms</span>' +
+      '<span>速度 <b>' + (e.tok_s != null ? e.tok_s.toFixed(2) : "—") + '</b> tok/s</span>' +
+    '</div></div>'
+  ).join("");
+}
+function showMetrics(met){
+  if (met.n_tokens > 0 || met.prompt_tokens > 0) saveMetric(met);
+  const m = $("metrics");
+  m.classList.remove("hidden");
+  const tok_s = (met.tok_s != null ? met.tok_s : (met.total_ms > 0 ? met.n_tokens * 1000 / met.total_ms : 0)).toFixed(2);
+  const lastU = (met.last_user_tokens != null) ? met.last_user_tokens : "—";
+  const ctxKB = ((met.prompt_tokens || 0) * 4 / 1024).toFixed(2);
+  m.innerHTML =
+    statChip("上下文总长", ctxKB, "KB") +
+    statChip("上一问", lastU, "tok") +
+    statChip("生成", met.n_tokens, "tok") +
+    statChip("TTFT", met.ttft_ms.toFixed(1), "ms") +
+    statChip("TPOT", met.tpot_ms.toFixed(1), "ms") +
+    statChip("prefill", met.prefill_ms.toFixed(1), "ms") +
+    statChip("总耗时", met.total_ms.toFixed(1), "ms") +
+    statChip("速度", tok_s, "tok/s");
+}
+
+/* ---------- send ---------- */
+async function send(){
+  if (streaming || $("btn_send").disabled) return;
+  const text = $("input").value.trim();
+  const atts = attachments.slice();
+  if (!text && atts.length === 0) return;
+  $("input").value = "";
+  /* 多模态轮次后引擎重置文本 KV 前缀，token 序列不可复用。 */
+  if (atts.length) historyTokens = null;
+  let rawContent = "";   /* 原始 delta 拼接（不含 cleanDelta），保存为历史 */
+
+  /* build user message parts */
+  const parts = [];
+  if (text) parts.push({type:"text", text});
+  for (const a of atts){
+    if (a.kind === "image") parts.push({type:"image", url: a.url});
+    else parts.push({type:"video", frames: a.frames});
+  }
+  attachments = [];
+  renderAttachments();
+  addMsg("user", parts);
+
+  /* OpenAI format */
+  const apiParts = [];
+  if (text) apiParts.push({type:"text", text});
+  for (const a of atts){
+    if (a.kind === "image") apiParts.push({type:"image_url", image_url:{url: a.url}});
+    else apiParts.push({type:"video_frames", video_frames: a.frames});
+  }
+  history.push({role:"user", content: apiParts});
+  const bodyObj = {
+    model: "qwen3-vl-8b",
+    messages: history,
+    context_mode: $("p_ctx").value,
+    max_tokens: parseInt($("p_max").value, 10) || 256,
+    temperature: parseFloat($("p_temp").value) || 0.7,
+    top_p: parseFloat($("p_topp").value) || 0.9,
+    stream: $("p_stream").value === "1"
+  };
+  /* token 级历史复用：完整上下文模式下回传引擎的 history_tokens，使历史 KV
+   * 精确保留、每轮只 prefill 新增内容（TTFT 不再随轮次累积增长）。 */
+  if (historyTokens && $("p_ctx").value === "full")
+    bodyObj.context_tokens = historyTokens;
+  /* 用户 ID：绑定独立上下文（L3 缓存文件 / disk_kv 恢复隔离）。 */
+  const uid = $("p_user").value.trim();
+  if (uid) bodyObj.user = uid;
+
+  const aiBody = addMsg("assistant", [{type:"text", text:""}]);
+  const aiText = aiBody.querySelector("div");
+  streaming = true;
+  refreshStatus();
+  const t0 = performance.now();
+  try {
+    if (bodyObj.stream){
+      await streamRequest(bodyObj, aiText, t0, (s)=>{ rawContent += s; });
+    } else {
+      const r = await fetch("/v1/chat/completions", {
+        method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(bodyObj)
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok){
+        const err = (j.error && j.error.message) || ("HTTP " + r.status);
+        aiText.textContent = "错误: " + err;
+        showMetricsFallback(t0);
+        history.pop();
+        throw new Error(err);
+      }
+      const content = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || "";
+      aiText.textContent = cleanDelta(content);
+      rawContent = content;   /* 历史保存用原始文本（cleanDelta 仅用于显示） */
+      if (j.history_tokens) historyTokens = j.history_tokens;
+      if (j.metrics) showMetrics(j.metrics);
+      else showMetricsFallback(t0);
+    }
+    history.push({role:"assistant", content: rawContent || aiText.textContent});
+  } catch (e) {
+    if (e.name !== "AbortError" && !aiText.textContent) aiText.textContent = "请求失败: " + e;
+    msgStatus(e.message || String(e), true);
+  } finally {
+    streaming = false;
+    refreshStatus();
+  }
+}
+function showMetricsFallback(t0){
+  const dt = performance.now() - t0;
+  showMetrics({prompt_tokens:0, n_tokens:0, ttft_ms:dt, tpot_ms:0, total_ms:dt, prefill_ms:0, tok_s:0});
+}
+async function streamRequest(bodyObj, aiText, t0, onRaw){
+  const resp = await fetch("/v1/chat/completions", {
+    method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(bodyObj)
+  });
+  if (!resp.ok){
+    const j = await resp.json().catch(() => ({}));
+    const err = (j.error && j.error.message) || ("HTTP " + resp.status);
+    aiText.textContent = "错误: " + err;
+    history.pop();
+    throw new Error(err);
+  }
+  if (!resp.body){
+    const j = await resp.json();
+    if (j.metrics) showMetrics(j.metrics);
+    else showMetricsFallback(t0);
+    return;
+  }
+  streamT0 = t0;
+  genCount = 0;
+  progTimer = setInterval(() => showProgress(genCount, performance.now() - streamT0), 200);
+  const reader = resp.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  try {
+    for (;;){
+      const {done, value} = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, {stream:true});
+      let idx;
+      while ((idx = buf.indexOf("\n\n")) >= 0){
+        const ev = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        parseSSE(ev, aiText, onRaw);
+      }
+    }
+    if (buf.trim()) parseSSE(buf, aiText, onRaw);
+  } finally {
+    stopProgress();
+  }
+}
+function parseSSE(ev, aiText, onRaw){
+  const m = ev.match(/^data: (.*)$/m);
+  if (!m) return;
+  let j;
+  try { j = JSON.parse(m[1]); } catch (e) { return; }
+  if (j.object === "chat.completion.metrics"){
+    stopProgress();
+    showMetrics(j.metrics || {});
+    return;
+  }
+  if (j.object === "chat.completion.tokens" && Array.isArray(j.tokens)){
+    historyTokens = j.tokens;
+    return;
+  }
+  const c = j.choices && j.choices[0];
+  if (c && c.delta && typeof c.delta.content === "string"){
+    aiText.textContent += cleanDelta(c.delta.content);
+    if (onRaw) onRaw(c.delta.content);
+    genCount++;
+    showProgress(genCount, performance.now() - streamT0);
+  }
+}
+
+/* Rendering-layer cleanup for residual artifacts:
+ * - model may emit <|im_start|>/<|im_end|> as plain text
+ * - Qwen byte-level BPE maps raw bytes onto U+0100..U+0143 (e.g. Ġ=space,
+ *   Ċ=newline); fully-merged emoji tokens are normal, but stray mid-BPE
+ *   tokens surface as those pseudo-chars and must be dropped. */
+function cleanDelta(s){
+  s = s.replace(/<\|im_(?:start|end)\|>/g, "");
+  s = s.replace(/\u010a/g, "\n").replace(/\u0120/g, " ");
+  s = s.replace(/[\u0100-\u0109\u010b-\u011f\u0121-\u0143]/g, "");
+  return s;
+}
+
+/* ---------- events ---------- */
+$("btn_send").onclick = send;
+$("input").addEventListener("keydown", e => {
+  if (e.key === "Enter" && !e.shiftKey){ e.preventDefault(); send(); }
+});
+$("btn_clear").onclick = () => {
+  clearHistory();
+  $("settings").classList.add("hidden");
+};
+function clearHistory(){
+  history = [];
+  historyTokens = null;
+  attachments = [];
+  $("main").innerHTML = "";
+  $("metrics").classList.add("hidden");
+}
+$("btn_clear_hist").onclick = () => { clearHistory(); renderAttachments(); };
+$("btn_clear_perf").onclick = () => {
+  metricHistory = [];
+  try { localStorage.removeItem(PERF_KEY); } catch (e) {}
+  renderPerfHistory();
+};
+/* settings & perf modals */
+$("btn_settings").onclick = () => $("settings").classList.remove("hidden");
+$("btn_close_set").onclick = () => $("settings").classList.add("hidden");
+$("btn_done_set").onclick = () => $("settings").classList.add("hidden");
+/* 切换用户 ID：绑定独立上下文，自动清空当前对话。 */
+$("p_user").addEventListener("change", () => {
+  clearHistory();
+  msgStatus("已切换用户（" + ($("p_user").value.trim() || "匿名") + "），对话已清空", false);
+});
+$("btn_perf").onclick = () => { renderPerfHistory(); $("perf").classList.remove("hidden"); };
+$("btn_close_perf").onclick = () => $("perf").classList.add("hidden");
+$("perf_search").addEventListener("input", renderPerfHistory);
+$("settings").addEventListener("click", e => { if (e.target === $("settings")) $("settings").classList.add("hidden"); });
+$("perf").addEventListener("click", e => { if (e.target === $("perf")) $("perf").classList.add("hidden"); });
+refreshStatus();
+setInterval(refreshStatus, 5000);
+setInterval(() => { $("clock").textContent = new Date().toLocaleTimeString(); }, 1000);
+</script>
+</body>
+</html>

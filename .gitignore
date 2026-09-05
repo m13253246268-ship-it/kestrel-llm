@@ -1,0 +1,26 @@
+# Build artifacts
+/build/
+/build-rk3588/
+/build-rk3588-static/
+/vllm_kestrel
+*.o
+*.exe
+
+# Local runtime state (config/logs written by the engine / tools)
+/webmgr/
+/logs/
+/.attest/
+kv_disk/
+*.log
+
+# Python
+__pycache__/
+*.pyc
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Editor
+.vscode/
+.idea/

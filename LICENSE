@@ -1,0 +1,72 @@
+# vllm_kestrel Dual License（双许可协议）
+
+This project is released under a **dual-license** model so that learning and
+academic research stay free, while commercial use requires a separate
+authorization. The Chinese text below is the normative summary; the English
+text is an equivalent statement of the same terms. 本文采用“双许可”模式：学习与学术研究免费，商业使用需另行取得商业授权。中文为约定性条款摘要，英文为同义条款。
+
+---
+
+## 中文（Chinese，约定性条款）
+
+### 一、免费许可：学习与学术研究
+1. 任何个人或非营利机构，出于**学习、教学、学术研究、论文复现**等非商业目的，可以免费使用、复制、修改、编译与展示本软件及其源码，无需另行书面授权。
+2. 使用时应**保留本版权声明与本许可文本**；在论文、报告或公开演示中引用时，应注明作者与开源仓库地址（论文可引用 arXiv 版本号）。
+3. 免费许可**不含任何担保**：作者按“现状”提供软件，不对适用性、正确性、数据安全或任何直接/间接损失承担责任。
+
+### 二、商业授权（Commercial License）
+1. 凡将本软件（或基于本软件的修改、衍生、集成物）用于**商业用途**——包括但不限于：商业产品内嵌、对外提供商业服务/SaaS、转售、闭源发布、以盈利为目的的部署与二次开发——**必须**事先与版权所有者签订商业许可协议并取得书面授权。
+2. 未经授权进行的任何商业使用均视为侵权；作者保留追究的权利。
+
+### 三、通用条款
+1. 本许可不转移任何商标权、专利权；对本软件的贡献按“提交即同意以本双许可条款发布”处理。
+2. 随附的第三方组件遵循其各自许可证，包括但不限于：
+   - `src/model/stb_image.h`：MIT License, Copyright (c) 2017 Sean Barrett;
+   - 源自 llama.cpp 的代码段（`tools/llama_gemm_q4_0_4x4_asm.c`，以及
+     `src/model/vllm_safetensors.c` 中标注的 ggml_gemm/gemv/vec_dot 派生内核）：
+     MIT License, Copyright (c) 2023-2026 The ggml authors（版权声明与许可文本见各文件头）。
+   上述第三方代码段独立保留其原许可证；本双许可的免费/商业条款仅适用于本项目的原创代码。
+3. 模型权重、数据集与转换产物不在本仓库内分发；如需使用，请遵循其原始来源的开源许可。
+
+---
+
+## English (equivalent terms)
+
+### 1. Free License: Learning & Academic Research
+(a) Any individual or non-profit organization may freely use, copy, modify,
+compile and display this software and its source code for **non-commercial
+purposes** — including learning, teaching, academic research and paper
+reproducibility — without a separate written license.
+(b) Any such use must retain this copyright notice and license text, and must
+cite the authors and the public repository (and the arXiv version when the
+paper is published) in publications and public demos.
+(c) THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND. The
+authors are not liable for any direct or indirect damage arising from its use.
+
+### 2. Commercial License
+(a) Any **commercial use** of this software or of modified/derivative/integrated
+works based on it — including, but not limited to, embedding in commercial
+products, offering paid services / SaaS, reselling, closed-source
+redistribution, or profit-oriented deployment and further development — requires
+a **prior written commercial license** signed with the copyright holder.
+(b) Unauthorized commercial use is an infringement; the authors reserve all
+rights to enforce these terms.
+
+### 3. General
+(a) This license does not transfer any trademark or patent rights.
+Contributions are accepted on the understanding that they are released under
+this same dual license.
+(b) Third-party components shipped with the project (e.g. `src/model/stb_image.h`;
+llama.cpp-derived kernels in `tools/llama_gemm_q4_0_4x4_asm.c` and the
+ggml_gemm/gemv/vec_dot ports marked in `src/model/vllm_safetensors.c`)
+remain under their own respective licenses — stb_image.h: MIT, Copyright (c)
+2017 Sean Barrett; llama.cpp code: MIT, Copyright (c) 2023-2026 The ggml
+authors (full notices at the top of the respective files). The dual-license
+terms above apply only to the project's original code, not to those portions.
+(c) Model weights, datasets and conversion artifacts are NOT distributed in
+this repository; follow the original sources' licenses if you use them.
+
+---
+
+Copyright (C) 2026 New_vLLM Authors. All rights reserved.
+For commercial licensing requests, contact the authors (see repository README).
