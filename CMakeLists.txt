@@ -35,7 +35,7 @@ endif()
 option(VLLM_STATIC "Build a fully static (zero .so dependency) binary" OFF)
 
 set(CMAKE_C_FLAGS_RELEASE "-O2 -mcpu=cortex-a76 -march=${VLLM_MARCH} -ffast-math -fopenmp -D_GNU_SOURCE")
-set(CMAKE_C_FLAGS_DEBUG "-O0 -g -fopenmp -D_GNU_SOURCE")
+set(CMAKE_C_FLAGS_DEBUG "-O0 -g -march=${VLLM_MARCH} -fopenmp -D_GNU_SOURCE")
 if(VLLM_STATIC)
     # glibc 全静态：libc.a/libm.a/libgomp.a 内联，pthread 已并入 glibc 2.35 libc.a。
     set(CMAKE_EXE_LINKER_FLAGS_RELEASE "-s -static")
