@@ -1,32 +1,33 @@
-# Kestrel（红隼）— RK3588 边缘 LLM 推理引擎
+# Kestrel（红隼）— ARM(aarch64) 边缘 LLM 推理引擎（RK3588 开发基准）
 
-**纯 C11、零第三方运行时依赖的 RK3588 (aarch64) 边缘 LLM 推理引擎。**
+**纯 C11、零第三方运行时依赖的 ARM（aarch64）CPU LLM 推理引擎。**
 
-> **Kestrel（红隼）** 为本引擎的品牌 / 对外名（取义：最小猛禽、俯冲精确——边缘小模型 + 可验证推理）。
-> 工程名与可执行文件为 `vllm_kestrel`：下文命令、日志与代码中的 `vllm_kestrel` / `vllm` 均指本引擎。
-> 许可：**source-available 双许可** —— 学习 / 学术研究免费，商业使用需授权（**非 OSI 开源许可**，
-> 请勿以 MIT/Apache 等标准开源协议理解，完整条款见 [LICENSE](LICENSE)）。
+> 平台口径：引擎本质是**面向 ARM 架构 CPU 的推理**（ARMv8.2-A + NEON dotprod/fp16，
+> 不依赖 GPU/NPU 与特定开发板）；**RK3588** 是当前开发、优化与基准测试平台，
+> 并非唯一可运行设备——同类 aarch64 Linux 设备可尝试编译运行（跨设备验证状态见「构建」节平台约束）。
 
-vllm_kestrel 是一个从零自研、面向边缘设备（RK3588 / 4×Cortex-A76 + 4×Cortex-A55）的
-大语言模型推理引擎：单文件 `vllm_kestrel` 即可服务 OpenAI 兼容 HTTP API，
-面向 **Qwen3-VL 系列（2B/8B）** 开发并实测（纯文本与图片/视频帧多模态输入，支持范围声明见下文）。核心亮点：
+一块 ARM 开发板（示例：RK3588 / Orange Pi 5 Plus）+ 一个约 **0.8 MB** 的单文件可执行程序 = 原生 LLM 推理服务：
+**2 秒冷启动**，原生跑 Qwen3-VL 2B/8B 纯文本与图片/视频多模态，OpenAI 兼容 HTTP API 即刻可用
+（以下数据均为板端实测，方法学见 [docs/RK3588_性能基准报告.md](docs/RK3588_性能基准报告.md)）。
 
-- **纯 CPU 推理**：手写 NEON 量化 GEMM/GEMV（8x8 / 4x4 / SDOT），不依赖 GPU/NPU
-  即可运行；NPU 直驱（自研 `/dev/rknpu` 驱动）为可选透明加速。
-- **零第三方依赖**：自研 SM3/SM4/SM2 国密原语、自研线程池 `vllm_tp`（替代 OpenMP）、
-  单文件 mmap 权重格式 VQF；标准构建仅需 gcc + libm。
-- **精简单文件**：28 个 C 文件、单可执行产物——RK3588 Release（`-O2 -s`）约 **0.8 MB**，
-  glibc 全静态约 1.5 MB（零 .so 依赖），拷贝即跑（详见 [体量与依赖](#体量与依赖小而全)）。
-- **长上下文工程优化**：sparse-attention、prefix-KV 前缀复用、磁盘 KV 持久化
-  （跨进程恢复）、推测解码、连续批处理（详见 [docs](docs/)）。
-- **权重保护与可验证推理**：VQF v2 存储态加密（SM4-CTR + HMAC-SM3）+ SM2 供应链签名
-  保护权重文件；逐请求 SM3 转录摘要 + SM2 设备签名出证（attestation），
-  `tools/verify_attest.py` 离线验签（统一方案见
-  [docs/权重保护与可验证推理方案.md](docs/权重保护与可验证推理方案.md)）。
+**核心亮点**
 
-> 仓库亦包含自研的**同态加密推理**核心（`src/core/vllm_ckks.c` / `vllm_fhe.c` /
-> `vllm_ntt.c` 等，RNS-CKKS 全同态加密 2B 级模型推理的独立研究实现），
-> 与明文引擎共享同一工程基础设施。
+| 亮点 | 说明 |
+|---|---|
+| 单文件约 0.8 MB | 28 个 C 文件 → 单产物 **818,872 B**（Release 实测）；全静态约 1.5 MB、零 .so，拷贝即跑 |
+| 冷启动 2.0 s | spawn→HTTP ready **2.01 s**（对比 llama.cpp 5.0 s）；VQF v2 预量化 + mmap 直挂，加载 ≈1.2 s |
+| 零第三方依赖 | 手写 NEON 量化 GEMM/GEMV + 自研线程池（替代 OpenMP）+ 自研国密 SM3/SM4/SM2；标准构建仅需 gcc + libm |
+| 长上下文更快 | 8K decode **3.0×**（136.7 vs 411.6 ms/词）；磁盘 KV 跨进程恢复 **13.1×**（重启不丢会话） |
+| Qwen3-VL 多模态 | 2B/8B 纯文本 + 图片/视频帧；纯 CPU 即可运行，NPU 直驱为可选透明加速 |
+| 可验证推理 | SM2 供应链签名护权重 + 逐请求 attestation 密码学凭证、离线验签（医疗/法务级合规场景） |
+
+> 品牌命名：**Kestrel（红隼）** 为品牌/对外名（取义：最小猛禽、俯冲精确——边缘小模型 + 可验证推理）；
+> 工程名与可执行文件为 `vllm_kestrel`，下文命令、日志与代码中的 `vllm_kestrel` / `vllm` 均指本引擎。
+
+引擎从零自研、面向边缘设备（RK3588 / 4×Cortex-A76 + 4×Cortex-A55），
+**针对 Qwen3-VL 系列（2B/8B）开发并实测**（支持范围诚实声明见「模型与复现」一节）；
+配套长上下文工程（sparse-attention / 前缀 KV 复用 / 磁盘 KV / 推测解码 / 连续批处理）与
+**同态加密推理研究内核**（RNS-CKKS，`src/core/vllm_ckks.c` 等，与明文引擎共享工程基础设施，见 [docs](docs/)）。
 
 ---
 
@@ -137,8 +138,12 @@ cmake -B build-rk3588 && cmake --build build-rk3588 -j8
 ./build_rk3588.sh --cross
 ```
 
-> 平台约束：本引擎目标为 **RK3588 (aarch64)**，`vllm_platform.h` 在其他架构上
-> 编译时报错退出。运行建议 `export OMP_NUM_THREADS=8`（4×A76 + 4×A55）。
+> 平台约束与说明：引擎本质是 **ARM（aarch64，ARMv8.2-A + dotprod/fp16）CPU 推理引擎**，
+> **RK3588（4×A76 + 4×A55）是开发与基准测试平台**，并非唯一可运行设备。`vllm_platform.h`
+> 在非 aarch64 架构（如 x86 主机直编）会编译报错退出（x86 仅用于位级一致性的研究对照）。
+> 同类 aarch64 Linux 设备可尝试编译运行，但设备画像（如 A76 集群线程绑定、核心数）与
+> 性能档按 RK3588 验证——**换板运行请先跑 `--test-l3` / `--bench-mixed` 自检**并以自检
+> 结果为准。运行建议 `export OMP_NUM_THREADS=8`（RK3588：4×A76 + 4×A55）。
 
 ## 运行
 
@@ -201,10 +206,11 @@ NPU 加速（可选）：默认后端为**零第三方依赖直驱**（自研写
 | [docs/优化配置与边界说明.md](docs/优化配置与边界说明.md) | 各优化档机制、收益与诚实边界 |
 | [docs/权重保护与可验证推理方案.md](docs/权重保护与可验证推理方案.md) | 三道安全防线：VQF 存储态加密、SM2 供应链签名、推理出证（schema=2），含相互关系、端到端用法与统一安全边界 |
 
-## 第三方与合规
+## 许可与合规
 
-- 本项目为**双许可**：学习 / 学术研究 / 论文复现免费；任何商业使用须先取得
-  商业授权。完整条款见 [LICENSE](LICENSE)。
+- **许可：source-available 双许可（非 OSI 开源许可）**——学习 / 学术研究 / 论文复现
+  完全免费；任何商业使用与企业内部生产部署须先取得商业授权。
+  **请勿以 MIT/Apache 等标准开源协议理解本仓库**；完整条款见 [LICENSE](LICENSE)。
 - 第三方组件按各自许可保留：`stb_image.h`（MIT, Sean Barrett）与源自 llama.cpp
   的 4x4 asm GEMM 提取文件及其派生内核（MIT, The ggml authors）——版权与许可
   文本见对应文件头，详见 [LICENSE](LICENSE) 第三节。
