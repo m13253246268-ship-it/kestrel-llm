@@ -6,9 +6,9 @@
  *   parse -> alloc(dual 布局) -> embed/final_norm -> lm_head chunked
  *   -> st_load_layer_weights(逐层量化+repack) -> 明文 VQF 写出 + FNV。
  *
- * v1 范围：文本模型；wmode=dual(0)/q4(1)/q8(2)/q4i(3)/g256(4)。
- * VQF-Enc 加密（env VLLM_VQF_KEY）与 SM2 内嵌签名（env VLLM_VQF_SIGN_PRIV）
- * 已支持；vision（多模态）权重写出不在 v1。
+ * 范围：文本模型（模型含 vision 段时一并写出）；wmode=dual(0)/q4(1)/q8(2)/q4i(3)/g256(4)。
+ * VQF-Enc 加密（env VLLM_VQF_KEY）与 SM2 内嵌签名（env VLLM_VQF_SIGN_PRIV）已支持，
+ * 全量路径与 --stream 路径均可。
  *
  * 用法：
  *   vqf_convert --model <safetensors dir> --convert-vqf <out.vqf>
@@ -824,15 +824,14 @@ static void *s_v_field(STVisionWeights *v, const char *nm) {
 }
 
 static int run_convert_stream(const char *model_dir, const char *out) {
-    /* --stream 走 mmap 直写路径，尚未接入 VQF-Enc/SM2 收尾；显式拒绝以免
-     * 静默产出"看似加密但无 tag"的文件。去掉 --stream 用全量路径即可。 */
-    const char *ek = getenv("VLLM_VQF_KEY");
-    const char *sk = getenv("VLLM_VQF_SIGN_PRIV");
-    if ((ek && ek[0]) || (sk && sk[0])) {
-        fprintf(stderr, "[conv-stream] VQF-Enc/SM2 签名暂不支持 --stream；"
-                        "请去掉 --stream 走全量路径\n");
-        return 1;
-    }
+    /* VQF-Enc / SM2 签名（env 驱动，与全量路径同口径；在 mmap 直写完成后
+     * 对映射区做一遍收尾：签名摘要读明文、加密原位改写、HMAC 覆盖密文）。 */
+    uint8_t sm4key[16], hmackey[16];
+    int enc = vq_enc_derive(getenv("VLLM_VQF_KEY"), sm4key, hmackey);
+    uint8_t priv[32];
+    int sign = 0;
+    const char *sp = getenv("VLLM_VQF_SIGN_PRIV");
+    if (sp && sp[0] && vc_hex_decode(sp, priv, 32) == 32) sign = 1;
     STModelConfig cfg; memset(&cfg, 0, sizeof(cfg));
     if (st_parse_config(model_dir, &cfg) != 0) {
         fprintf(stderr, "[conv-stream] config parse failed\n");
@@ -873,7 +872,9 @@ static int run_convert_stream(const char *model_dir, const char *out) {
     uint64_t off = data_off;
     for (int i = 0; i < n; i++) { e[i].off = off; off = (off + e[i].bytes + 63) & ~(uint64_t)63; }
     uint64_t data_end = off;
-    uint64_t fsize = data_end + 8;   /* +8：尾部 FNV 一并映射 */
+    /* 尾部：明文 8B FNV / 加密 32B HMAC-SM3 tag，一并映射。 */
+    uint64_t tag_len = enc ? 32 : 8;
+    uint64_t fsize = data_end + tag_len;
 
     st_wmap_t m;
     if (st_wmap_create(&m, out, fsize) != 0) {
@@ -1087,7 +1088,7 @@ static int run_convert_stream(const char *model_dir, const char *out) {
         }
     }
 
-    /* ---- flags 回填（与全量路径同规则） + 尾部 FNV ---- */
+    /* ---- flags 回填 + 尾部（明文 FNV / ENC HMAC-SM3）+ SM2 签名 + 头部回填 ---- */
     {
         uint32_t fflags = 0;
         fflags |= VQF_FLAG_EMB_F16;
@@ -1101,21 +1102,101 @@ static int run_convert_stream(const char *model_dir, const char *out) {
             if (!(e8 && e8[0] == '0')) fflags |= VQF_FLAG_Q8_8X8;
         }
         if (g_st_q4_repack) fflags |= VQF_FLAG_Q4_4X4;
+        if (enc)  fflags |= VQF_FLAG_ENC;
+        if (sign) fflags |= VQF_FLAG_SIGNED;
 
-        uint64_t sum = 0xcbf29ce484222325ull;
-        for (size_t j = 0; j < (size_t)n * sizeof(VQFTensor); j++) {
-            sum ^= base[dir_off + j]; sum *= 0x100000001b3ull;
+        uint8_t *dp = base + data_off;
+        size_t   dlen = (size_t)(data_end - data_off);
+        size_t   dsz  = (size_t)n * sizeof(VQFTensor);
+
+        /* 头部 canonical：file_len=0、sig 全 0、flags 已含 ENC/SIGNED/enc_iv
+         * （与引擎 vqf_load 复算口径逐字节一致）。 */
+        VQFHeader hc = h;
+        hc.flags = fflags;
+        hc.file_len = 0;
+        memset(&hc.sig, 0, sizeof(hc.sig));
+        if (enc && vq_enc_iv(hc.enc_iv) != 0) {
+            fprintf(stderr, "[conv-stream] secure random IV failed\n");
+            goto fail;
         }
-        for (uint64_t j = 0; j < data_end - data_off; j++) {
-            sum ^= base[data_off + j]; sum *= 0x100000001b3ull;
+
+        uint64_t wsum = 0;
+
+        /* ① 签名：D = SM3(canonical ‖ 目录 ‖ 明文数据区) —— 必须在加密之前。 */
+        if (sign) {
+            vc_sm3_ctx dig; vc_sm3_init(&dig);
+            vc_sm3_update(&dig, &hc, sizeof(hc));
+            vc_sm3_update(&dig, base + dir_off, dsz);
+            for (size_t done = 0; done < dlen; ) {
+                size_t k = dlen - done; if (k > (1u << 20)) k = 1u << 20;
+                vc_sm3_update(&dig, dp + done, k); done += k;
+            }
+            uint8_t D[32], kk[32], r[32], ss[32], pub[64];
+            vc_sm3_final(&dig, D);
+            if (vc_secure_rand(kk) != 0) {
+                fprintf(stderr, "[conv-stream] secure random k failed\n");
+                goto fail;
+            }
+            size_t idlen = strlen(VQF_SM2_ID);
+            if (vc_sm2_sign(priv, D, 32, (const uint8_t *)VQF_SM2_ID, idlen,
+                            kk, r, ss) != 0) {
+                fprintf(stderr, "[conv-stream] SM2 sign failed "
+                                "(bad VLLM_VQF_SIGN_PRIV)\n");
+                goto fail;
+            }
+            if (vc_sm2_pub_from_priv(priv, pub) != 0) goto fail;
+            memcpy(hc.sig.pub, pub, 64);
+            memcpy(hc.sig.r, r, 32);
+            memcpy(hc.sig.s, ss, 32);
+            memcpy(hc.sig.digest, D, 32);
+            memset(hc.sig.id, 0, sizeof(hc.sig.id));
+            memcpy(hc.sig.id, VQF_SM2_ID, idlen);
+            hc.sig.id_len = (uint32_t)idlen;
         }
-        memcpy(base + data_end, &sum, 8);
-        h.flags = fflags; h.file_len = data_end;
+
+        /* ② 尾部：加密 → HMAC-SM3 tag(32B) 覆盖 canonical+目录+密文，
+         *    数据区原位 SM4-CTR；明文 → FNV-1a(8B) 覆盖 目录+数据区。 */
+        if (enc) {
+            /* HMAC canonical 的 sig 块必须全 0（与加载侧 hdr_auth 口径一致）：
+             * 上面签名已回填 hc.sig，故此处另取一份清零副本再喂 HMAC。 */
+            VQFHeader ha = hc;
+            memset(&ha.sig, 0, sizeof(ha.sig));
+            vc_hmac_ctx hmac; vc_hmac_init(&hmac, hmackey, 16);
+            vc_hmac_update(&hmac, &ha, sizeof(ha));
+            vc_hmac_update(&hmac, base + dir_off, dsz);
+            vc_sm4_ctx sm4; vc_sm4_setkey_enc(&sm4, sm4key);
+            uint8_t ctr[16]; memcpy(ctr, hc.enc_iv, 16);
+            for (size_t done = 0; done < dlen; ) {
+                size_t k = dlen - done; if (k > (1u << 20)) k = 1u << 20;
+                vc_sm4_ctr_crypt(&sm4, ctr, dp + done, dp + done, k);
+                vc_hmac_update(&hmac, dp + done, k);
+                done += k;
+            }
+            uint8_t tag[32];
+            vc_hmac_final(&hmac, tag);
+            memcpy(base + data_end, tag, 32);
+        } else {
+            uint64_t sum = 0xcbf29ce484222325ull;
+            for (size_t j = 0; j < dsz; j++) {
+                sum ^= base[dir_off + j]; sum *= 0x100000001b3ull;
+            }
+            for (size_t j = 0; j < dlen; j++) {
+                sum ^= dp[j]; sum *= 0x100000001b3ull;
+            }
+            memcpy(base + data_end, &sum, 8);
+            wsum = sum;
+        }
+
+        h = hc;
+        h.file_len = data_end;
         memcpy(base, &h, sizeof(h));
-        fprintf(stderr, "[conv-stream] wrote %s: %d tensors, %.1f MB, flags=0x%x "
-                        "file_sum=%016llx\n",
+        st_wmap_flush(&m, 0, (size_t)sizeof(h));
+        st_wmap_flush(&m, (size_t)data_end, (size_t)tag_len);
+        fprintf(stderr, "[conv-stream] wrote %s: %d tensors, %.1f MB, flags=0x%x%s%s",
                 out, n, (double)data_end / 1048576.0, fflags,
-                (unsigned long long)sum);
+                enc ? " ENC=SM4-CTR+HMAC-SM3" : "", sign ? " SIGNED=SM2" : "");
+        if (!enc) fprintf(stderr, " file_sum=%016llx", (unsigned long long)wsum);
+        fprintf(stderr, "\n");
     }
     st_wmap_close(&m);
     if (vvis) { st_vision_weights_free(vvis); free(vvis); }

@@ -219,8 +219,8 @@ NPU 加速（可选）：默认后端为**零第三方依赖直驱**（自研写
 供应链签名，二者可叠加；**加载侧**置 `VLLM_VQF_KEY` / `VLLM_VQF_SIGN_PUB` 解密验签。
 置 `VLLM_ATTEST=1`（详见 [docs/权重保护与可验证推理方案.md](docs/权重保护与可验证推理方案.md)）
 即逐响应出证（attestation schema=3，含请求原文绑定），用 `tools/verify_attest.py` 离线验签。
-> 边界：加密 / 签名文件需**全层驻留**（`VLLM_VQF_STREAM` 会对加密 VQF 显式拒绝）；
-> 转换的 `--stream` 路径暂不支持加密 / 签名（去掉 `--stream` 走全量路径即可）。
+> 边界：加密 / 签名文件需**全层驻留**（`VLLM_VQF_STREAM` 会对加密 VQF 显式拒绝）。
+> 全量路径与 `--stream` 路径均支持加密 / 签名；明文下二者产物**逐字节一致**（已 sha256 对拍）。
 
 ## 模型与复现
 
@@ -280,8 +280,8 @@ NPU 加速（可选）：默认后端为**零第三方依赖直驱**（自研写
   只改 `top_k` / `thinking` 也必须改摘要。
 - **转换工具支持加密 / 签名产出**：`vqf_convert/` 设 `VLLM_VQF_KEY` 即输出 VQF-Enc 加密
   文件（SM4-CTR + HMAC-SM3），设 `VLLM_VQF_SIGN_PRIV` 即内嵌 SM2 供应链签名，二者可叠加；
-  引擎侧加载日志实测 `decrypted (SM4-CTR, HMAC-SM3 ok)` + `SM2 verify ok`，错口令 / 篡改
-  数据字节均被拒绝。
+  全量与 `--stream` 路径均可。引擎侧加载日志实测 `decrypted (SM4-CTR, HMAC-SM3 ok)` +
+  `SM2 verify ok`，错口令 / 篡改数据字节均被拒绝。
 - **VQF 离线补签口径修复**：离线签名工具先置 `VQF_FLAG_SIGNED` 再算摘要（与写侧
   口径一致），修复补签后永远 digest mismatch 的问题。
 - **Debug 构建修复**：`CMAKE_C_FLAGS_DEBUG` 补 `-march`，避免 NEON dotprod 内联
