@@ -328,7 +328,7 @@ a{color:var(--acc)}
   <div class="card">
     <h2><span data-en="Verifiable Inference (attest) ">可验证推理（attest）</span><span id="attBadge" class="badge" style="margin-left:6px">未知</span></h2>
     <div class="chkrow"><input type="checkbox" id="f_attest"><label for="f_attest"><span data-en="Per-response attestation (VLLM_ATTEST): every chat response carries an SM2-signed receipt binding the raw request bytes and the output text">逐响应出证 (VLLM_ATTEST)：每条对话响应附 SM2 签名凭证，绑定请求原文与输出原文</span><span class="ptag" data-en="SM2-SM3">SM2-SM3</span></label></div>
-    <label class="fld"><span class="t" data-en="Key / work directory (VLLM_ATTEST_DIR; default = engine cwd, key pair auto-generated on first start)">密钥 / 工作目录 (VLLM_ATTEST_DIR；缺省=引擎工作目录，首次启动自动生成密钥对)</span><input type="text" id="f_attest_dir" placeholder="."></label>
+    <label class="fld"><span class="t" data-en="Key / work directory (VLLM_ATTEST_DIR; default = engine cwd; key pair auto-generated on first start. Must be on a filesystem with POSIX permissions, e.g. ext4/f2fs — on vfat/exfat chmod is a no-op and the private key becomes world-readable, with a WARN logged at startup)">密钥 / 工作目录 (VLLM_ATTEST_DIR；缺省=引擎工作目录，首次启动自动生成密钥对；须放在支持 POSIX 权限的文件系统上（ext4/f2fs 等）——vfat/exfat 上 chmod 不生效，私钥会变为世界可读，启动日志打印 WARN)</span><input type="text" id="f_attest_dir" placeholder="."></label>
     <div class="sec" data-en="Device public key (128 hex, safe to publish)">设备公钥（128 hex，可对外发布）</div>
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
       <code id="attPub" style="word-break:break-all;font-size:11px;flex:1;min-width:240px">-</code>

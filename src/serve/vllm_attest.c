@@ -7,6 +7,8 @@
  *   - 摘要结构见 vllm_attest.h：可被验证方用公钥离线复算校验。
  *   - 设备密钥对：目录（VLLM_ATTEST_DIR，默认 "."）下 vllm_attest.priv
  *     （64 hex，0600）/ vllm_attest.pub（128 hex）。缺失则自动生成。
+ *     该目录必须位于支持 POSIX 权限的文件系统（ext4/f2fs 等）：vfat/exfat
+ *     上 chmod 不生效，私钥会变成世界可读 —— 启动日志会打印 WARN 指明。
  *   - SM2 可辨别标识 ID = "VLLM-ATTEST-1"（验证方必须一致）。
  * ================================================================ */
 /* 注意：vllm_server.h 须先于 vllm_attest.h（后者原型使用 VLLMServerCtx）。 */
@@ -174,14 +176,48 @@ static int vatt_key_paths(char *privp, size_t pcap, char *pubp, size_t ucap) {
     return 0;
 }
 
+/* 私钥文件的实际权限位；返回 -1 = 该平台无 POSIX 权限语义（Windows 的
+ * chmod 只切换只读属性，"0600 级保护"由目录 ACL 继承提供，不做回读校验，
+ * 以免在不适用的平台上给出不实结论）。 */
+static int vatt_file_mode(const char *path) {
+#ifdef _WIN32
+    (void)path;
+    return -1;
+#else
+    struct stat st;
+    if (stat(path, &st) != 0) return -1;
+    return (int)(st.st_mode & 0777);
+#endif
+}
+
+/* 私钥必须是“仅属主可读写”。密钥目录若落在不支持 POSIX 权限的文件系统
+ * （vfat/exfat、无权限映射的挂载）上，chmod 会静默失效、私钥变成 0644/0755
+ * 世界可读 —— 此时必须显式告警，否则“私钥不出设备”只剩形式。
+ * Windows 上 vatt_file_mode 返回 -1（无 POSIX 权限语义），本函数自动跳过。 */
+static void vatt_perm_warn(const char *path, const char *why) {
+    int m = vatt_file_mode(path);
+    if (m < 0 || ((m & 0077) == 0)) return;
+    fprintf(stderr,
+            "[ATTEST] WARN: 私钥 %s 权限为 %04o（%s），同机其它用户可读。\n"
+            "[ATTEST] WARN: VLLM_ATTEST_DIR 须放在支持 POSIX 权限的文件系统"
+            "（ext4/f2fs 等）上；vfat/exfat 上 chmod 不生效。\n",
+            path, m, why);
+    fflush(stderr);
+}
+
+/* 写入并尽力收紧到 0600。
+ * 返回 0 = 已写入且权限确为 0600；1 = 已写入但无法确认收紧（该文件系统不支持
+ * POSIX 权限，或平台无此语义 —— 调用方据此告警）；-1 = 写入失败。 */
 static int vatt_write_restrict(const char *path, const char *data) {
     FILE *f = fopen(path, "wb");
     if (!f) return -1;
     size_t n = strlen(data);
     int ok = fwrite(data, 1, n, f) == n;
     fclose(f);
-    if (ok) chmod(path, 0600);
-    return ok ? 0 : -1;
+    if (!ok) return -1;
+    if (chmod(path, 0600) != 0) return 1;
+    int m = vatt_file_mode(path);
+    return (m < 0 || ((m & 0077) != 0)) ? 1 : 0;
 }
 
 /* 自动生成设备密钥对（私钥由内核 CSPRNG 提供；超范围重试）。 */
@@ -198,16 +234,23 @@ static int vatt_keygen(void) {
             /* 已存在则不改写（防覆盖线上密钥）。 */
             struct stat st;
             if (stat(privp, &st) == 0 || stat(pubp, &st) == 0) return -1;
-            if (vatt_write_restrict(privp, priv_hex) != 0) return -1;
-            if (vatt_write_restrict(pubp, pub_hex) != 0) return -1;
+            int rp = vatt_write_restrict(privp, priv_hex);
+            int up = vatt_write_restrict(pubp, pub_hex);
+            if (rp < 0 || up < 0) return -1;
             memcpy(g_priv, priv, 32);
             memcpy(g_pub, pub, 64);
             strcpy(g_pub_hex, pub_hex);
             g_key_ok = 1;
+            int pm = vatt_file_mode(privp);
             if (getenv("VLLM_ATTEST_LOG")) {
-                fprintf(stderr, "[ATTEST] keygen: %s (0600), pub=%s\n",
-                        privp, g_pub_hex);
+                if (pm < 0)
+                    fprintf(stderr, "[ATTEST] keygen: %s (mode=n/a), pub=%s\n",
+                            privp, g_pub_hex);
+                else
+                    fprintf(stderr, "[ATTEST] keygen: %s (mode=%04o), pub=%s\n",
+                            privp, pm, g_pub_hex);
             }
+            if (rp > 0) vatt_perm_warn(privp, "chmod 0600 未生效");
             return 0;
         }
     }
@@ -241,6 +284,7 @@ static int vatt_keyload(void) {
     memcpy(g_pub, pub, 64);
     strcpy(g_pub_hex, pub_hex);
     g_key_ok = 1;
+    vatt_perm_warn(privp, "既有密钥文件权限过宽");
     return 0;
 }
 
