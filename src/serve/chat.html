@@ -18,6 +18,20 @@ header h1{font-size:15px;margin:0;font-weight:600}
 .badge.ok{color:var(--ok);border-color:var(--ok)}
 .badge.stop{color:#7a8ba0}
 .badge.warn{color:var(--warn);border-color:var(--warn)}
+/* ---------- 可验证推理（attest）凭证 UI ---------- */
+.attbar{margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:11px}
+.attbtn{background:transparent;border:1px solid var(--ok);color:var(--ok);border-radius:8px;
+        padding:2px 8px;font:inherit;font-size:11px;cursor:pointer}
+.attbtn:hover{background:rgba(62,207,142,.12)}
+.attbtn.off{border-color:var(--tx2);color:var(--tx2)}
+.attpanel{margin-top:8px;border:1px solid var(--bd);border-radius:8px;padding:9px 11px;
+          background:rgba(0,0,0,.18);font-size:11px;line-height:1.65}
+.attpanel .row{margin:2px 0}
+.attpanel code{word-break:break-all;font-size:10.5px;color:var(--tx2)}
+.attpanel .ok{color:var(--ok)}
+.attpanel .bad{color:var(--bad)}
+.attpanel .mut{color:var(--tx2)}
+.attpanel button{margin-top:6px;margin-right:6px}
 header select.ctxsel{background:var(--panel2);border:1px solid var(--bd);color:var(--tx);border-radius:6px;padding:6px 8px;font:inherit;font-size:12px;cursor:pointer}
 header select.ctxsel:hover{border-color:var(--acc)}
 header select.ctxsel:focus{outline:none;border-color:var(--acc)}
@@ -85,6 +99,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
 <header>
   <h1 data-en="vLLM-Kestrel Inference Client">vLLM-Kestrel 推理客户端</h1>
   <span id="engBadge" class="badge">引擎: 未知</span>
+  <span id="attBadge" class="badge">🔏 可验证: 未知</span>
   <span style="flex:1"></span>
   <button id="btn_settings" class="toolbtn" title="推理参数设置" data-en-title="Inference settings" data-en="⚙ Settings">⚙ 设置</button>
   <button id="btn_perf" class="toolbtn" title="性能指标历史" data-en-title="Performance history" data-en="📊 Perf">📊 性能</button>
@@ -180,10 +195,15 @@ function refreshAfterLang(){
   renderPerfHistory();
   renderAttachments();
   refreshStatus();
+  renderAttBadge();
+  rerenderAttestAll();
 }
 const $ = id => document.getElementById(id);
 let history = [];        /* OpenAI-format messages (for multi-turn) */
 let historyTokens = null; /* 引擎回传的完整历史 token 序列（下轮 context_tokens 复用） */
+let curAtt = null;        /* 本轮 attest 采集：{body,out,proof}（请求/输出原文 + 凭证） */
+let lastAttInfo = null;   /* GET /v1/attest 最近一次结果（启用态 + 设备公钥） */
+let attPub = null;        /* 设备公钥 hex（浏览器内 SM2 验签用，公开信息） */
 let attachments = [];    /* {kind:'image', url} | {kind:'video', frames:[url...]} */
 let streaming = false;
 let genCount = 0;        /* tokens received in the current stream (progress) */
@@ -226,7 +246,7 @@ function addMsg(role, parts){
   box.className = "msg " + (role === "user" ? "user" : "ai");
   const meta = document.createElement("div");
   meta.className = "meta";
-  meta.textContent = role === "user" ? T("你","You") : "vllm-kestrel";
+  meta.textContent = role === "user" ? T("你","You") : "vllm-shs";
   box.appendChild(meta);
   const body = document.createElement("div");
   body.className = "body";
@@ -455,15 +475,19 @@ async function send(){
 
   const aiBody = addMsg("assistant", [{type:"text", text:""}]);
   const aiText = aiBody.querySelector("div");
+  /* 可验证推理（attest）：保存本轮「请求原文」与「输出原文」，两者是复算
+   * body_sha / digest 的必要输入（必须与引擎实际收到/产出的字节一致）。 */
+  const rawBody = JSON.stringify(bodyObj);
+  curAtt = { body: rawBody, out: "", proof: null };
   streaming = true;
   refreshStatus();
   const t0 = performance.now();
   try {
     if (bodyObj.stream){
-      await streamRequest(bodyObj, aiText, t0, (s)=>{ rawContent += s; });
+      await streamRequest(bodyObj, aiText, t0, (s)=>{ rawContent += s; curAtt.out += s; }, rawBody);
     } else {
       const r = await fetch("/v1/chat/completions", {
-        method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(bodyObj)
+        method:"POST", headers:{"Content-Type":"application/json"}, body: rawBody
       });
       const j = await r.json().catch(() => ({}));
       if (!r.ok){
@@ -476,10 +500,13 @@ async function send(){
       const content = (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || "";
       aiText.textContent = cleanDelta(content);
       rawContent = content;   /* 历史保存用原始文本（cleanDelta 仅用于显示） */
+      curAtt.out = content;
+      if (j.attest) curAtt.proof = j.attest;
       if (j.history_tokens) historyTokens = j.history_tokens;
       if (j.metrics) showMetrics(j.metrics);
       else showMetricsFallback(t0);
     }
+    if (curAtt.proof) renderAttest(aiBody, curAtt);
     history.push({role:"assistant", content: rawContent || aiText.textContent});
   } catch (e) {
     if (e.name !== "AbortError" && !aiText.textContent) aiText.textContent = T("请求失败: ","Request failed: ") + e;
@@ -493,9 +520,10 @@ function showMetricsFallback(t0){
   const dt = performance.now() - t0;
   showMetrics({prompt_tokens:0, n_tokens:0, ttft_ms:dt, tpot_ms:0, total_ms:dt, prefill_ms:0, tok_s:0});
 }
-async function streamRequest(bodyObj, aiText, t0, onRaw){
+async function streamRequest(bodyObj, aiText, t0, onRaw, rawBody){
   const resp = await fetch("/v1/chat/completions", {
-    method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(bodyObj)
+    method:"POST", headers:{"Content-Type":"application/json"},
+    body: rawBody || JSON.stringify(bodyObj)
   });
   if (!resp.ok){
     const j = await resp.json().catch(() => ({}));
@@ -547,6 +575,11 @@ function parseSSE(ev, aiText, onRaw){
     historyTokens = j.tokens;
     return;
   }
+  /* 可验证推理凭证：随流末尾独立事件下发（send() 收流后统一渲染） */
+  if (j.object === "chat.completion.attest" && j.attest){
+    if (curAtt) curAtt.proof = j.attest;
+    return;
+  }
   const c = j.choices && j.choices[0];
   if (c && c.delta && typeof c.delta.content === "string"){
     aiText.textContent += cleanDelta(c.delta.content);
@@ -554,6 +587,258 @@ function parseSSE(ev, aiText, onRaw){
     genCount++;
     showProgress(genCount, performance.now() - streamT0);
   }
+}
+
+/* ============ 可验证推理（attest）浏览器内自验 ============
+ * 与设备端（src/serve/vllm_attest.c）及离线脚本（tools/verify_attest.py）用同一套
+ * 帧规范复算，零第三方依赖：
+ *   body_sha = SM3(请求体原始字节)
+ *   digest   = SM3( magic || F(model_fp) || F(model) || F(device) || F(user) ||
+ *                   F(params) || F(prompt_tokens) || F(n_tokens) || F(finish) ||
+ *                   F(ts) || F(body_sha) || frame(输出文本原始字节) )
+ *   其中 F(x)=u32be(len(x))||x，magic 由 schema 决定（3→"VLLM-AT-3"）。
+ * 结论 = SM2(digest) 验签通过 且 digest 与复算一致 且 body_sha 一致。
+ * 注意：面板内“验证”按钮的复算结果仅用于即时自检；权威复验以导出的
+ * proof/request/output 三件套 + 设备公钥跑 verify_attest.py 为准。 */
+
+/* ---------- 字节工具 ---------- */
+function _utf8(s){ return new TextEncoder().encode(s); }
+function _hex(bytes){ let h = ""; for (let i = 0; i < bytes.length; i++) h += (bytes[i] < 16 ? "0" : "") + bytes[i].toString(16); return h; }
+function _unhex(h){ const n = h.length >> 1, o = new Uint8Array(n); for (let i = 0; i < n; i++) o[i] = parseInt(h.substr(i * 2, 2), 16); return o; }
+function _cat(list){ let n = 0; for (const a of list) n += a.length; const o = new Uint8Array(n); let p = 0; for (const a of list) { o.set(a, p); p += a.length; } return o; }
+function _u32be(n){ const b = new Uint8Array(4); b[0] = (n >>> 24) & 255; b[1] = (n >>> 16) & 255; b[2] = (n >>> 8) & 255; b[3] = n & 255; return b; }
+function _u16be(n){ return new Uint8Array([(n >> 8) & 255, n & 255]); }
+function _big32(x){ const b = new Uint8Array(32); let v = x; for (let i = 31; i >= 0; i--) { b[i] = Number(v & 255n); v >>= 8n; } return b; }
+
+/* ---------- SM3 (GB/T 32905-2016)，与 src/common/vllm_crypto.c 同源 ---------- */
+const _SM3_IV = [0x7380166f, 0x4914b2b9, 0x172442d7, 0xda8a0600, 0xa96f30bc, 0x163138aa, 0xe38dee4d, 0xb0fb0e4e];
+function _rotl32(x, n){ n &= 31; return ((x << n) | (x >>> (32 - n))) >>> 0; }
+function _sm3p0(x){ return (x ^ _rotl32(x, 9) ^ _rotl32(x, 17)) >>> 0; }
+function _sm3p1(x){ return (x ^ _rotl32(x, 15) ^ _rotl32(x, 23)) >>> 0; }
+function _sm3Compress(s, block){
+  const w = new Array(68);
+  for (let i = 0; i < 16; i++)
+    w[i] = ((block[i * 4] << 24) | (block[i * 4 + 1] << 16) | (block[i * 4 + 2] << 8) | block[i * 4 + 3]) >>> 0;
+  for (let j = 16; j < 68; j++)
+    w[j] = (_sm3p1((w[j - 16] ^ w[j - 9] ^ _rotl32(w[j - 3], 15)) >>> 0) ^ _rotl32(w[j - 13], 7) ^ w[j - 6]) >>> 0;
+  const wp = new Array(64);
+  for (let j = 0; j < 64; j++) wp[j] = (w[j] ^ w[j + 4]) >>> 0;
+  let a = s[0], b = s[1], c = s[2], d = s[3], e = s[4], f = s[5], g = s[6], h = s[7];
+  for (let j = 0; j < 64; j++){
+    const tj = j < 16 ? 0x79cc4519 : 0x7a879d8a;
+    const ss1 = _rotl32((_rotl32(a, 12) + e + _rotl32(tj, j)) >>> 0, 7);
+    const ss2 = (ss1 ^ _rotl32(a, 12)) >>> 0;
+    const ff = j < 16 ? (a ^ b ^ c) >>> 0 : ((a & b) | (a & c) | (b & c)) >>> 0;
+    const gg = j < 16 ? (e ^ f ^ g) >>> 0 : ((e & f) | ((~e) & g)) >>> 0;
+    const tt1 = (ff + d + ss2 + wp[j]) >>> 0;
+    const tt2 = (gg + h + ss1 + w[j]) >>> 0;
+    d = c; c = _rotl32(b, 9); b = a; a = tt1;
+    h = g; g = _rotl32(f, 19); f = e; e = _sm3p0(tt2);
+  }
+  s[0] = (s[0] ^ a) >>> 0; s[1] = (s[1] ^ b) >>> 0; s[2] = (s[2] ^ c) >>> 0; s[3] = (s[3] ^ d) >>> 0;
+  s[4] = (s[4] ^ e) >>> 0; s[5] = (s[5] ^ f) >>> 0; s[6] = (s[6] ^ g) >>> 0; s[7] = (s[7] ^ h) >>> 0;
+}
+function sm3(bytes){
+  const s = _SM3_IV.slice();
+  const n = bytes.length;
+  const total = (((n + 9 + 63) >> 6) << 6);
+  const m = new Uint8Array(total);
+  m.set(bytes, 0);
+  m[n] = 0x80;
+  const bits = n * 8;
+  const hi = Math.floor(bits / 4294967296), lo = bits % 4294967296;
+  m[total - 8] = (hi >>> 24) & 255; m[total - 7] = (hi >>> 16) & 255; m[total - 6] = (hi >>> 8) & 255; m[total - 5] = hi & 255;
+  m[total - 4] = (lo >>> 24) & 255; m[total - 3] = (lo >>> 16) & 255; m[total - 2] = (lo >>> 8) & 255; m[total - 1] = lo & 255;
+  for (let off = 0; off < total; off += 64) _sm3Compress(s, m.subarray(off, off + 64));
+  const out = new Uint8Array(32);
+  for (let i = 0; i < 8; i++){
+    out[i * 4] = (s[i] >>> 24) & 255; out[i * 4 + 1] = (s[i] >>> 16) & 255;
+    out[i * 4 + 2] = (s[i] >>> 8) & 255; out[i * 4 + 3] = s[i] & 255;
+  }
+  return out;
+}
+
+/* ---------- SM2 验签 (GM/T 0003.2)，与 tools/verify_attest.py 同参数 ---------- */
+const _P  = 0xFFFFFFFEFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF00000000FFFFFFFFFFFFFFFFn;
+const _A  = 0xFFFFFFFEFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF00000000FFFFFFFFFFFFFFFCn;
+const _B  = 0x28E9FA9E9D9F5E344D5A9E4BCF6509A7F39789F515AB8F92DDBCBD414D940E93n;
+const _N  = 0xFFFFFFFEFFFFFFFFFFFFFFFFFFFFFFFF7203DF6B21C6052B53BBF40939D54123n;
+const _GX = 0x32C4AE2C1F1981195F9904466A39C9948FE30BBFF2660BE1715A4589334C74C7n;
+const _GY = 0xBC3736A2F4F6779C59BDCEE36B692153D0A9877CC62A474002DF32E52139F0A0n;
+function _modinv(x){
+  let r = 1n, b = ((x % _P) + _P) % _P, e = _P - 2n;
+  while (e > 0n){ if (e & 1n) r = r * b % _P; b = b * b % _P; e >>= 1n; }
+  return r;
+}
+function _ecAdd(p1, p2){
+  if (!p1) return p2;
+  if (!p2) return p1;
+  const x1 = p1[0], y1 = p1[1], x2 = p2[0], y2 = p2[1];
+  let lam;
+  if (x1 === x2){
+    if (((y1 + y2) % _P) === 0n) return null;
+    lam = (3n * x1 * x1 + _A) * _modinv(2n * y1) % _P;
+  } else {
+    lam = (y2 - y1) * _modinv(((x2 - x1) % _P + _P) % _P) % _P;
+  }
+  const x3 = (((lam * lam - x1 - x2) % _P) + _P) % _P;
+  const y3 = (((lam * (x1 - x3) - y1) % _P) + _P) % _P;
+  return [x3, y3];
+}
+function _ecMul(k, pt){
+  k = ((k % _N) + _N) % _N;
+  let r = null;
+  while (k > 0n){ if (k & 1n) r = _ecAdd(r, pt); pt = _ecAdd(pt, pt); k >>= 1n; }
+  return r;
+}
+function sm2Verify(pubHex, digest, sigHex, userId){
+  if (!pubHex || pubHex.length !== 128 || !sigHex || sigHex.length !== 128) return false;
+  const r = BigInt("0x" + sigHex.slice(0, 64)), s = BigInt("0x" + sigHex.slice(64));
+  const qx = BigInt("0x" + pubHex.slice(0, 64)), qy = BigInt("0x" + pubHex.slice(64));
+  if (r < 1n || r >= _N || s < 1n || s >= _N) return false;
+  if (qx < 0n || qx >= _P || qy < 0n || qy >= _P) return false;
+  if ((qx * qx * qx + _A * qx + _B - qy * qy) % _P !== 0n) return false;
+  const uid = _utf8(userId || "VLLM-ATTEST-1");
+  const za = sm3(_cat([_u16be(uid.length * 8), uid, _big32(_A), _big32(_B), _big32(_GX), _big32(_GY), _big32(qx), _big32(qy)]));
+  const e = BigInt("0x" + _hex(sm3(_cat([za, digest]))));
+  const t = (r + s) % _N;
+  if (t === 0n) return false;
+  const pt = _ecAdd(_ecMul(s, [_GX, _GY]), _ecMul(t, [qx, qy]));
+  if (!pt) return false;
+  return (e + pt[0]) % _N === r;
+}
+
+/* ---------- digest 复算（schema=3 帧规范；schema=2 旧凭证按旧 magic） ---------- */
+function _frame(bytes){ return _cat([_u32be(bytes.length), bytes]); }
+function _fstr(s){ return _frame(_utf8(s == null ? "" : String(s))); }
+function recomputeDigest(pr, bodyShaHex, textBytes){
+  const magic = pr.schema === 3 ? "VLLM-AT-3" : pr.schema === 2 ? "VLLM-AT-2" : null;
+  if (!magic) return null;
+  return _hex(sm3(_cat([
+    _utf8(magic),
+    _fstr(pr.model_fp),
+    _fstr(pr.model || ""),
+    _fstr(pr.device || ""),
+    _fstr(pr.user || ""),
+    _fstr(pr.params || ""),
+    _fstr(pr.prompt_tokens == null ? 0 : pr.prompt_tokens),
+    _fstr(pr.n_tokens == null ? 0 : pr.n_tokens),
+    _fstr(pr.finish || "stop"),
+    _fstr(pr.ts == null ? 0 : pr.ts),
+    _fstr(bodyShaHex),
+    _frame(textBytes)
+  ])));
+}
+
+/* ---------- 设备状态徽标 / 公钥 ---------- */
+function renderAttBadge(){
+  const b = $("attBadge");
+  if (!b) return;
+  if (!lastAttInfo){ b.textContent = "🔏 " + T("可验证: 未知", "Attest: unknown"); b.className = "badge"; return; }
+  if (!lastAttInfo.active){ b.textContent = "🔏 " + T("可验证: 未启用", "Attest: off"); b.className = "badge stop"; return; }
+  b.textContent = "🔏 " + T("可验证: 已启用", "Attest: on");
+  b.className = "badge ok";
+}
+async function refreshAttest(){
+  try {
+    const r = await fetch("/v1/attest").then(x => x.ok ? x.json() : null);
+    lastAttInfo = r;
+    attPub = (r && r.pub) ? r.pub : null;
+  } catch (e) { lastAttInfo = null; attPub = null; }
+  renderAttBadge();
+}
+
+/* ---------- 单条回复的凭证面板 ---------- */
+function _attEsc(s){ return String(s == null ? "" : s).replace(/[&<>]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;"})[c]); }
+function attPanelRow(k, v){ return '<div class="row"><span class="mut">' + _attEsc(k) + '</span> <code>' + _attEsc(v) + '</code></div>'; }
+function fillAttBar(b){
+  const att = b.__att;
+  b.innerHTML = '<span class="badge ok">🔏 ' + T("可验证凭证", "Verifiable proof") + '</span>' +
+    '<button class="attbtn" data-act="v">' + T("验证", "Verify") + '</button>' +
+    '<button class="attbtn off" data-act="e">' + T("导出凭证", "Export proof") + '</button>';
+  b.querySelector('[data-act="v"]').onclick = function(){
+    const p = b.nextElementSibling;
+    const show = (p.style.display !== "block");
+    p.style.display = show ? "block" : "none";
+    if (show && !p.__res) runAttestVerify(p);
+  };
+  b.querySelector('[data-act="e"]').onclick = function(){ exportAttest(att); };
+}
+function fillAttestPanel(p){
+  const att = p.__att, pr = att.proof || {}, res = p.__res;
+  let h = "";
+  h += attPanelRow("schema", pr.schema);
+  h += attPanelRow("model", pr.model);
+  h += attPanelRow("model_fp", pr.model_fp);
+  h += attPanelRow("device", pr.device);
+  h += attPanelRow("user", pr.user);
+  h += attPanelRow("params", pr.params);
+  h += attPanelRow("prompt_tokens", pr.prompt_tokens);
+  h += attPanelRow("n_tokens", pr.n_tokens);
+  h += attPanelRow("finish", pr.finish);
+  h += attPanelRow("ts", pr.ts);
+  h += attPanelRow("body_sha", pr.body_sha);
+  h += attPanelRow("digest", pr.digest);
+  h += attPanelRow("signature", pr.signature);
+  const mark = (name, ok, extra) => '<div class="row"><span class="' + (ok ? "ok" : "bad") + '">' +
+    (ok ? "✔" : "✘") + " " + _attEsc(name) + ": " + (ok ? "PASS" : "FAIL") + '</span> <code>' + _attEsc(extra || "") + '</code></div>';
+  if (res){
+    h += mark(T("body_sha 复算", "body_sha recompute"), res.c1, att.body.length + T(" 字节（请求体）", " bytes (request body)"));
+    h += mark(T("digest 复算", "digest recompute"), res.c2, res.got ? res.got.slice(0, 32) + "…" : "-");
+    if (res.c3 === null)
+      h += '<div class="row mut">' + T("SM2 验签: 设备公钥不可用（未启用或 /v1/attest 取不到）", "SM2 verify: device public key unavailable (off or /v1/attest unreachable)") + '</div>';
+    else
+      h += mark(T("SM2 验签", "SM2 verify"), res.c3, (attPub || "").slice(0, 16) + "…");
+    h += '<div class="row"><span class="' + (res.all ? "ok" : "bad") + '"><b>' +
+      (res.all ? T("结论: 凭证有效", "Result: VALID") : T("结论: 凭证无效", "Result: INVALID")) + '</b></span></div>';
+  }
+  h += '<div class="row mut" style="margin-top:6px">' + T("离线复验（导出三件套 + 设备公钥）: ", "Offline verify (exported trio + device pubkey): ") +
+    '<code>python tools/verify_attest.py --proof proof.json --request request.json --output output.txt --pub vllm_attest.pub</code></div>';
+  p.innerHTML = h;
+}
+function runAttestVerify(p){
+  const att = p.__att, pr = att.proof || {};
+  const bodySha = _hex(sm3(_utf8(att.body)));
+  const c1 = (bodySha === pr.body_sha);
+  const got = recomputeDigest(pr, bodySha, _utf8(att.out));
+  const c2 = (got !== null && got === pr.digest);
+  let c3 = null;
+  try { c3 = (attPub && got) ? sm2Verify(attPub, _unhex(got), pr.signature, (lastAttInfo && lastAttInfo.user_id) || "VLLM-ATTEST-1") : null; }
+  catch (e) { c3 = false; }
+  p.__res = { bodySha, got, c1, c2, c3, all: !!(c1 && c2 && c3 === true) };
+  fillAttestPanel(p);
+}
+function downloadText(name, text){
+  const url = URL.createObjectURL(new Blob([text], {type: "application/octet-stream"}));
+  const a = document.createElement("a");
+  a.href = url; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 3000);
+}
+function exportAttest(att){
+  const stamp = String((att.proof && att.proof.ts) || Date.now());
+  downloadText("proof_" + stamp + ".json", JSON.stringify(att.proof, null, 2));
+  downloadText("request_" + stamp + ".json", att.body);
+  downloadText("output_" + stamp + ".txt", att.out);
+  msgStatus(T("凭证已导出（proof/request/output），可用 tools/verify_attest.py 离线复验", "Proof exported (proof/request/output); verify offline with tools/verify_attest.py"), false);
+}
+function renderAttest(aiBody, att){
+  const snap = { body: att.body, out: att.out, proof: att.proof };
+  const bar = document.createElement("div");
+  bar.className = "attbar";
+  bar.__att = snap;
+  const panel = document.createElement("div");
+  panel.className = "attpanel";
+  panel.style.display = "none";
+  panel.__att = snap;
+  fillAttBar(bar);
+  fillAttestPanel(panel);
+  aiBody.appendChild(bar);
+  aiBody.appendChild(panel);
+}
+function rerenderAttestAll(){
+  document.querySelectorAll(".attbar").forEach(b => { if (b.__att) fillAttBar(b); });
+  document.querySelectorAll(".attpanel").forEach(p => { if (p.__att) fillAttestPanel(p); });
 }
 
 /* Rendering-layer cleanup for residual artifacts:
@@ -607,7 +892,9 @@ $("perf").addEventListener("click", e => { if (e.target === $("perf")) $("perf")
 $("langBtn").onclick = function(){ setLang(LANG === "en" ? "zh" : "en"); refreshAfterLang(); };
 applyLang();
 refreshStatus();
+refreshAttest();
 setInterval(refreshStatus, 5000);
+setInterval(refreshAttest, 10000);
 setInterval(() => { $("clock").textContent = new Date().toLocaleTimeString(); }, 1000);
 </script>
 </body>

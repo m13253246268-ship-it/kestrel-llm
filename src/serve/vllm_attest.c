@@ -28,10 +28,10 @@
 #include <pthread.h>   /* batch 多 worker 并发出证互斥 */
 
 /* SM2 用户可辨别标识（ZA 计算用；验证方需使用相同 ID）。 */
-static const uint8_t VATT_ID[] = "VLLM-ATTEST-1";
+static const uint8_t VATT_ID[] = VATT_USER_ID;
 #define VATT_ID_LEN (sizeof(VATT_ID) - 1)
 
-static const char VATT_MAGIC[] = "VLLM-AT-3";
+static const char VATT_MAGIC[] = VATT_MAGIC_V3;
 
 /* 出证互斥：vatt_digest/vatt_sign 使用静态缓冲，连续批处理（--batch-max≥2）
  * 下多个 HTTP worker 会在各自线程同时出证，必须串行化。 */
@@ -553,4 +553,11 @@ int vatt_init(VLLMServerCtx *ctx) {
 
 int vatt_active(void) {
     return g_ctx && g_ctx->attest_on && g_key_ok && g_ctx->attest_fp[0];
+}
+
+int vatt_pub_hex(char *out, size_t cap) {
+    if (!out || cap < sizeof(g_pub_hex)) return 0;
+    if (!g_key_ok) { out[0] = '\0'; return 0; }
+    memcpy(out, g_pub_hex, sizeof(g_pub_hex));
+    return 1;
 }

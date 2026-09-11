@@ -4,10 +4,10 @@
 
 #include <stddef.h>
 
-/* embedded admin.html (91534 bytes) */
+/* embedded admin.html (96112 bytes) */
 const char *embedded_admin_html(size_t *len);
 
-/* embedded chat.html (30786 bytes) */
+/* embedded chat.html (45952 bytes) */
 const char *embedded_chat_html(size_t *len);
 
 #endif /* VLLM_EMBEDDED_WEB_H */

@@ -299,6 +299,9 @@ static VJson *build_config_json(const VLLMServerCtx *ctx) {
         /* P3 前缀复用门：--l3-evict 开启时 prefix-kv 会被静默打掉，必须靠这个
          * env 才能让 L3 驱逐与前缀复用共存。管理页有对应勾选框，故需回填。 */
         "VLLM_L3_PREFIX_REUSE",
+        /* 可验证推理开关（管理页有勾选框，需回填）：VLLM_ATTEST=1 时引擎对
+         * 每条响应附 SM2 出证凭证；VLLM_ATTEST_DIR 为其密钥/工作目录。 */
+        "VLLM_ATTEST", "VLLM_ATTEST_DIR",
         NULL
     };
     for (int i = 0; opt_envs[i]; i++) {

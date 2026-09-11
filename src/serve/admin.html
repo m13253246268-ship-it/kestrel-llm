@@ -324,6 +324,25 @@ a{color:var(--acc)}
     </div>
   </div>
 
+  <!-- 可验证推理（attest） -->
+  <div class="card">
+    <h2><span data-en="Verifiable Inference (attest) ">可验证推理（attest）</span><span id="attBadge" class="badge" style="margin-left:6px">未知</span></h2>
+    <div class="chkrow"><input type="checkbox" id="f_attest"><label for="f_attest"><span data-en="Per-response attestation (VLLM_ATTEST): every chat response carries an SM2-signed receipt binding the raw request bytes and the output text">逐响应出证 (VLLM_ATTEST)：每条对话响应附 SM2 签名凭证，绑定请求原文与输出原文</span><span class="ptag" data-en="SM2-SM3">SM2-SM3</span></label></div>
+    <label class="fld"><span class="t" data-en="Key / work directory (VLLM_ATTEST_DIR; default = engine cwd, key pair auto-generated on first start)">密钥 / 工作目录 (VLLM_ATTEST_DIR；缺省=引擎工作目录，首次启动自动生成密钥对)</span><input type="text" id="f_attest_dir" placeholder="."></label>
+    <div class="sec" data-en="Device public key (128 hex, safe to publish)">设备公钥（128 hex，可对外发布）</div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <code id="attPub" style="word-break:break-all;font-size:11px;flex:1;min-width:240px">-</code>
+      <button id="btn_attcopy" data-en="Copy">复制</button>
+      <button id="btn_attcheck" data-en="Refresh">刷新</button>
+    </div>
+    <div class="msg" id="attmsg"></div>
+    <div style="font-size:11px;color:var(--tx2);line-height:1.7" data-en-html="Verification: the chat page (<b>/chat</b>) marks every reply with a verifiable badge — click it to recompute SM3(request bytes) + SM3(digest) and verify the SM2 signature in-browser, or export proof.json / request.json / output.txt and re-verify offline with <b>tools/verify_attest.py</b>. The switch takes effect after saving the config and restarting the engine.">
+      验证方式：对话页（<b>/chat</b>）每条回复带「可验证」徽标 —— 点开即在浏览器内复算
+      SM3(请求原文) + SM3(摘要) 并验证 SM2 签名；也可导出 proof.json / request.json / output.txt，
+      用 <b>tools/verify_attest.py</b> 离线复验。开关需「保存配置」并重启引擎后生效。
+    </div>
+  </div>
+
   <!-- 配置与操作 -->
   <div class="card">
     <h2 data-en="Config Management">配置管理</h2>
@@ -678,6 +697,9 @@ function fillForm(c){
   $("f_vqf_stream").checked = vqs > 0;
   $("f_vqf_stream_keep").value = vqs > 0 ? String(vqs) : "1";
   $("f_vqf_key").value = ev.VLLM_VQF_KEY || "";
+  /* 可验证推理（attest）：开关 + 密钥/工作目录（首次启动自动生成密钥对） */
+  $("f_attest").checked = ev.VLLM_ATTEST === "1";
+  $("f_attest_dir").value = ev.VLLM_ATTEST_DIR || "";
   $("f_q8_8x8").checked = ev.VLLM_Q8_8X8 !== "0";
   $("f_q8_repack").checked = ev.VLLM_DISABLE_Q8_REPACK !== "1";
   $("f_q4_repack").checked = ev.VLLM_DISABLE_Q4_REPACK !== "1";
@@ -758,6 +780,10 @@ function collectEnv(){
   }
   const vk = $("f_vqf_key").value.trim();
   if (vk) ev.VLLM_VQF_KEY = vk;
+  /* 可验证推理：开启才写 VLLM_ATTEST（缺省=关，故取消勾选时留空即生效） */
+  if ($("f_attest").checked) ev.VLLM_ATTEST = "1";
+  const ad = $("f_attest_dir").value.trim();
+  if (ad) ev.VLLM_ATTEST_DIR = ad;
   return ev;
 }
 
@@ -1242,6 +1268,43 @@ function refreshNpuDrvTexts(){
   $("npudrvGrid").textContent = T("点击「检测驱动」查看内核 / 设备节点 / DRM 驱动状态。", "Click Check driver to view kernel / device node / DRM driver status.");
 }
 
+/* ---------- 可验证推理（attest） ---------- */
+let lastAttest = null;   /* 最近一次 /v1/attest 结果，用于切换语言时重绘 */
+function renderAttestInfo(r){
+  lastAttest = r;
+  const on = !!r.attest, act = !!r.active;
+  const has = !!(r.pub && r.pub.length === 128);
+  if (!on)       badgeT($("attBadge"), "未启用", "Disabled", "warn");
+  else if (act)  badgeT($("attBadge"), "已启用", "Enabled", "ok");
+  else           badgeT($("attBadge"), "已启用（模型未加载）", "Enabled (no model loaded)", "warn");
+  $("attPub").textContent = has ? r.pub
+    : T("(未生成：引擎未启用出证或密钥不可用)", "(not generated: attestation off or key unavailable)");
+}
+async function refreshAttest(){
+  try {
+    renderAttestInfo(await eng("/v1/attest"));
+  } catch (e) {
+    lastAttest = null;
+    badgeT($("attBadge"), "未知", "Unknown", "");
+    $("attPub").textContent = "-";
+  }
+}
+function copyAttPub(){
+  const t = ($("attPub").textContent || "").trim();
+  if (t.length !== 128){ msg($("attmsg"), T("没有可复制的公钥", "No public key to copy"), false); return; }
+  const done = () => msg($("attmsg"), T("设备公钥已复制", "Device public key copied"), true);
+  const fb = () => {
+    const ta = document.createElement("textarea");
+    ta.value = t; document.body.appendChild(ta); ta.select();
+    try { document.execCommand("copy"); done(); }
+    catch (e) { msg($("attmsg"), T("复制失败，请手工选中", "Copy failed; select it manually"), false); }
+    document.body.removeChild(ta);
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText)
+    navigator.clipboard.writeText(t).then(done).catch(fb);
+  else fb();
+}
+
 /* ---------- init ---------- */
 $("btn_loadcfg").onclick = loadConfig;
 $("btn_savecfg").onclick = saveConfig;
@@ -1266,6 +1329,9 @@ $("btn_res_l0").onclick = () => opResSet(0);
 $("btn_selftest").onclick = opSelftest;
 $("btn_npudrv_check").onclick = npuDrvCheck;
 $("btn_npudrv_install").onclick = npuDrvInstall;
+$("btn_attcopy").onclick = copyAttPub;
+$("btn_attcheck").onclick = refreshAttest;
+refreshAttest();
 $("btn_logpause").onclick = () => {
   logPaused = !logPaused;
   refreshPauseBtn();
@@ -1277,6 +1343,7 @@ $("langBtn").onclick = function(){
   setLang(LANG === "en" ? "zh" : "en");
   renderCombos(); loadStatus(); refreshPauseBtn(); refreshNpuDrvTexts();
   refreshBadgeT($("cfgBadge"));   /* 配置徽标按当前语言重绘（不重读配置，避免覆盖未保存编辑） */
+  if (lastAttest) renderAttestInfo(lastAttest); else refreshBadgeT($("attBadge"));
   /* 设备下拉的选项文案含中英两名，需要重拉设备列表；只刷下拉、
    * 不调 fillForm 以免覆盖用户未保存的表单编辑。 */
   eng("/admin/api/config").then(function(r){ if (r && r.devices) fillDeviceSelect(r); }).catch(function(){});

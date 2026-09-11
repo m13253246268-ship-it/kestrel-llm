@@ -77,6 +77,17 @@ void vatt_body_digest(const void *body, size_t n, char hex[65]);
 /* 1 = 当前可出证（已启用 + 密钥就绪 + 模型指纹已固化）。 */
 int  vatt_active(void);
 
+/* 可验证推理的公开参数（供 GET /v1/attest 与管理页展示）：把设备公钥
+ * （128 hex + NUL）拷进 out。返回 1 = 密钥就绪（off 会被填 ""），0 = 缓冲区
+ * 太小或密钥不可用。公钥是公开信息，可安全下发；私钥始终留在设备。 */
+int  vatt_pub_hex(char *out, size_t cap);
+
+/* 验证方必须与设备侧一致的公开约定（写进 /v1/attest 便于离线复算）。 */
+#define VATT_ALGO     "SM2-SM3"
+#define VATT_SCHEMA   3
+#define VATT_USER_ID  "VLLM-ATTEST-1"
+#define VATT_MAGIC_V3 "VLLM-AT-3"
+
 /* 对一次请求转录出证：返回 malloc 的 JSON 对象字符串（含 schema/params/
  * body_sha/digest/signature 等全部字段）；未启用或失败返回 NULL。调用方用
  * vjson_parse 嵌入响应 JSON，或包装为 SSE 事件。 */

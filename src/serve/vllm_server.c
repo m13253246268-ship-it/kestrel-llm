@@ -3251,6 +3251,32 @@ static void handle_health(VLLMServerCtx *ctx, VHttpResponse *resp) {
     resp->body_owned = body;
 }
 
+/* ---------- /v1/attest (可验证推理的公开参数) ----------
+ * 下发设备公钥 + 算法/schema/SM2 用户 ID，供验证方（对话页的浏览器内自验、
+ * tools/verify_attest.py）离线复算与验签；不含任何机密（私钥永不离开设备）。*/
+static void handle_attest_info(VLLMServerCtx *ctx, VHttpResponse *resp) {
+    char *body = (char *)malloc(1024);
+    if (!body) { json_error(resp, 500, "Out of memory"); return; }
+    char pub[129];
+    int have_pub = vatt_pub_hex(pub, sizeof(pub));
+    VJson *root = vjson_new_object();
+    vjson_obj_set(root, "attest", vjson_new_bool(ctx->attest_on ? 1 : 0));
+    vjson_obj_set(root, "active", vjson_new_bool(vatt_active() ? 1 : 0));
+    vjson_obj_set(root, "pub", vjson_new_string(have_pub ? pub : ""));
+    vjson_obj_set(root, "algo", vjson_new_string(VATT_ALGO));
+    vjson_obj_set(root, "schema", vjson_new_number((double)VATT_SCHEMA));
+    vjson_obj_set(root, "user_id", vjson_new_string(VATT_USER_ID));
+    vjson_obj_set(root, "dir",
+                  vjson_new_string(ctx->attest_dir[0] ? ctx->attest_dir : "."));
+    size_t n = vjson_serialize(root, body, 1024);
+    vjson_free(root);
+    resp->status = 200;
+    resp->content_type = "application/json";
+    resp->body = body;
+    resp->body_len = n;
+    resp->body_owned = body;
+}
+
 /* ---------- /chat/ (inference client page) ---------- */
 
 static const char *chat_html_path(void) {
@@ -3355,6 +3381,8 @@ static void server_handler(const VHttpRequest *req, VHttpResponse *resp,
         handle_models(ctx, resp);
     } else if (strcmp(req->method, "GET") == 0 && strcmp(req->path, "/health") == 0) {
         handle_health(ctx, resp);
+    } else if (strcmp(req->method, "GET") == 0 && strcmp(req->path, "/v1/attest") == 0) {
+        handle_attest_info(ctx, resp);
     } else if (strcmp(req->method, "POST") == 0 &&
                strcmp(req->path, "/v1/chat/completions") == 0) {
         handle_chat(ctx, req, resp, conn);
