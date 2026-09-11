@@ -37,6 +37,9 @@ typedef struct {
     const float *const *ds_features; int n_ds;
     /* generation */
     double temperature, top_p, min_p;
+    int top_k;                  /* top-k 截断（0 = 关闭）；Qwen3 thinking 档建议 20 */
+    int thinking;               /* enable_thinking（0/1）；prompt 由调用方按此渲染，
+                                 * 仅用于出证时把实际档位绑进摘要 */
     int max_tokens, stream;
     VHttpConn *conn;            /* streaming output (stream=1); the caller
                                  * must have begun the SSE stream and written

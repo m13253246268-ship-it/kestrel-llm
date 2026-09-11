@@ -10,6 +10,10 @@
 #ifdef __linux__
 #include <sys/random.h>
 #endif
+#ifdef _WIN32
+#include <windows.h>
+#include <bcrypt.h>       /* BCryptGenRandom（CSPRNG）；构建需链接 -lbcrypt */
+#endif
 
 /* ================================================================
  * 通用小工具
@@ -695,9 +699,19 @@ int vc_secure_rand(uint8_t out[32]) {
         got += (size_t)r;
     }
     return 0;
+#elif defined(_WIN32)
+    /* Windows：BCryptGenRandom（内核 CSPRNG）。原本这里直接 return -1，
+     * 导致 x86/Windows 上出证与 VQF 签名一路被判为「密钥不可用」而静默
+     * 关闭；与 tools/vllm_vqf_sign.c 的兜底口径保持一致。 */
+    BCRYPT_ALG_HANDLE h = NULL;
+    if (BCryptOpenAlgorithmProvider(&h, BCRYPT_RNG_ALGORITHM, NULL, 0) != 0)
+        return -1;
+    NTSTATUS st = BCryptGenRandom(h, out, 32, 0);
+    BCryptCloseAlgorithmProvider(h, 0);
+    return st == 0 ? 0 : -1;
 #else
     (void)out;
-    return -1;   /* 非 Linux：签名侧需调用方自备 CSPRNG */
+    return -1;   /* 其他平台：签名侧需调用方自备 CSPRNG */
 #endif
 }
 

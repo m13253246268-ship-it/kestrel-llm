@@ -11,13 +11,18 @@ verify_attest.py - vllm_kestrel 可验证推理凭证（attest）一键离线验
         --pub vllm_attest.pub     # 设备公钥文件（128 hex，与请求目录同款）
         [--quiet]                 # 只输出 PASS/FAIL 摘要
 
-原理（schema=2，见 include/serve/vllm_attest.h）：
+原理（schema=3，见 include/serve/vllm_attest.h；兼容校验 schema=2 旧凭证）：
     body_sha = SM3(请求体原始字节)
-    digest   = SM3( VLLM-AT-2
+    digest   = SM3( VLLM-AT-3
                  || F(model_fp) || F(model_id) || F(device_id) || F(user)
                  || F(params) || F(n_prompt_tokens) || F(n_gen_tokens)
                  || F(finish) || F(ts) || F(body_sha) || F(输出文本) )
     其中 F(x) = u32be(len(x)) || x。
+    schema=3 与 schema=2 的帧布局完全相同，区别只在 params 字符串：
+    v2 = "t=%.4g,p=%.4g,m=%.4g,mt=%d"
+    v3 = "t=%.4g,p=%.4g,m=%.4g,k=%d,mt=%d,th=%d"（k=top_k，th=enable_thinking）。
+    本脚本按 proof 里的 magic 前缀（由 proof["schema"] 决定）复算；params 一律
+    取 proof 中的原串，故两种版本的凭证都能验。
     校验 = SM2(digest) 验签通过 且 digest 与复算一致 且 body_sha 一致。
 
 零第三方依赖：SM3 与 SM2 验签均为本文件内的纯 Python 实现（国密标准
@@ -168,18 +173,30 @@ def sm2_verify(pub_hex, digest: bytes, sig_hex: str, user_id: bytes = b"VLLM-ATT
 
 
 # ================================================================
-# digest 复算（schema=2 帧规范）
+# digest 复算（schema=3 帧规范；schema=2 旧凭证按旧 magic 复算）
 # ================================================================
 def frame(b):
     return struct.pack(">I", len(b)) + b
+
+
+def magic_for(schema):
+    """帧首 magic 前缀。schema=3 -> VLLM-AT-3；schema=2 -> VLLM-AT-2（旧凭证）。"""
+    if schema == 3:
+        return b"VLLM-AT-3"
+    if schema == 2:
+        return b"VLLM-AT-2"
+    return None
 
 
 def recompute_digest(proof, body_sha_hex, text_bytes):
     def f(s):
         return frame(s.encode("utf-8"))
 
+    magic = magic_for(proof.get("schema"))
+    if magic is None:
+        return None
     digest = sm3(
-        b"VLLM-AT-2"
+        magic
         + f(proof["model_fp"])
         + f(proof.get("model", ""))
         + f(proof.get("device", ""))
@@ -257,14 +274,16 @@ def main():
 
     chk("body_sha 复算", body_sha == proof.get("body_sha", ""),
         "(proof=%s req=%s)" % (proof.get("body_sha", "")[:16], body_sha[:16]))
-    chk("schema", proof.get("schema") == 2, "schema=%s" % proof.get("schema"))
+    chk("schema", proof.get("schema") in (2, 3),
+        "schema=%s (支持 2/3)" % proof.get("schema"))
 
     want = proof.get("digest", "")
     got = recompute_digest(proof, body_sha, out_bytes)
-    chk("digest 复算", got == want,
-        "(want=%s got=%s)" % (want[:16], got[:16]))
+    chk("digest 复算", got is not None and got == want,
+        "(want=%s got=%s)" % (want[:16], (got or "-")[:16]))
 
-    sig_ok = sm2_verify(pub_hex, bytes.fromhex(got), proof.get("signature", ""))
+    sig_ok = bool(got) and sm2_verify(pub_hex, bytes.fromhex(got),
+                                      proof.get("signature", ""))
     chk("SM2 验签", sig_ok, "(pub=%s...)" % pub_hex[:16])
 
     all_ok = all(c for _, c in checks)

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(vllm_kestrel C)
+project(vllm_kestrel VERSION 1.0.0 LANGUAGES C)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -34,7 +34,9 @@ endif()
 # ================================================================
 option(VLLM_STATIC "Build a fully static (zero .so dependency) binary" OFF)
 
-set(CMAKE_C_FLAGS_RELEASE "-O2 -mcpu=cortex-a76 -march=${VLLM_MARCH} -ffast-math -fopenmp -D_GNU_SOURCE")
+set(CMAKE_C_FLAGS_RELEASE "-O2 -mcpu=cortex-a76 -march=${VLLM_MARCH} -ffast-math -ffp-contract=off -fno-unsafe-math-optimizations -fopenmp -D_GNU_SOURCE")
+# Debug 也必须带 -march=${VLLM_MARCH}：否则 NEON dotprod (vdotq_s32) 内联编译失败
+# （2026-08-29 板端 ASan 构建实测；Release 档已含 -mcpu/-march，故只在 Debug 补）。
 set(CMAKE_C_FLAGS_DEBUG "-O0 -g -march=${VLLM_MARCH} -fopenmp -D_GNU_SOURCE")
 if(VLLM_STATIC)
     # glibc 全静态：libc.a/libm.a/libgomp.a 内联，pthread 已并入 glibc 2.35 libc.a。
@@ -67,7 +69,6 @@ set(VLLM_SOURCES
     src/serve/embedded_web.c
     src/model/vllm_safetensors.c
     src/model/vqf.c
-    src/model/vllm_gguf.c
     src/model/vllm_tokenizer_qwen.c
     src/model/vllm_vision.c
     src/model/vllm_media.c

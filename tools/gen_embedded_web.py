@@ -23,7 +23,6 @@ OUT_C = os.path.join(SRC, "embedded_web.c")
 FILES = [
     ("admin", "admin.html"),
     ("chat", "chat.html"),
-    ("convert", "convert.html"),
 ]
 
 

@@ -204,33 +204,10 @@ void tokenizer_free(Tokenizer *tok) {
     tok->vocab_size = 0;
 }
 
-void tokenizer_init_from_gguf(Tokenizer *tok, const GGUFModelConfig *cfg) {
-    if (!cfg->tok_strings || cfg->tok_count == 0) {
-        /* Fall back to built-in vocab */
-        tokenizer_init(tok);
-        return;
-    }
-
-    tok->vocab_size = cfg->tok_count;
-    tok->max_token_len = 0;
-    tok->bos_id = cfg->bos_id;
-    tok->eos_id = cfg->eos_id;
-    tok->tokens = malloc((size_t)cfg->tok_count * sizeof(char*));
-
-    for (int i = 0; i < cfg->tok_count; i++) {
-        tok->tokens[i] = strdup(cfg->tok_strings[i]);
-        int len = (int)strlen(cfg->tok_strings[i]);
-        if (len > tok->max_token_len) tok->max_token_len = len;
-    }
-    printf("[Tokenizer] Initialized %d tokens from GGUF (max_len=%d, bos=%d, eos=%d)\n",
-           cfg->tok_count, tok->max_token_len, tok->bos_id, tok->eos_id);
-}
-
 /**
  * Direct token decode: returns the string for a given token ID.
  * Used by weights_init for character-overlap embedding initialization.
  * Returns NULL if tok is NULL or id out of range.
- * Only works with the built-in tokenizer (not GGUF).
  */
 const char *tokenizer_decode_direct(int token_id) {
     /* Built-in vocabulary: only available after tokenizer_init() is called */

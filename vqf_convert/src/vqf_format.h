@@ -41,7 +41,7 @@
 
 /* SM2 签名用户标识 ID_A（Z_A 绑定，签名/验签双方必须一致） */
 #define VQF_SIG_ID_MAX    32
-#define VQF_SM2_ID        "vllm-kestrel-vqf"
+#define VQF_SM2_ID        "vllm-shs-vqf"
 
 /* 张量量化类型（qtype） */
 #define VQF_QT_F32     0x01
@@ -94,46 +94,7 @@ typedef struct {
     uint8_t  enc_iv[16];   /* VQF-Enc：SM4-CTR 初始计数器（VQF_FLAG_ENC 时有效） */
     uint8_t  enc_rsvd[16]; /* 保留 */
     VQFSig   sig;          /* SM2 签名块（VQF_FLAG_SIGNED 时有效） */
-} VQFHeader;               /* 448B，目录 entries 随后，共 4096B */
-
-/* ----------------------------------------------------------------
- * 兼容旧版 41 字段 VQFArch 头
- *
- * 历史成因：MoE 支持在 VQFArch 尾部追加 4 个 u32
- * （n_experts/moe_ffn/top_k/shared_experts），使 VQFArch 由 164B 增至 180B、
- * VQFHeader 由 432B 增至 448B；但 version 未同步区分（稠密仍写 VQF_VERSION=2），
- * 故同一 version=2 的稠密 VQF 存在两种头：旧 41 字段（VQFHeaderLegacy）与新
- * 45 字段（VQFHeader）。两者 arch 的前 41 字段偏移逐字节一致，且 sizeof 对齐到
- * 64B 后的目录偏移均为 448；仅 arch 之后的 data_offset/file_len/enc_iv/enc_rsvd/
- * sig 整体错位 16B（旧头 data_offset 在 184、file_len 在 192；新头在 200/208）。
- * 加载器按 (data_offset,file_len) 自洽性判定采用哪种布局（见 vqf.c），不能只靠
- * version 区分。
- * ---------------------------------------------------------------- */
-typedef struct {
-    uint32_t dim, n_layers, n_heads, n_kv_heads, head_dim, ffn_dim, vocab_size;
-    uint32_t max_seq_len;
-    float    rope_theta, norm_eps;
-    uint32_t bos_id, eos_id;
-    uint32_t has_q_norm, has_mrope, head_dim_full, kv_lora_rank;
-    uint32_t has_vision, vis_depth, vis_hidden, vis_heads, vis_ffn;
-    uint32_t vis_patch, vis_temporal, vis_merge, vis_out_dim, vis_in_chan;
-    uint32_t vis_max_pos, vis_ds_count, mrope_n_sec;
-    int32_t  vis_ds_idx[4], mrope_sections[4];
-    uint32_t vision_start_id, vision_end_id, image_token_id, video_token_id;
-} VQFArchLegacy;           /* 旧版 41 字段（无 MoE 尾），164B */
-
-typedef struct {
-    uint32_t magic;        /* VQF_MAGIC */
-    uint32_t version;      /* VQF_VERSION */
-    uint32_t flags;        /* VQF_FLAG_* */
-    uint32_t n_tensors;
-    VQFArchLegacy arch;    /* 41 字段（无 MoE 尾） */
-    uint64_t data_offset;  /* 旧头偏移 184（新头 200） */
-    uint64_t file_len;     /* 旧头偏移 192（新头 208） */
-    uint8_t  enc_iv[16];
-    uint8_t  enc_rsvd[16];
-    VQFSig   sig;
-} VQFHeaderLegacy;         /* 432B */
+} VQFHeader;               /* v2 约 432B，目录 entries 随后，共 4096B */
 
 typedef struct {
     char     name[32];     /* 内部张量名：q8_q / q4_gate / x8_o / token_embed ... */
@@ -149,11 +110,5 @@ typedef struct {
 _Static_assert(sizeof(VQFSig)   == 200, "VQFSig layout drift");
 _Static_assert(sizeof(VQFHeader) == 448, "VQFHeader layout drift (expect 448 after MoE fields)");
 _Static_assert(sizeof(VQFTensor) == 64,  "VQFTensor layout drift");
-/* 旧版头布局守卫：41 字段 arch=164B、头=432B；且与新头恰好差 16B（4×u32），
- * 保证旧头尾部字段（data_offset/file_len/enc_iv/sig）整体前移 16B 的假设成立。 */
-_Static_assert(sizeof(VQFArchLegacy)   == 164, "VQFArchLegacy layout drift (expect 41*4)");
-_Static_assert(sizeof(VQFHeaderLegacy) == 432, "VQFHeaderLegacy layout drift (expect 432)");
-_Static_assert(sizeof(VQFArch) - sizeof(VQFArchLegacy) == 16,
-               "VQFArch MoE tail drift (legacy/new offset shift must be 16B)");
 
 #endif /* VQF_FORMAT_H */

@@ -170,17 +170,22 @@ static int is_utf8_cont(unsigned char c) {
     return (c & 0xC0) == 0x80;
 }
 
+/* 在词表里找与 text 前缀相同、且长度不超过 max_len 的最长 token。
+ * max_len 用来把匹配限制在"下一个特殊 token 之前"，防止贪心长匹配把特殊
+ * token 的首字节吞掉（见 QWEN_SPECIAL_STR 上方注释）。 */
 static int find_longest_match_qwen(QwenTokenizer *tok,
-                                    const char *text, int text_len,
+                                    const char *text, int text_len, int max_len,
                                     int *match_len) {
     int best_id = -1;
     int best_len = 0;
+
+    if (max_len > text_len) max_len = text_len;
 
     /* Simple linear scan — could be optimized with trie */
     for (int i = 0; i < tok->vocab_size; i++) {
         int tlen = tok->str_lens[i];
         if (tlen == 0) continue;
-        if (tlen > text_len) continue;
+        if (tlen > max_len) continue;
         if (memcmp(tok->strings[i], text, (size_t)tlen) == 0) {
             if (tlen > best_len) {
                 best_id  = i;
@@ -191,6 +196,72 @@ static int find_longest_match_qwen(QwenTokenizer *tok,
 
     *match_len = best_len;
     return best_id;
+}
+
+/* ---- 特殊 token 最高优先级匹配 ----------------------------------------
+ * 本编码器是"逐位置取最长词表前缀"，不是真正的 BPE。当某个字符合成的二元
+ * token 恰好以 '<' 结尾时（词表里存在 ".<"(15757)、"。"+"<"(89393) 这类
+ * 条目），贪心匹配会把下一个特殊 token 的 '<' 一起吃掉，于是
+ * <|im_end|> 被切成 5 个普通 token（"|i"+"m"+"_end"+"|"+">"）而不是单个
+ * 151645。后果是 ChatML 模板被破坏：模型收到的是把 <|im_end|> 当纯文本的
+ * prompt（训练时从未见过），分布外 → 开头还算连贯、随后坍缩成重复。
+ * 因此在这些控制串上先做一次"整串精确匹配"，命中就直接出特殊 token id。
+ * 与 HF 分词器行为一致（encode('<|im_end|>', add_special_tokens=False)
+ * 同样返回 [151645]）。 */
+static const char *const QWEN_SPECIAL_STR[] = {
+    "<|im_start|>", "<|im_end|>", "<|endoftext|>",
+    "<|vision_start|>", "<|vision_end|>", "<|image_pad|>", "<|video_pad|>",
+    "<|object_ref_start|>", "<|object_ref_end|>",
+    "<|box_start|>", "<|box_end|>", "<|quad_start|>", "<|quad_end|>",
+    "<think>", "</think>",          /* Qwen3 思考段边界（151667 / 151668） */
+};
+#define QWEN_N_SPECIAL \
+    ((int)(sizeof(QWEN_SPECIAL_STR) / sizeof(QWEN_SPECIAL_STR[0])))
+
+/* 词表里整串精确等于 s 的 token id（长度相同且字节全同），找不到返回 -1。 */
+static int find_exact_token(const QwenTokenizer *tok, const char *s, int len) {
+    for (int i = 0; i < tok->vocab_size; i++) {
+        if (!tok->strings[i]) continue;
+        if (tok->str_lens[i] != len) continue;
+        if (memcmp(tok->strings[i], s, (size_t)len) == 0) return i;
+    }
+    return -1;
+}
+
+/* 惰性解析并缓存特殊 token 的 id（按 tokenizer 指针失效）。 */
+static int special_token_id(const QwenTokenizer *tok, int idx) {
+    static const QwenTokenizer *cached_tok = NULL;
+    static int cached_ids[QWEN_N_SPECIAL];
+    if (cached_tok != tok) {
+        for (int i = 0; i < QWEN_N_SPECIAL; i++)
+            cached_ids[i] = find_exact_token(tok, QWEN_SPECIAL_STR[i],
+                                             (int)strlen(QWEN_SPECIAL_STR[i]));
+        cached_tok = tok;
+    }
+    return cached_ids[idx];
+}
+
+/* 返回 rem 里"下一个特殊 token"的起始偏移（>0）；不存在则返回 rem_len。
+ * 编码时用这个上界截断普通 token 的最长匹配：否则像 "." + "<|im_end|>" 这种
+ * 位置，贪心匹配会先吃掉词表里的 ".<"（id 15757），使扫描指针跳过 '<'，
+ * 后面的特殊 token 就再也匹配不上了。 */
+static int special_start_after(const char *rem, int rem_len) {
+    const char *p = rem;
+    int left = rem_len;
+    while (left > 1) {
+        const char *lt = (const char *)memchr(p + 1, '<', (size_t)(left - 1));
+        if (!lt) break;
+        int k = (int)(lt - rem);
+        for (int i = 0; i < QWEN_N_SPECIAL; i++) {
+            int l = (int)strlen(QWEN_SPECIAL_STR[i]);
+            if (l <= rem_len - k &&
+                memcmp(lt, QWEN_SPECIAL_STR[i], (size_t)l) == 0)
+                return k;
+        }
+        left = rem_len - k;
+        p = lt;
+    }
+    return rem_len;
 }
 
 int qwen_tokenizer_encode(QwenTokenizer *tok, const char *text,
@@ -217,6 +288,31 @@ int qwen_tokenizer_encode(QwenTokenizer *tok, const char *text,
         int match_len = 0;
         int token_id = -1;
 
+        /* 特殊 token 优先：整串精确命中就直接产出特殊 token id，避免被下面的
+         * 贪心最长匹配吞掉首字节（见 QWEN_SPECIAL_STR 上方注释）。 */
+        {
+            int sp_hit = -1, sp_len = 0;
+            for (int i = 0; i < QWEN_N_SPECIAL; i++) {
+                int l = (int)strlen(QWEN_SPECIAL_STR[i]);
+                if (l > rem_len || l <= sp_len) continue;
+                if (memcmp(rem, QWEN_SPECIAL_STR[i], (size_t)l) == 0) {
+                    sp_hit = i;
+                    sp_len = l;
+                }
+            }
+            if (sp_hit >= 0) {
+                int sid = special_token_id(tok, sp_hit);
+                if (sid >= 0) {
+                    token_ids[num++] = sid;
+                    pos += sp_len;
+                    continue;
+                }
+            }
+        }
+
+        /* 普通 token 的匹配上界：不得跨过后面出现的特殊 token 起始位置。 */
+        int lim = special_start_after(rem, rem_len);
+
         /* For Qwen2 tokenizer, word continuations typically use "Ġ" prefix (0xC4 0xA0).
          * Try matching with this prefix first if we had a space before this word. */
         if (had_space && num > 0) {
@@ -228,8 +324,9 @@ int qwen_tokenizer_encode(QwenTokenizer *tok, const char *text,
             if (buf_len - 2 > 0) memcpy(spaced_buf + 2, rem, (size_t)(buf_len - 2));
             spaced_buf[buf_len] = '\0';
 
-            token_id = find_longest_match_qwen(tok, spaced_buf, buf_len, &match_len);
-            if (token_id >= 0 && match_len > 2) {
+            token_id = find_longest_match_qwen(tok, spaced_buf, buf_len,
+                                               buf_len, &match_len);
+            if (token_id >= 0 && match_len > 2 && (match_len - 2) <= lim) {
                 pos += (match_len - 2);  /* subtract the 2-byte Ġ prefix */
                 token_ids[num++] = token_id;
                 continue;
@@ -237,7 +334,7 @@ int qwen_tokenizer_encode(QwenTokenizer *tok, const char *text,
         }
 
         /* Try matching without space prefix */
-        token_id = find_longest_match_qwen(tok, rem, rem_len, &match_len);
+        token_id = find_longest_match_qwen(tok, rem, rem_len, lim, &match_len);
         if (token_id >= 0 && match_len > 0) {
             token_ids[num++] = token_id;
             pos += match_len;
@@ -247,18 +344,33 @@ int qwen_tokenizer_encode(QwenTokenizer *tok, const char *text,
                 /* The Qwen BPE represents a literal newline as the "Ċ"
                  * marker (U+010A, bytes C4 8A); vocab.bin has no standalone
                  * 0x0A entry, so a raw '\n' would otherwise fall through to
-                 * <unk> (id 0) and corrupt the prompt template. */
-                int ml2;
-                int tid2 = find_longest_match_qwen(tok, "\xC4\x8A", 2, &ml2);
-                if (tid2 >= 0 && ml2 == 2) {
-                    token_ids[num++] = tid2;
-                    pos++;
-                    continue;
+                 * <unk> (id 0) and corrupt the prompt template.
+                 * 连续的换行同样要按「连续多个 Ċ」去匹配：HF 把 "\n\n"
+                 * 切成单个 token 271（ĊĊ），逐个吃会变成两个 198，与参考
+                 * 分词不一致（Qwen3 非 thinking 模板的 `<think>\n\n</think>\n\n`
+                 * 正是这种形状）。 */
+                int nl = 0;
+                while (nl < rem_len && rem[nl] == '\n') nl++;
+                if (nl > 8) nl = 8;
+                if (nl > lim) nl = lim;
+                if (nl > 0) {
+                    char nb[16];
+                    for (int i = 0; i < nl; i++) {
+                        nb[i * 2] = '\xC4';
+                        nb[i * 2 + 1] = '\x8A';
+                    }
+                    int ml2 = 0;
+                    int tid2 = find_longest_match_qwen(tok, nb, nl * 2, nl * 2, &ml2);
+                    if (tid2 >= 0 && ml2 >= 2 && (ml2 % 2) == 0) {
+                        token_ids[num++] = tid2;
+                        pos += ml2 / 2;
+                        continue;
+                    }
                 }
             }
             char c[2] = {rem[0], '\0'};
             int ml;
-            int tid = find_longest_match_qwen(tok, c, 1, &ml);
+            int tid = find_longest_match_qwen(tok, c, 1, 1, &ml);
             if (tid >= 0 && ml > 0) {
                 token_ids[num++] = tid;
             } else {

@@ -19,20 +19,35 @@
  * ================================================================ */
 #include "vllm_server.h"
 #include "vllm_batch.h"      /* vllm_batch_active (continuous batching status) */
+#include "vqf.h"             /* vqf_stream_active (res policy 权重档能力) */
 #include "vllm_http.h"
 #include "vllm_device.h"
 #include "embedded_web.h"
+
+/* VQF 分层驻留运行状态（vqf.c；避免在 serve 侧引入完整 VQF 头） */
+extern int vqf_stream_state(int *keep, int *nl, int *nseg,
+                            unsigned long long *per_layer, int *cold);
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <stdarg.h>
 
 #include <ctype.h>
 
 #include <unistd.h>
 #include <sys/stat.h>
+#ifdef _WIN32
+/* Windows 无 sys/wait.h（fork/waitpid 端点仅 POSIX 编译侧需要）；
+ * direct.h/io.h 提供 MSVC 兼容入口，S_ISDIR/S_ISREG 在此手动补足。 */
+#include <direct.h>
+#include <io.h>
+#define S_ISDIR(m) (((m) & S_IFMT) == S_IFDIR)
+#define S_ISREG(m) (((m) & S_IFMT) == S_IFREG)
+#else
 #include <sys/wait.h>
+#endif
 #include <dirent.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -221,10 +236,11 @@ static VJson *build_config_json(const VLLMServerCtx *ctx) {
     vjson_obj_set(o, "spec", vjson_new_bool(ctx->spec));
     vjson_obj_set(o, "spec_k", vjson_new_number((double)ctx->spec_k));
     vjson_obj_set(o, "min_p", vjson_new_number(ctx->min_p));
+    vjson_obj_set(o, "top_k", vjson_new_number((double)ctx->top_k));
     /* Load-on-use / unload-when-idle lifecycle config */
     vjson_obj_set(o, "auto_load", vjson_new_bool(ctx->auto_load));
     vjson_obj_set(o, "auto_unload_s", vjson_new_number((double)ctx->auto_unload_s));
-    /* 模型加载格式优先级（管理页"加载格式"下拉） */
+    /* 模型加载格式（管理页"加载格式"下拉，"auto"/"vqf"） */
     json_put_str(o, "format", ctx->load_format_str[0] ? ctx->load_format_str
                                                       : "auto");
     json_put_str(o, "device", ctx->device_id);
@@ -232,12 +248,18 @@ static VJson *build_config_json(const VLLMServerCtx *ctx) {
     json_put_str(env, "OMP_NUM_THREADS",
                  getenv_int_str("OMP_NUM_THREADS", "4"));
     /* NEON kernel / threadpool optimization switches (admin.html 内核优化
-     * card). Only echo vars that are explicitly set; fillForm treats absent
-     * keys as the engine default. */
+     * card) + MoE 优化 card (VLLM_MOE_BATCH / VLLM_ACTQ / VLLM_MOE_PAR /
+     * VLLM_MOE_Q4SIMD). Only echo vars that are explicitly set; fillForm
+     * treats absent keys as the engine default. */
     static const char *opt_envs[] = {
         "VLLM_Q8_8X8", "VLLM_DISABLE_Q8_REPACK", "VLLM_DISABLE_Q4_REPACK",
         "VLLM_ENABLE_8X8L", "VLLM_PB_HEAP", "VLLM_TP_BIND", "VLLM_TP_SPIN",
-        "VLLM_ROW_SLICE", "VLLM_VQF_KEY", NULL
+        "VLLM_ROW_SLICE", "VLLM_VQF_KEY",
+        "VLLM_MOE_BATCH", "VLLM_ACTQ", "VLLM_MOE_PAR", "VLLM_MOE_Q4SIMD",
+        /* P3 前缀复用门：--l3-evict 开启时 prefix-kv 会被静默打掉，必须靠这个
+         * env 才能让 L3 驱逐与前缀复用共存。管理页有对应勾选框，故需回填。 */
+        "VLLM_L3_PREFIX_REUSE",
+        NULL
     };
     for (int i = 0; opt_envs[i]; i++) {
         const char *e = getenv(opt_envs[i]);
@@ -256,11 +278,11 @@ static void config_mkdirs(char *dir) {
         if (*p == '/' || *p == '\\') {
             char save = *p;
             *p = '\0';
-            mkdir(dir, 0755);
+            st_mkdir(dir, 0755);
             *p = save;
         }
     }
-    mkdir(dir, 0755);
+    st_mkdir(dir, 0755);
 }
 
 /* Persist a config JSON object to the config file (mkdir -p the dir). */
@@ -400,6 +422,48 @@ static void handle_admin_status(const VLLMServerCtx *ctx, VHttpResponse *resp) {
     vjson_obj_set(o, "auto_load", vjson_new_bool(ctx->auto_load));
     vjson_obj_set(o, "auto_unload_s", vjson_new_number((double)ctx->auto_unload_s));
     vjson_obj_set(o, "unload_pending", vjson_new_bool(ctx->unload_pending));
+    /* KV 前缀复用运行态（--no-prefix-kv 关闭；P4 多模态/文本共用） */
+    vjson_obj_set(o, "prefix_kv", vjson_new_bool(ctx->prefix_kv));
+    /* VQF 分层驻留（AirLLM 型 layer streaming，VLLM_VQF_STREAM=N）状态 */
+    {
+        int k = 0, nl = 0, ns = 0, cd = 0;
+        unsigned long long pl = 0;
+        if (vqf_stream_state(&k, &nl, &ns, &pl, &cd)) {
+            VJson *vs = vjson_new_object();
+            vjson_obj_set(vs, "on", vjson_new_bool(1));
+            vjson_obj_set(vs, "keep", vjson_new_number((double)k));
+            vjson_obj_set(vs, "n_layers", vjson_new_number((double)nl));
+            vjson_obj_set(vs, "n_segments", vjson_new_number((double)ns));
+            vjson_obj_set(vs, "per_layer_mb",
+                          vjson_new_number(pl ? (double)pl / 1048576.0 : 0.0));
+            vjson_obj_set(vs, "cold", vjson_new_bool(cd != 0));
+            vjson_obj_set(o, "vqf_stream", vs);
+        }
+    }
+    /* 内存驻留策略（档位阶梯）：当前档 + 可调项 + 能力/观测。
+     * idle_s = [L4→L3, L3→L2, L2→L1, L1→L0] 各档空闲停留秒数。 */
+    {
+        int cur = vllm_res_level(ctx);
+        VJson *rp = vjson_new_object();
+        vjson_obj_set(rp, "cur_level", vjson_new_number((double)cur));
+        vjson_obj_set(rp, "cur_name",
+                      vjson_new_string(vllm_res_level_name(cur)));
+        vjson_obj_set(rp, "cfg_level", vjson_new_number((double)ctx->res.level));
+        vjson_obj_set(rp, "auto_idle", vjson_new_bool(ctx->res.auto_idle != 0));
+        VJson *arr = vjson_new_array();
+        for (int k = 4; k >= 1; k--)
+            vjson_array_push(arr, vjson_new_number((double)ctx->res.idle_s[k]));
+        vjson_obj_set(rp, "idle_s", arr);
+        vjson_obj_set(rp, "w_keep", vjson_new_number((double)ctx->res.w_keep));
+        vjson_obj_set(rp, "mem_soft_mb",
+                      vjson_new_number((double)ctx->res.mem_soft_mb));
+        vjson_obj_set(rp, "mem_low_lvl",
+                      vjson_new_number((double)ctx->res.mem_low_lvl));
+        vjson_obj_set(rp, "w_capable", vjson_new_bool(vqf_stream_active() != 0));
+        vjson_obj_set(rp, "l3_evict", vjson_new_bool(g_l3_evict != 0));
+        vjson_obj_set(rp, "steps", vjson_new_number((double)ctx->res.steps));
+        vjson_obj_set(o, "res", rp);
+    }
     /* Current user connections / queue */
     vjson_obj_set(o, "connections", vjson_new_number((double)vhttp_active_conns()));
     long rss = proc_rss_mb();
@@ -702,274 +766,6 @@ static void handle_admin_l3_clear(VLLMServerCtx *ctx, VHttpResponse *resp) {
     admin_json_reply(resp, o);
 }
 
-/* ================================================================
- * VQF 模型转换（独立子进程执行 --convert-vqf）
- *
- * 转换 = 引擎自己跑一遍完整加载序列（alloc → 逐层量化 → repack →
- * lm_head → vision）后 dump 成 VQF 单文件，峰值内存 ~4.5GB+，且会写
- * 全局 wmode/repack 状态 —— 必须在独立子进程执行，不能进 serve 进程
- * （避免与正在服务的模型争内存/污染全局状态）。子进程 stdout/stderr
- * 重定向到 g_conv_log，前端轮询 /admin/api/convert 拿状态 + 日志尾部。
- * ================================================================ */
-#define CONV_IDLE     0
-#define CONV_RUNNING  1
-#define CONV_DONE     2
-#define CONV_FAILED   3
-
-static volatile int  g_conv_state = CONV_IDLE;
-static pid_t         g_conv_pid   = -1;
-static time_t        g_conv_start = 0;
-static int           g_conv_rc    = -1;
-static char          g_conv_model[512] = "";
-static char          g_conv_wmode[32]  = "";
-static char          g_conv_out[512]   = "";
-static char          g_conv_log[512]   = "/tmp/vqf_convert.log";
-
-static void *conv_wait_thread(void *arg) {
-    (void)arg;
-    int st = 0;
-    pid_t pid = g_conv_pid;
-    if (pid > 0) waitpid(pid, &st, 0);
-    g_conv_rc = WIFEXITED(st) ? WEXITSTATUS(st) : -1;
-    g_conv_state = (g_conv_rc == 0) ? CONV_DONE : CONV_FAILED;
-    g_conv_pid = -1;
-    return NULL;
-}
-
-static const char *conv_state_name(int s) {
-    switch (s) {
-    case CONV_RUNNING: return "running";
-    case CONV_DONE:    return "done";
-    case CONV_FAILED:  return "failed";
-    default:           return "idle";
-    }
-}
-
-/* POST /admin/api/convert
- * {"model_dir","wmode","out","src_type"} —— 启动转换子进程
- * src_type: "gguf" = llama.cpp .gguf 文件输入（--convert-gguf）；
- *           其它/缺省 = safetensors 目录输入（--convert-vqf）。
- *           也可不传，后端按 model_dir 是否以 .gguf 结尾自动判定。 */
-static void handle_admin_convert_start(VLLMServerCtx *ctx,
-                                       const VHttpRequest *req,
-                                       VHttpResponse *resp) {
-    VJson *o = vjson_new_object();
-    if (g_conv_state == CONV_RUNNING) {
-        vjson_obj_set(o, "ok", vjson_new_bool(0));
-        json_put_str(o, "error", "a conversion is already running");
-        admin_json_reply(resp, o);
-        return;
-    }
-    char md_buf[600] = "", wm_buf[32] = "dual", out_buf[600] = "";
-    char st_buf[16] = "", enc_buf[600] = "";
-    if (req->body && req->body_len > 0) {
-        char *copy = (char *)malloc((size_t)req->body_len + 1);
-        if (copy) {
-            memcpy(copy, req->body, req->body_len);
-            copy[req->body_len] = '\0';
-            VJson *root = vjson_parse(copy);
-            if (root && root->type == VJ_OBJECT) {
-                /* 立即拷贝到局部缓冲：vjson 字符串指针在 vjson_free 后悬空 */
-                const VJson *md = vjson_obj_get(root, "model_dir");
-                if (md && md->type == VJ_STRING && vjson_str(md)[0])
-                    snprintf(md_buf, sizeof(md_buf), "%s", vjson_str(md));
-                const VJson *wm = vjson_obj_get(root, "wmode");
-                if (wm && wm->type == VJ_STRING && vjson_str(wm)[0])
-                    snprintf(wm_buf, sizeof(wm_buf), "%s", vjson_str(wm));
-                const VJson *oo = vjson_obj_get(root, "out");
-                if (oo && oo->type == VJ_STRING && vjson_str(oo)[0])
-                    snprintf(out_buf, sizeof(out_buf), "%s", vjson_str(oo));
-                const VJson *st = vjson_obj_get(root, "src_type");
-                if (st && st->type == VJ_STRING && vjson_str(st)[0])
-                    snprintf(st_buf, sizeof(st_buf), "%s", vjson_str(st));
-                /* VQF-Enc：口令透传给转换子进程（setenv VLLM_VQF_KEY），
-                 * 非空即加密导出，空则明文 VQF。 */
-                const VJson *ek = vjson_obj_get(root, "enc_key");
-                if (ek && ek->type == VJ_STRING && vjson_str(ek)[0])
-                    snprintf(enc_buf, sizeof(enc_buf), "%s", vjson_str(ek));
-            }
-            vjson_free(root);
-            free(copy);
-        }
-    }
-    const char *model_dir = md_buf[0] ? md_buf : NULL;
-    const char *wmode = wm_buf;
-    const char *out = out_buf[0] ? out_buf : NULL;
-    if (!model_dir && ctx->model_dir && ctx->model_dir[0]) model_dir = ctx->model_dir;
-    if (!model_dir) {
-        vjson_obj_set(o, "ok", vjson_new_bool(0));
-        json_put_str(o, "error", "model_dir is required");
-        admin_json_reply(resp, o);
-        return;
-    }
-    /* 判定输入类型：显式 src_type 优先，其次按扩展名 .gguf 自动识别 */
-    size_t mdl = strlen(model_dir);
-    int is_gguf = (st_buf[0] && strcmp(st_buf, "gguf") == 0) ||
-                  (mdl >= 5 && (strcmp(model_dir + mdl - 5, ".gguf") == 0 ||
-                                strcmp(model_dir + mdl - 5, ".GGUF") == 0));
-    static char outbuf[600];
-    if (is_gguf) {
-        struct stat gst;
-        if (stat(model_dir, &gst) != 0 || !S_ISREG(gst.st_mode)) {
-            vjson_obj_set(o, "ok", vjson_new_bool(0));
-            char e[600];
-            snprintf(e, sizeof(e), "GGUF file not found: %s", model_dir);
-            json_put_str(o, "error", e);
-            admin_json_reply(resp, o);
-            return;
-        }
-        /* 默认输出：同目录同名 .vqf（去掉 .gguf 扩展名） */
-        if (out && out[0]) {
-            struct stat ost;
-            if (stat(out, &ost) == 0 && S_ISDIR(ost.st_mode)) {
-                /* out 是已存在目录：补默认文件名（同模型名 .vqf），避免转换
-                 * 跑完后 fopen 目录失败（rc=255 / cannot open）。 */
-                const char *slash = strrchr(model_dir, '/');
-                const char *base = slash ? slash + 1 : model_dir;
-                size_t blen = strlen(base);
-                size_t stem = (blen >= 5 &&
-                               (strcmp(base + blen - 5, ".gguf") == 0 ||
-                                strcmp(base + blen - 5, ".GGUF") == 0)) ? blen - 5 : blen;
-                if (stem > sizeof(outbuf) - 2) stem = sizeof(outbuf) - 2;
-                snprintf(outbuf, sizeof(outbuf), "%s/%.*s.vqf",
-                         out, (int)stem, base);
-            } else {
-                snprintf(outbuf, sizeof(outbuf), "%s", out);
-            }
-        } else {
-            size_t n = mdl >= 5 ? mdl - 5 : 0;
-            if (n + 5 > sizeof(outbuf) - 1) n = sizeof(outbuf) - 6;
-            memcpy(outbuf, model_dir, n);
-            memcpy(outbuf + n, ".vqf", 5);
-        }
-    } else {
-        char cfgp[600];
-        snprintf(cfgp, sizeof(cfgp), "%s/config.json", model_dir);
-        struct stat stt;
-        if (stat(cfgp, &stt) != 0) {
-            vjson_obj_set(o, "ok", vjson_new_bool(0));
-            char e[600];
-            snprintf(e, sizeof(e), "config.json not found: %s", model_dir);
-            json_put_str(o, "error", e);
-            admin_json_reply(resp, o);
-            return;
-        }
-        if (out && out[0]) {
-            struct stat ost;
-            if (stat(out, &ost) == 0 && S_ISDIR(ost.st_mode)) {
-                /* out 是已存在目录：补默认文件名 model.vqf（同上，避免 fopen 目录失败） */
-                snprintf(outbuf, sizeof(outbuf), "%s/model.vqf", out);
-            } else {
-                snprintf(outbuf, sizeof(outbuf), "%s", out);
-            }
-        } else               snprintf(outbuf, sizeof(outbuf), "%s/model.vqf", model_dir);
-    }
-    /* 本进程可执行文件路径（/proc/self/exe，Linux 板端） */
-    char exe[1024];
-    ssize_t el = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
-    if (el <= 0) {
-        vjson_obj_set(o, "ok", vjson_new_bool(0));
-        json_put_str(o, "error", "cannot resolve engine executable path");
-        admin_json_reply(resp, o);
-        return;
-    }
-    exe[el] = '\0';
-    fflush(NULL);
-    pid_t pid = fork();
-    if (pid < 0) {
-        vjson_obj_set(o, "ok", vjson_new_bool(0));
-        json_put_str(o, "error", "fork failed");
-        admin_json_reply(resp, o);
-        return;
-    }
-    if (pid == 0) {
-        int fd = open(g_conv_log, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-        if (fd >= 0) {
-            dup2(fd, 1); dup2(fd, 2);
-            close(fd);
-        }
-        const char *conv_flag = is_gguf ? "--convert-gguf" : "--convert-vqf";
-        /* VQF-Enc：设置口令后，转换子进程的 vqf_write 读 VLLM_VQF_KEY 生成加密 VQF；
-         * 留空则显式清除，避免继承父进程环境导致非预期加密导出 */
-        if (enc_buf[0]) setenv("VLLM_VQF_KEY", enc_buf, 1);
-        else unsetenv("VLLM_VQF_KEY");
-        char *argv[] = { exe, "--model", (char *)model_dir,
-                         "--wmode", (char *)wmode,
-                         (char *)conv_flag, outbuf, NULL };
-        execv(exe, argv);
-        fprintf(stderr, "[CONV] execv failed: %s\n", exe);
-        _exit(127);
-    }
-    snprintf(g_conv_model, sizeof(g_conv_model), "%s", model_dir);
-    snprintf(g_conv_wmode, sizeof(g_conv_wmode), "%s", wmode);
-    snprintf(g_conv_out,   sizeof(g_conv_out),   "%s", outbuf);
-    g_conv_pid   = pid;
-    g_conv_start = time(NULL);
-    g_conv_rc    = -1;
-    g_conv_state = CONV_RUNNING;
-    pthread_t th;
-    if (pthread_create(&th, NULL, conv_wait_thread, NULL) == 0)
-        pthread_detach(th);
-    vjson_obj_set(o, "ok", vjson_new_bool(1));
-    json_put_str(o, "note", "conversion started (see /admin/api/convert)");
-    json_put_str(o, "model_dir", model_dir);
-    json_put_str(o, "wmode", wmode);
-    json_put_str(o, "out", outbuf);
-    json_put_str(o, "src_type", is_gguf ? "gguf" : "safetensors");
-    admin_json_reply(resp, o);
-}
-
-/* GET /admin/api/convert —— 状态 + 日志尾部 + 输出文件大小 */
-static void handle_admin_convert_status(VHttpResponse *resp) {
-    VJson *o = vjson_new_object();
-    json_put_str(o, "state", conv_state_name(g_conv_state));
-    if (g_conv_state == CONV_RUNNING) {
-        json_put_str(o, "model_dir", g_conv_model);
-        json_put_str(o, "wmode", g_conv_wmode);
-        json_put_str(o, "out", g_conv_out);
-        vjson_obj_set(o, "pid", vjson_new_number((double)g_conv_pid));
-        vjson_obj_set(o, "elapsed_s", vjson_new_number((double)(time(NULL) - g_conv_start)));
-    } else if (g_conv_state == CONV_DONE || g_conv_state == CONV_FAILED) {
-        json_put_str(o, "model_dir", g_conv_model);
-        json_put_str(o, "wmode", g_conv_wmode);
-        json_put_str(o, "out", g_conv_out);
-        vjson_obj_set(o, "rc", vjson_new_number((double)g_conv_rc));
-        if (g_conv_start) {
-            double el = (double)(time(NULL) - g_conv_start);
-            if (el < 0) el = 0;
-            vjson_obj_set(o, "elapsed_s", vjson_new_number(el));
-        }
-    }
-    struct stat st;
-    if (stat(g_conv_out, &st) == 0)
-        vjson_obj_set(o, "out_bytes", vjson_new_number((double)st.st_size));
-    char *buf = (char *)malloc(512 * 1024 + 1);
-    if (buf) {
-        size_t sz = read_file_bounded(g_conv_log, buf, 512 * 1024 + 1);
-        if (sz > 0) {
-            /* 只回最后一段（避免响应过大）；行尾用原样文本即可 */
-            const char *tail = sz > 8192 ? buf + sz - 8192 : buf;
-            json_put_str(o, "log_tail", tail);
-        }
-        free(buf);
-    }
-    admin_json_reply(resp, o);
-}
-
-/* POST /admin/api/convert/cancel —— 杀掉转换子进程 */
-static void handle_admin_convert_cancel(VHttpResponse *resp) {
-    VJson *o = vjson_new_object();
-    if (g_conv_state == CONV_RUNNING && g_conv_pid > 0) {
-        kill(g_conv_pid, SIGKILL);
-        vjson_obj_set(o, "ok", vjson_new_bool(1));
-        json_put_str(o, "note", "conversion process killed");
-    } else {
-        vjson_obj_set(o, "ok", vjson_new_bool(0));
-        json_put_str(o, "error", "no conversion running");
-    }
-    admin_json_reply(resp, o);
-}
-
 /* wmode string ("q4"/"q4i"/"q8"/"g256"/"q2mix"/"dual") -> g_st_wmode int. */
 static int wmode_parse(const char *s) {
     if (!s || !s[0]) return -1;
@@ -1010,17 +806,15 @@ static void handle_admin_model_load(VLLMServerCtx *ctx, const VHttpRequest *req,
                     const char *s = vjson_str(md);
                     if (s && s[0]) vllm_serve_set_model_dir(ctx, s);
                 }
-                /* 加载格式优先级（"auto"/"vqf"/"safetensors"/"gguf"） */
+                /* 加载格式（"auto"/"vqf"；VQF 单一运行时，其余一律按 auto 处理） */
                 const VJson *fm = vjson_obj_get(root, "format");
                 if (fm && fm->type == VJ_STRING) {
                     const char *s = vjson_str(fm);
                     if (s && s[0]) {
+                        ctx->load_format = (strcmp(s, "vqf") == 0) ? 1 : 0;
                         snprintf(ctx->load_format_str,
-                                 sizeof(ctx->load_format_str), "%s", s);
-                        if (strcmp(s, "vqf") == 0) ctx->load_format = 1;
-                        else if (strcmp(s, "safetensors") == 0) ctx->load_format = 2;
-                        else if (strcmp(s, "gguf") == 0) ctx->load_format = 3;
-                        else ctx->load_format = 0;   /* auto */
+                                 sizeof(ctx->load_format_str), "%s",
+                                 ctx->load_format == 1 ? "vqf" : "auto");
                     }
                 }
             }
@@ -1052,7 +846,7 @@ static void handle_admin_model_unload(VLLMServerCtx *ctx,
                                       VHttpResponse *resp) {
     (void)req;
     VJson *o = vjson_new_object();
-    int rc = vllm_serve_unload_model(ctx);
+    int rc = vllm_serve_unload_model_self(ctx);   /* self 豁免：handler 内卸载 */
     if (rc == 0) {
         vjson_obj_set(o, "ok", vjson_new_bool(1));
         json_put_str(o, "note", "model unloaded (weights/KV freed; next request "
@@ -1066,6 +860,121 @@ static void handle_admin_model_unload(VLLMServerCtx *ctx,
     } else {
         vjson_obj_set(o, "ok", vjson_new_bool(0));
         json_put_str(o, "error", "no model loaded");
+    }
+    admin_json_reply(resp, o);
+}
+
+/* POST /admin/api/policy/config —— 运行期调整内存驻留策略参数（即刻生效，
+ * 无需重启）。body（缺省字段保持不变）：
+ *   {"auto_idle":bool, "idle_s":[L4→L3,L3→L2,L2→L1,L1→L0],
+ *    "w_keep":N, "mem_soft_mb":N, "mem_low_lvl":N} */
+static void handle_admin_policy_config(VLLMServerCtx *ctx,
+                                       const VHttpRequest *req,
+                                       VHttpResponse *resp) {
+    VJson *o = vjson_new_object();
+    VLLMResPolicy *rp = &ctx->res;
+    int changed = 0;
+    if (req->body && req->body_len > 0) {
+        char *copy = (char *)malloc(req->body_len + 1);
+        if (copy) {
+            memcpy(copy, req->body, req->body_len);
+            copy[req->body_len] = '\0';
+            VJson *root = vjson_parse(copy);
+            if (root && root->type == VJ_OBJECT) {
+                const VJson *v;
+                vhttp_mutex_lock(ctx->stat_lock);   /* tick 同字段读，锁内整块改 */
+                if ((v = vjson_obj_get(root, "auto_idle")) &&
+                    (v->type == VJ_BOOL || v->type == VJ_NUMBER)) {
+                    int b = (v->type == VJ_BOOL) ? vjson_bool(v) : (int)vjson_num(v);
+                    if ((rp->auto_idle ? 1 : 0) != (b ? 1 : 0)) { rp->auto_idle = b ? 1 : 0; changed = 1; }
+                }
+                if ((v = vjson_obj_get(root, "idle_s")) && v->type == VJ_ARRAY) {
+                    size_t n = vjson_array_len(v);
+                    for (size_t i = 0; i < n && i < 4; i++) {
+                        VJson *e = vjson_array_get(v, i);
+                        long t = (long)vjson_num(e);
+                        if (t < 0) t = 0;
+                        if (rp->idle_s[4 - (int)i] != t) { rp->idle_s[4 - (int)i] = t; changed = 1; }
+                    }
+                }
+                if ((v = vjson_obj_get(root, "w_keep")) && v->type == VJ_NUMBER) {
+                    int t = (int)vjson_num(v);
+                    if (t < 0) t = 0;
+                    if (rp->w_keep != t) { rp->w_keep = t; changed = 1; }
+                }
+                if ((v = vjson_obj_get(root, "mem_soft_mb")) && v->type == VJ_NUMBER) {
+                    int t = (int)vjson_num(v);
+                    if (t < 0) t = 0;
+                    if (rp->mem_soft_mb != t) { rp->mem_soft_mb = t; changed = 1; }
+                }
+                if ((v = vjson_obj_get(root, "mem_low_lvl")) && v->type == VJ_NUMBER) {
+                    int t = (int)vjson_num(v);
+                    if (t < 0) t = 0; if (t > 4) t = 4;
+                    if (rp->mem_low_lvl != t) { rp->mem_low_lvl = t; changed = 1; }
+                }
+                vhttp_mutex_unlock(ctx->stat_lock);
+            }
+            vjson_free(root);
+            free(copy);
+        }
+    }
+    vjson_obj_set(o, "ok", vjson_new_bool(1));
+    if (changed) {
+        fprintf(stderr, "[RES] admin policy config updated: auto_idle=%d "
+                        "idle_s=%ld/%ld/%ld/%ld w_keep=%d soft=%dMB low_lvl=%d\n",
+                rp->auto_idle, rp->idle_s[4], rp->idle_s[3],
+                rp->idle_s[2], rp->idle_s[1], rp->w_keep,
+                rp->mem_soft_mb, rp->mem_low_lvl);
+        fflush(stderr);
+        json_put_str(o, "note", "policy config applied (runtime)");
+    }
+    admin_json_reply(resp, o);
+}
+
+/* POST /admin/api/policy/set —— 立即切换驻留档位。
+ * body: {"level":0..4}（L4 全驻留 → L0 卸载）；返回新档位与动作结果。 */
+static void handle_admin_policy_set(VLLMServerCtx *ctx,
+                                    const VHttpRequest *req,
+                                    VHttpResponse *resp) {
+    VJson *o = vjson_new_object();
+    int level = -1;
+    if (req->body && req->body_len > 0) {
+        char *copy = (char *)malloc(req->body_len + 1);
+        if (copy) {
+            memcpy(copy, req->body, req->body_len);
+            copy[req->body_len] = '\0';
+            VJson *root = vjson_parse(copy);
+            if (root && root->type == VJ_OBJECT) {
+                const VJson *v = vjson_obj_get(root, "level");
+                if (v && v->type == VJ_NUMBER) level = (int)vjson_num(v);
+            }
+            vjson_free(root);
+            free(copy);
+        }
+    }
+    if (level < 0 || level > 4) {
+        vjson_obj_set(o, "ok", vjson_new_bool(0));
+        json_put_str(o, "error", "body {\"level\":0..4} required");
+        admin_json_reply(resp, o);
+        return;
+    }
+    int prev = vllm_res_level(ctx);
+    int rc = vllm_res_set_level(ctx, level);
+    if (rc >= 0) {
+        vjson_obj_set(o, "ok", vjson_new_bool(1));
+        vjson_obj_set(o, "level", vjson_new_number((double)rc));
+        json_put_str(o, "level_name", vllm_res_level_name(rc));
+        json_put_str(o, "note", "policy level switched");
+    } else if (rc == -3) {
+        vjson_obj_set(o, "ok", vjson_new_bool(0));
+        vjson_obj_set(o, "level", vjson_new_number((double)prev));
+        json_put_str(o, "error", "inference in progress (unload refused), "
+                    "retry when idle");
+    } else {
+        vjson_obj_set(o, "ok", vjson_new_bool(0));
+        vjson_obj_set(o, "level", vjson_new_number((double)prev));
+        json_put_str(o, "error", "level switch failed (need model dir / load "
+                    "for upgrade, or model loaded for downgrade)");
     }
     admin_json_reply(resp, o);
 }
@@ -1154,14 +1063,11 @@ void vllm_admin_route(VLLMServerCtx *ctx, const VHttpRequest *req,
                strcmp(req->path, "/admin/api/l3/clear") == 0) {
         handle_admin_l3_clear(ctx, resp);
     } else if (strcmp(req->method, "POST") == 0 &&
-               strcmp(req->path, "/admin/api/convert") == 0) {
-        handle_admin_convert_start(ctx, req, resp);
-    } else if (strcmp(req->method, "GET") == 0 &&
-               strcmp(req->path, "/admin/api/convert") == 0) {
-        handle_admin_convert_status(resp);
+               strcmp(req->path, "/admin/api/policy/config") == 0) {
+        handle_admin_policy_config(ctx, req, resp);
     } else if (strcmp(req->method, "POST") == 0 &&
-               strcmp(req->path, "/admin/api/convert/cancel") == 0) {
-        handle_admin_convert_cancel(resp);
+               strcmp(req->path, "/admin/api/policy/set") == 0) {
+        handle_admin_policy_set(ctx, req, resp);
     } else {
         static const char nf[] = "{\"error\":\"admin: not found\"}";
         resp->status = 404;

@@ -2,9 +2,14 @@
 /build/
 /build-rk3588/
 /build-rk3588-static/
+/build-x64/
 /vllm_kestrel
 *.o
 *.exe
+
+# vqf_convert build output / test fixtures
+vqf_convert/vqf_conv
+vqf_convert/synth/
 
 # Local runtime state (config/logs written by the engine / tools)
 /webmgr/

@@ -5,21 +5,25 @@
  * 场景：医疗诊断、法务合同等高敏感场景需要“责任可追溯、防篡改”的
  * 推理记录。本模块为每次完成的推理响应生成一份 SM2 签名凭证（Proof）。
  *
- * 摘要绑定内容（schema=2，规范见下；验证方无需 tokenizer/聊天模板，
+ * 摘要绑定内容（schema=3，规范见下；验证方无需 tokenizer/聊天模板，
  * 只需请求原文 + 响应原文即可离线复算验签）：
  *
- *   digest = SM3( VLLM-AT-2
+ *   digest = SM3( VLLM-AT-3
  *              || F(model_fp) || F(model_id) || F(device_id)
  *              || F(user) || F(params) || F(n_prompt_tokens)
  *              || F(n_gen_tokens) || F(finish) || F(ts)
  *              || F(body_sha) || F(output_text) )
  *
  *   F(x) = u32be(len(x)) || x（按字节）
- *   body_sha = SM3(客户端原始请求体字节) 的 64-hex —— 逐字节绑定"收到什么
- *             就证明什么"，取证方可对自己保存的请求原文复算比对；
- *   params   = "t=%.4g,p=%.4g,m=%.4g,mt=%d"（引擎实际采样参数）；
+ *   body_sha = SM3(客户端原始请求体字节) 的 64-hex —— 逐字节绑定“收到什么
+ *             就证明什么”，取证方可对自己保存的请求原文复算比对；
+ *   params   = "t=%.4g,p=%.4g,m=%.4g,k=%d,mt=%d,th=%d"（引擎实际采样参数）。
+ *             与 schema=2 相比新增 k（top_k 截断，0=关闭）与 th
+ *             （enable_thinking）—— 这两项目前既可能来自请求体，也可能来自
+ *             serve 级默认（--top-k / VLLM_ENABLE_THINKING），后者不体现在
+ *             请求原文里，只绑 body_sha 无法覆盖，故必须进 params；
  *   model_fp 在模型加载成功后固定（SM3(config.json 内容 + 模型目录文件
- *   清单(name+size))），防止"响应属于哪套权重"被事后偷换。
+ *   清单(name+size))），防止“响应属于哪套权重”被事后偷换。
  *
  * 信任链（诚实边界）：
  *   1. 权重锚点：若模型目录含签名 VQF（VLLM_VQF_VERIFY=1），权重级信任根
@@ -46,13 +50,15 @@ typedef struct VLLMServerCtx VLLMServerCtx;
 /* 一次待背书请求的转录内容。 */
 typedef struct {
     const char *user;        /* 请求 user 字段（可能为 NULL） */
-    const char *body_sha;    /* 原始请求体 SM3 的 64-hex（schema=2 必填） */
+    const char *body_sha;    /* 原始请求体 SM3 的 64-hex（schema=3 必填） */
     const char *text;        /* 输出文本（必须非 NULL） */
     size_t      text_len;
     int         n_prompt_tokens;   /* prompt token 数 */
     int         n_gen_tokens;      /* 生成 token 数 */
     const char *finish;            /* "stop"/"length"（与 API 返回一致） */
     double      temperature, top_p, min_p;   /* 采样参数（绑定进摘要） */
+    int         top_k;                     /* top-k 截断（0=关闭），绑定进摘要 */
+    int         thinking;                  /* enable_thinking（0/1），绑定进摘要 */
     int         max_tokens;
     long        ts;              /* unix 秒（绑定进摘要，防重放旧证） */
 } VAttestReq;

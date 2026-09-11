@@ -37,7 +37,7 @@ static void vb_sleep_ms(int ms) {
     usleep((useconds_t)ms * 1000);
 }
 
-/* Replace BPE markers 臓(C4 A0)->space, 膴(C4 8A)->newline. */
+/* Replace BPE markers Ġ(C4 A0)->space, Ċ(C4 8A)->newline. */
 static const char *vb_gj_replace(const char *s, char *tmp, size_t tmplen) {
     if (!s || !s[0]) return s;
     const unsigned char *u = (const unsigned char *)s;
@@ -322,7 +322,8 @@ int vllm_batch_run(VBatchSched *b, VBatchReq *req) {
         rc = st_qwen_model_multimodal_prefill_ex(st, req->pt, req->pn,
                                                  req->vis_all, req->vis_total,
                                                  req->grids, req->n_regions,
-                                                 req->ds_features, req->n_ds);
+                                                 req->ds_features, req->n_ds,
+                                                 0);
         if (rc == 0 && met) met->prompt_tokens = req->pn + req->vis_total;
     } else {
         int max_ids = st->max_kv_slots;
@@ -371,8 +372,9 @@ int vllm_batch_run(VBatchSched *b, VBatchReq *req) {
     vb_utf8_init(&dec);
 
     for (int step = 0; step < req->max_tokens; step++) {
-        int id = sample_token_p(st->logits, vc, (float)req->temperature,
-                                (float)req->top_p, (float)req->min_p);
+        int id = sample_token_pk(st->logits, vc, (float)req->temperature,
+                                 (float)req->top_p, (float)req->min_p,
+                                 req->top_k);
         if (id == b->tok->eos_id || id == b->tok->im_end_id) { finish = "stop"; done = 1; break; }
         const char *raw = qwen_tokenizer_decode(b->tok, id);
         int rawlen = b->tok->str_lens[id];
@@ -454,7 +456,7 @@ int vllm_batch_run(VBatchSched *b, VBatchReq *req) {
                      met->ttft_ms, met->tpot_ms, met->total_ms, met->prefill_ms, tok_s);
             vhttp_stream_write(req->conn, mline, (size_t)strlen(mline));
         }
-        /* 方案 2：batch 流式出证（与串行 decode_loop 相同的 schema=2）。 */
+        /* 方案 2：batch 流式出证（与串行 decode_loop 相同的 schema=3）。 */
         if (vatt_active() && req->out_text && req->out_text[0]) {
             VAttestReq ar;
             memset(&ar, 0, sizeof(ar));
@@ -468,6 +470,8 @@ int vllm_batch_run(VBatchSched *b, VBatchReq *req) {
             ar.temperature = req->temperature;
             ar.top_p = req->top_p;
             ar.min_p = req->min_p;
+            ar.top_k = req->top_k;
+            ar.thinking = req->thinking;
             ar.max_tokens = req->max_tokens;
             ar.ts = created;
             char *aj = vatt_seal_json(&ar);

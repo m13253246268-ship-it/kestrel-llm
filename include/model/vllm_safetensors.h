@@ -79,6 +79,15 @@ typedef struct {
     int         head_dim_full;  /* 128 for Qwen3-VL */
     int         kv_lora_rank;   /* 0 means no KV lora */
 
+    /* ---- MoE (qwen3_moe) ---- */
+    int         is_moe;         /* 1 = qwen3_moe：每层 router + n_experts 专家 */
+    int         n_experts;      /* num_experts (30B-A3B: 128) */
+    int         moe_ffn;        /* moe_intermediate_size (30B-A3B: 768) 单专家中间宽 */
+    int         top_k;          /* num_experts_per_tok (30B-A3B: 8) */
+    int         shared_experts; /* num_shared_experts（Qwen3 MoE 无 → 0） */
+    /* is_moe=1 时 ffn_dim 被覆写为 n_experts*moe_ffn（每层专家堆叠行数/列数），
+     * 使 gate/up/down 的"整层堆叠→量化→repack"与稠密逐字节同构。 */
+
     /* ---- Vision config (Qwen3-VL) ---- */
     int         has_vision;     /* 1 = vision encoder present */
     int         vis_depth;      /* ViT depth (27) */
@@ -108,9 +117,8 @@ typedef struct {
  * All weights are stored in float32 after conversion from safetensors.
  *
  * Memory estimate (f32): ~32 GB total. This is impractical for most systems.
- * For memory-constrained environments, consider:
- *   1. Memory-mapped loading (load per-layer on demand)
- *   2. Converting to GGUF Q8_0 first (~8.5 GB)
+ * The engine therefore loads only the pre-quantized self-developed VQF format
+ * (Q8/Q4 mmap); raw safetensors reading is confined to the vqf_convert tool.
  */
 typedef struct {
     STModelConfig cfg;
@@ -119,6 +127,8 @@ typedef struct {
     float *token_embed;       /* [vocab_size, dim]  embedded_tokens.weight */
     float *lm_head;           /* [vocab_size, dim]  lm_head.weight (untied!) */
     float *final_norm;        /* [dim]              model.language_model.norm.weight */
+    float *moe_router;        /* [n_layers*n_experts, dim] f32 常驻（qwen3_moe
+                               * router.weight；top-k 边界敏感 → 不量化） */
 
     /* --- Per-layer weights (can be loaded/freed dynamically) --- */
     /* All arrays are indexed by layer: weights[layer * dim_size] */
@@ -286,15 +296,6 @@ typedef struct {
     double  dec_t_other;
 } STQwenInferenceState;
 
-/* ---- Safetensors Parser API ---- */
-
-/**
- * Parse safetensors index file (model.safetensors.index.json) and config.json.
- * Populates STModelConfig with architecture parameters and tensor metadata.
- * Returns 0 on success, -1 on error.
- */
-int st_parse_config(const char *model_dir, STModelConfig *cfg);
-
 /* Transparent NPU backend hook (see vllm_npu.h). st_npu_set installs the
  * backend handle from main; st_npu_enabled reports whether offload is live. */
 struct vllm_npu_s;
@@ -306,104 +307,9 @@ int  st_npu_enabled(void);
 void st_npu_gw_clear_all(void);
 
 /**
- * Load a specific tensor from safetensors files into float32 buffer.
- * Converts bfloat16/float16 to float32 automatically.
- * dst must have (n_elems * sizeof(float)) bytes allocated.
- * Returns 0 on success, -1 if tensor not found.
- */
-int st_load_tensor(const STModelConfig *cfg, const char *tensor_name,
-                    float *dst, int expected_elems);
-
-int st_load_tensor_slice(const STModelConfig *cfg, const char *tensor_name,
-                         int64_t elem_offset, float *dst, int64_t elem_count);
-
-/**
- * Load all tensors for a range of layers from safetensors files.
- * layer_start: first layer index (inclusive)
- * layer_end:   last layer index (exclusive)
- * weights:     destination weight buffer (must be pre-allocated)
- * Returns 0 on success, -1 on error.
- */
-int st_load_layer_weights(const STModelConfig *cfg, STModelWeights *w,
-                           int layer_start, int layer_end);
-
-/**
- * Allocate all weight buffers for the model (calloc).
- * No tensors are loaded yet; use st_load_tensor / st_load_layer_weights.
- */
-void st_weights_alloc(STModelWeights *w, const STModelConfig *cfg);
-
-/**
- * Allocate weights for a specific number of layers (memory-efficient).
- * Set n_layers_to_alloc = -1 for all layers.
- */
-void st_weights_alloc_layers(STModelWeights *w, const STModelConfig *cfg, int n_layers);
-/* Same as above but F32 FFN weights skipped — only Q8_0 compact FFN allocated.
- * Saves ~22 GB for Qwen3-VL-8B (can load all 36 layers in ~17 GB RAM). */
-void st_weights_alloc_layers_q8ffn(STModelWeights *w, const STModelConfig *cfg, int n_layers);
-
-/**
  * Free all weight buffers.
  */
 void st_weights_free(STModelWeights *w);
-
-/* ================================================================
- * Q8_0 quantization / Free
- * ================================================================ */
-
-/**
- * Free STModelConfig (releases tensor metadata arrays).
- */
-void st_config_free(STModelConfig *cfg);
-
-/* Q8_0 quantization: F32 → block-compressed (axiom: fixedpoint_quantize_saturate) */
-void f32_to_q8_0(uint8_t *q8_out, const float *f32_in, int n_elements);
-
-/* Q4_0 quantization: F32 → block-compressed (axiom: fixedpoint_quantize_saturate B=4) */
-void f32_to_q4_0(uint8_t *q4_out, const float *f32_in, int n_elements);
-
-/* Q4_0 pre-unpacked-to-int8: F32 → Q8_0-layout { f16 scale d; int8 qs[32]; }
- * (34 B/block, same rounding/scale as f32_to_q4_0, qs[i] = nibble-8). */
-void f32_to_q4i8(uint8_t *q8_out, const float *f32_in, int n_elements);
-
-/* Q2_1 quantization: F32 → block-compressed 2-bit, 16 B/32 elements
- * ({ d0,m0,d1,m1 } f16 + 8B codes; dequant w = m + d*q, q∈[0,3]).
- * Mixed-precision FFN (axiom: blas_precision_efficiency_tradeoff). */
-void f32_to_q2_1(uint8_t *q2_out, const float *f32_in, int n_elements);
-
-/* M4: Q4_0 4x4 row-interleaved repack (nibble-unpack-free NEON kernels).
- * In-place re-arrangement of one [rows][cols] Q4_0 weight matrix into
- * 4-row x 72B groups with every nibble byte XOR 0x88 (two's-complement
- * bias flip); total bytes unchanged. Returns 0 on success, -1 when the
- * matrix can't be repacked (rows%4, cols%32, non-NEON-dotprod target, or
- * VLLM_DISABLE_Q4_REPACK set) - buffer untouched in that case. */
-int repack_q4_0_4x4_inplace(uint8_t *buf, int rows, int cols);
-/* Reads VLLM_DISABLE_Q4_REPACK once; safe to call repeatedly. */
-void st_q4_repack_init(void);
-
-/* M4e: Q8_0 4x4 row-interleaved repack (llama.cpp block_q8_0x4, 136 B/block).
- * In-place re-arrangement of one [rows][cols] Q8_0 weight matrix (legacy
- * row-major 34 B/block) into 4-row x 136 B groups: { d[4] f16, qs[128] }
- * with qs[k*16 + m*4 + i] = row m value (k*4+i). Total bytes unchanged.
- * Returns 0 on success, -1 when the matrix can't be repacked (rows%4,
- * cols%32, or g_st_q8_repack cleared) - buffer untouched in that case. */
-int repack_q8_0_4x4_inplace(uint8_t *buf, int rows, int cols);
-
-/* P0: Q8_0 8x8 row-interleaved repack (block_q8_0x8, 272 B/block), same
- * in-place semantics as repack_q8_0_4x4_inplace. { d[8] f16, qs[256] } with
- * qs[k*32 + m*4 + i] = row m value (k*4+i). Requires rows%8, cols%32. */
-int repack_q8_0_8x8_inplace(uint8_t *buf, int rows, int cols);
-
-/* Dispatch: 8x8 (VLLM_Q8_8X8 default) or legacy 4x4. Used by the per-layer
- * load repack AND by main.c's lm_head repack so all Q8 matrices share ONE
- * layout. */
-int repack_q8_0_tiled_inplace(uint8_t *buf, int rows, int cols);
-
-/* G=256 group quantize stored in the Q8_0 34 B/block layout (one f32 scale
- * per 256 columns, repeated as f16 across the 8 inner sub-blocks). CPU Q8_0
- * kernels consume it unchanged; the NPU DIRECT backend reads it as K=256
- * blocks (/8 ioctls - the NPU-vs-CPU prefill crossover). */
-void f32_to_g256q8(uint8_t *q8_out, const float *f32_in, int n_elements);
 
 /* Batched Q8_0 matvec with row-tiled shared-input fusion (axiom:
  * block_matrix_assoc_natural + partition_alignment):
@@ -476,10 +382,6 @@ extern int g_st_prefill_q8;
  * Measured on Qwen3-VL-2B the tail does NOT recover 2-bit quality on dense
  * models (the FFN is the main residual path); mechanism verified via N=all. */
 extern int g_q2mix_tail;
-
-/* Mixed-precision (Q4_0 vs Q8_0) kernel benchmark on synthetic weights at the
- * real Qwen3-VL-8B shapes. No model load required. Triggered by --bench-mixed. */
-void st_bench_mixed_precision(void);
 
 /* Isolated "OTHER"-bucket probe (MRoPE + KV-store + INT8 quantize) at
  * S=1024/2048/4096, no model load. Triggered by --probe-other. */
@@ -556,12 +458,38 @@ void st_qwen_model_forward(STQwenInferenceState *st, int token_id);
 int st_qwen_model_prefill_batch(STQwenInferenceState *st,
                                 const int *token_ids, int n_tokens);
 
+/* MoE 专家级驻留：真实 router 热度采集（EW 标定 H 用）。
+ * reset 清零并开启（FFN 内按层累计被选中专家）；save 落盘 "l:e:count"。 */
+void st_moe_heat_reset(const STModelWeights *w);
+void st_moe_heat_save(const char *path);
+
 /**
  * Phase-2 L3 cold-block Q4 disk eviction (--l3-evict). Called after prefill by
  * both the bench path and the HTTP serve path. Packs cold KV blocks into the
  * L3 cache file (--l3-path, default kv_l3.bin) and frees them from RAM.
  */
-void l3_evict_after_prefill(STQwenInferenceState *st);
+void l3_evict_after_prefill(STQwenInferenceState *st, int keep_lcp, int incremental);
+
+/**
+ * P3: materialize the first `prefix_len` tokens' KV rows back into RAM from
+ * the L3 Q4 payload, for every block that eviction freed (blocks[l][b] NULL
+ * but metadata on_disk). This is a pure decompress-and-store pass: no GEMM, no
+ * attention, no re-computation.
+ *
+ * Why: with L3 on, the prefix-reuse gates in the serve layer are hard-disabled
+ * because prefill cannot read the NULLed blocks. Restoring the rows lets a
+ * follow-up request keep its shared prefix (ist_reset keeps cache_len) and
+ * prefill only the new suffix, instead of re-running a full prefill.
+ *
+ * Allocation follows st_qwen_kv_rebuild_freed's layout (KV_GUARD-padded blocks,
+ * f32 when that world exists, q8 when use_kv_q8).
+ *
+ * Returns >= 0 = number of blocks rebuilt; the [0, prefix_len) rows are then
+ * complete in RAM (0 = nothing was missing: no L3 state / no evicted block /
+ * everything already resident). Returns -1 = at least one block could not be
+ * rebuilt, so the prefix is INCOMPLETE and the caller must not reuse it.
+ */
+int l3_restore_prefix(STQwenInferenceState *st, int prefix_len);
 
 /**
  * Copy the KV cache for the first `prefix_len` tokens
@@ -620,7 +548,12 @@ int st_qwen_model_multimodal_prefill_ex(STQwenInferenceState *st,
                                          const int *token_ids, int n_tokens,
                                          const float *visual_tokens, int n_vis_tokens,
                                          const int *grids, int n_regions,
-                                         const float *const *ds_features, int n_ds);
+                                         const float *const *ds_features, int n_ds,
+                                         int start);
+/* start: 跳过前 start 个 token 行的 KV 写入（前缀复用，P4）。调用前调用方
+ * 必须已把 st 的 cache_len[l]/seq_len 置为 start（ist_reset(keep)），本函数
+ * 只计算并写入 [start, n_tokens) 的行；MRoPE 位置按全序列绝对值计算，与前缀
+ * 一致。start=0 时行为与旧签名完全一致。调用方须保证 0 <= start < n_tokens。 */
 
 /**
  * Free inference state.
@@ -631,6 +564,10 @@ void st_qwen_inference_free(STQwenInferenceState *st);
  * with the matching path; see vllm_safetensors.c). */
 void st_qwen_kv_free_raw(void *raw);
 
+/* Free one KV block by payload pointer + payload byte count (v2 lazy-mmap
+ * blocks must be munmap'ed with their exact size; guards auto-reconciled). */
+void st_qwen_kv_free_block(void *payload, size_t payload_bytes);
+
 /* Re-allocate the fp32/INT8 KV blocks freed by Phase-2 L3 eviction (they were
  * set NULL). Call before the next prefill so it can write the new request's
  * KV. Returns bytes allocated (0 = none freed previously). */
@@ -640,9 +577,11 @@ size_t st_qwen_kv_rebuild_freed(STQwenInferenceState *st);
  * Snapshot the first n_tokens rows of the F32 KV cache to `path` together
  * with the model geometry, so a later process (after a restart) can restore
  * the same prefix and only prefill the suffix. F32 keeps the restore bit-
- * exact with a fresh prefill (same guarantee as the in-RAM prefix reuse);
- * the checkpoint is invalid when the model geometry changes (checked on
- * load). Saves st->cache_len[0] rows max; call with n_tokens <= cache_len[0].
+ * exact with a fresh prefill (same guarantee as the in-RAM prefix reuse;
+ * P4 实测 2026-09-07 见方案文档 §7.2：该"位级"保证仅限覆盖纯 prefill 行、
+ * 且与批量形状相关的场景，跨 decode 行的恢复在对抗性输入下贪心输出可分叉)。
+ * The checkpoint is invalid when the model geometry changes (checked on load).
+ * Saves st->cache_len[0] rows max; call with n_tokens <= cache_len[0].
  * Returns 0 on success, nonzero on failure (corrupt/geometry mismatch...). */
 int st_kv_disk_save(STQwenInferenceState *st, const char *path,
                     const int *tokens, int n_tokens);

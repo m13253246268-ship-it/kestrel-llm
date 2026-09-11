@@ -303,6 +303,59 @@ int sample_token(const float *logits, int vocab_size,
 
 int sample_token_p(const float *logits, int vocab_size,
                    float temperature, float top_p, float min_p) {
+    return sample_token_pk(logits, vocab_size, temperature, top_p, min_p, 0);
+}
+
+/* Top-K 截断：只保留概率最高的 K 个 token（其余置 0）。
+ * top_k <= 0 或 >= vocab_size 时为空操作。用容量 K 的最小堆，
+ * 复杂度 O(vocab + vocab·logK)。Qwen3 thinking 档推荐 top_k=20；
+ * 默认 0（关闭）以保持既有行为不变。 */
+static void apply_top_k(float *probs, int vocab_size, int top_k) {
+    if (top_k <= 0 || top_k >= vocab_size) return;
+
+    static _Thread_local IdxProb *s_heap = NULL;
+    static _Thread_local int s_cap = 0;
+    if (top_k > s_cap) {
+        IdxProb *nh = (IdxProb *)realloc(s_heap, (size_t)top_k * sizeof(IdxProb));
+        if (!nh) return;                 /* 分配失败：退化为不做 top-k 截断 */
+        s_heap = nh;
+        s_cap = top_k;
+    }
+
+    int n = 0;                           /* 堆内元素个数（<= top_k） */
+    for (int i = 0; i < vocab_size; i++) {
+        float p = probs[i];
+        if (p <= 0.0f) continue;         /* 已被抑制的 token 不参与 */
+        if (n < top_k) {
+            int c = n++;
+            s_heap[c].idx = i; s_heap[c].prob = p;
+            while (c > 0) {              /* sift up（最小堆） */
+                int par = (c - 1) / 2;
+                if (s_heap[par].prob <= s_heap[c].prob) break;
+                IdxProb t = s_heap[par]; s_heap[par] = s_heap[c]; s_heap[c] = t;
+                c = par;
+            }
+        } else if (p > s_heap[0].prob) {
+            s_heap[0].idx = i; s_heap[0].prob = p;
+            for (int r = 0;;) {          /* sift down（最小堆） */
+                int l = r * 2 + 1;
+                if (l >= top_k) break;
+                int rr = l + 1, m = l;
+                if (rr < top_k && s_heap[rr].prob < s_heap[m].prob) m = rr;
+                if (s_heap[m].prob >= s_heap[r].prob) break;
+                IdxProb t = s_heap[m]; s_heap[m] = s_heap[r]; s_heap[r] = t;
+                r = m;
+            }
+        }
+    }
+
+    /* 堆内即被保留的 K 个：全部清零后回填（n 可能 < top_k）。 */
+    for (int i = 0; i < vocab_size; i++) probs[i] = 0.0f;
+    for (int i = 0; i < n; i++) probs[s_heap[i].idx] = s_heap[i].prob;
+}
+
+int sample_token_pk(const float *logits, int vocab_size,
+                    float temperature, float top_p, float min_p, int top_k) {
     /* Greedy fast path (OpenAI semantics: temperature <= 0 = deterministic
      * argmax; top_p <= 0 = no nucleus sampling). Avoids the O(n log n) qsort
      * over the whole vocabulary on every decode step. */
@@ -354,6 +407,10 @@ int sample_token_p(const float *logits, int vocab_size,
     probs[0] = 0.0f;  /* <unk> */
     probs[1] = 0.0f;  /* <s> */
     probs[3] = 0.0f;  /* <pad> */
+
+    /* Top-K 截断（Qwen3 thinking 档推荐 top_k=20；默认关闭）。放在 min-p /
+     * top-p 之前，与 vLLM 的 top_k → top_p → min_p 顺序一致。 */
+    apply_top_k(probs, vocab_size, top_k);
 
     /* Min-P filtering (min_p > 0): keep only tokens at or above
      * min_p * max_prob. Uses the special-suppressed probabilities, applied

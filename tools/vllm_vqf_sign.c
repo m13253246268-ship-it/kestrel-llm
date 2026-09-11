@@ -110,6 +110,11 @@ static int vqf_compute_digest(SignCtx *c, uint8_t digest[32], uint8_t tag[32]) {
 
     VQFHeader hdr_canon = *h;
     hdr_canon.file_len = 0;
+    /* flags 按「最终已签名」口径参与摘要：写侧 vqf.c 是先 flags |= VQF_FLAG_SIGNED 再
+     * 算摘要；离线补签工具打开的是未签名文件（flags 无 SIGNED），必须置位后再摘要，
+     * 否则验签/引擎加载侧（header 已带 SIGNED）重算的摘要与签名时不一致 →
+     * 永远 digest mismatch。2026-09-07 板端真机踩坑后修复。 */
+    hdr_canon.flags |= VQF_FLAG_SIGNED;
     memset(&hdr_canon.sig, 0, sizeof(hdr_canon.sig));
 
     vc_sm3_init(&c->dig);

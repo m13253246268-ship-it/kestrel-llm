@@ -12,6 +12,53 @@
  *     threshold transparently falls back to the CPU (NEON) path.
  */
 
+#ifdef _WIN32
+/* ================================================================
+ * x86/Windows stub：NPU 为 RK3588 专属（/dev/rknpu + librknnrt）。
+ * 所有入口透明降级 CPU 路径（available()==0），语义同"无 NPU 宿主"。
+ * ================================================================ */
+#include "vllm_npu.h"
+
+int vllm_npu_init(vllm_npu_t **npu, const vllm_npu_cfg_t *cfg) {
+    (void)npu; (void)cfg;
+    return 0;   /* 成功但不可用：透明回退 */
+}
+void vllm_npu_destroy(vllm_npu_t *npu) { (void)npu; }
+int vllm_npu_available(const vllm_npu_t *npu) { (void)npu; return 0; }
+int vllm_npu_sdk_version(const vllm_npu_t *npu, char *buf, int len) {
+    (void)npu;
+    if (buf && len > 0) buf[0] = '\0';
+    return -1;
+}
+int vllm_npu_gemm_f32(vllm_npu_t *npu, float *out, const float *A, const float *B,
+                      int M, int N, int K) {
+    (void)npu; (void)out; (void)A; (void)B; (void)M; (void)N; (void)K;
+    return 0;   /* CPU 路径 */
+}
+int vllm_npu_gemm_i8(vllm_npu_t *npu, float *out,
+                     const int8_t *Aq, const float *aw,
+                     int M, int N, int K, int layer, int proj) {
+    (void)npu; (void)out; (void)Aq; (void)aw;
+    (void)M; (void)N; (void)K; (void)layer; (void)proj;
+    return 0;
+}
+vllm_npu_backend_t vllm_npu_backend(const vllm_npu_t *npu) {
+    (void)npu;
+    return VLLM_NPU_BACKEND_AUTO;
+}
+int vllm_npu_gemm_gw(vllm_npu_t *npu, float *out,
+                     const int8_t *Aq, const float *a_scale,
+                     const int8_t *Wq, const float *b_scale,
+                     int M, int N, int K, int G, int prec,
+                     uint64_t wkey) {
+    (void)npu; (void)out; (void)Aq; (void)a_scale;
+    (void)Wq; (void)b_scale; (void)M; (void)N; (void)K;
+    (void)G; (void)prec; (void)wkey;
+    return 0;
+}
+int vllm_npu_selftest(vllm_npu_t *npu) { (void)npu; return 0; }
+#else
+
 #include "vllm_npu.h"
 #include "vllm_npu_direct.h"
 #include "vllm_platform.h"
@@ -442,3 +489,4 @@ int vllm_npu_selftest(vllm_npu_t *n) {
     }
     return failures;
 }
+#endif /* !_WIN32 */

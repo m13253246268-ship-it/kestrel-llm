@@ -19,7 +19,8 @@ Usage:
 
 Config file schema (written by the admin page):
   { "model_dir": "<path-to-model-dir>", "wmode": "q4", "kv_q4": false,
-    "prefix_cache": false, "prefill_q8": false, "sparse_attn": false,
+    "prefix_kv": true, "prefix_cache": false, "prefill_q8": false,
+    "sparse_attn": false,
     "sparse_k": 32, "npu": true, "npu_load": 1, "npu_infer": 1,
     "npu_timing": 0, "port": 8080, "threads": 8, "max_queued": 16,
     "min_free_mb": 2048, "env": {"OMP_NUM_THREADS": "4"} }
@@ -37,8 +38,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-# Repo root (one level up from tools/), overridable for board layouts that
-# do not match the repository layout (e.g. a dedicated deploy directory).
+# Repo root (one level up from tools/), overridable for board layouts that do
+# not match the repository layout (e.g. a dedicated deploy directory).
 REPO = os.environ.get("VLLM_MGR_REPO", os.path.dirname(HERE))
 
 def env_path(name, dflt):
@@ -88,6 +89,9 @@ def build_cmd(cfg, bin_):
            "--min-free-mb", str(int(cfg.get("min_free_mb", 2048)))]
     if cfg.get("kv_q4"):
         cmd.append("--kv-q4")
+    # KV 前缀复用默认开（引擎默认）；管理页取消勾选（prefix_kv=false）时才关闭
+    if cfg.get("prefix_kv", True) is False:
+        cmd.append("--no-prefix-kv")
     if cfg.get("prefix_cache"):
         cmd.append("--prefix-cache")
     if cfg.get("prefill_q8"):
@@ -131,10 +135,9 @@ def build_cmd(cfg, bin_):
     au = int(cfg.get("auto_unload_s") or 0)
     if au > 0:
         cmd += ["--auto-unload", str(au)]
-    # Model load format priority (auto / vqf / safetensors / gguf). The engine
-    # auto-detects by default; this pins the candidate order on startup.
+    # Model load format (auto / vqf). 引擎已为纯 VQF 运行时。
     lf = str(cfg.get("format") or "auto").strip().lower()
-    if lf in ("vqf", "safetensors", "gguf"):
+    if lf in ("vqf",):
         cmd += ["--load-format", lf]
     if not cfg.get("auto_start"):
         # Manual mode: the engine starts with the model NOT loaded; the

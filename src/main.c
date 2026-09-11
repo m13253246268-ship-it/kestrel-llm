@@ -17,7 +17,6 @@
 #include "vllm_ntt.h"
 #include "vllm_safetensors.h"
 #include "vqf.h"
-#include "vllm_gguf.h"
 #include "vllm_vision.h"
 #include "vllm_media.h"
 #include "vllm_tokenizer_qwen.h"
@@ -35,6 +34,9 @@
 #include <math.h>
 #include <locale.h>   /* setlocale */
 #include "vllm_util.h"
+#if !defined(_WIN32)
+#include <sys/mman.h>   /* 文件映射（VQF mmap 诊断/页控制） */
+#include <unistd.h>     /* ftruncate */
 /* Portable shims so the QPC-based timing and _heapchk triage code compiles
  * unchanged on Linux/RK3588 (aarch64). LARGE_INTEGER maps to the monotonic
  * tick counters from vllm_platform.h; _heapchk degrades to a no-op that
@@ -48,6 +50,34 @@ typedef struct { long long QuadPart; } LARGE_INTEGER;
 #define _HEAPBADPTR   (-1)
 #define _HEAPBADBEGIN (-2)
 #define _HEAPBADNODE  (-3)
+#else
+/* Windows：POSIX 文件映射 shims（仅编译垫片，VQF 文件加载走 vqf.c 的
+ * CreateFileMappingW 路径，不依赖此处宏）。 */
+#include <io.h>   /* _chsize_s / fileno */
+#define PROT_READ   1
+#define PROT_WRITE  2
+#define MAP_SHARED  1
+#define MAP_FAILED  ((void *)(intptr_t)-1)
+#define MS_SYNC     0
+#define MADV_DONTNEED 0
+static void *mmap(void *addr, size_t len, int prot, int flags,
+                  int fd, long long off) {
+    (void)addr; (void)len; (void)prot; (void)flags; (void)fd; (void)off;
+    return MAP_FAILED;
+}
+static int munmap(void *addr, size_t len) { (void)addr; (void)len; return -1; }
+static int msync(void *addr, size_t len, int flags) {
+    (void)addr; (void)len; (void)flags; return -1;
+}
+static int madvise(void *addr, size_t len, int advice) {
+    if (advice == MADV_DONTNEED && addr != NULL) {
+        VirtualUnlock(addr, len);
+        return 0;
+    }
+    return -1;
+}
+#define ftruncate(fd, len) (_chsize_s((fd), (long)(len)))
+#endif
 #include "vllm_tp.h"   /* self-contained thread pool (replaces OpenMP) */
 
 extern KVCacheManager g_kvcache;
@@ -432,1145 +462,6 @@ static void test_real_inference(void) {
     printf("\n[PASS] Real inference pipeline complete\n");
 }
 
-#if 0 /* Test 8: GGUF roundtrip — vllm_gguf.c removed from build */
-static void test_gguf_roundtrip(void) {
-    printf("\n=== Test 8: GGUF + Pippenger Attention Inference ===\n");
-
-    /* Check for real GGUF model on disk (paths relative to cwd) */
-    const char *real_model_paths[] = {
-        "build/smollm2-135m-real.gguf",
-        "smollm2-135m-real.gguf",
-        "../smollm2-135m-real.gguf",
-        "build/smollm2-135m-q8_0.gguf",
-        "smollm2-135m-q8_0.gguf",
-        "model.gguf",
-        "../model.gguf",
-        NULL
-    };
-    const char *found_model = NULL;
-    for (int i = 0; real_model_paths[i]; i++) {
-        if (st_access(real_model_paths[i], 0) == 0) {
-            /* Verify file is large enough to be a real GGUF (> 1MB) */
-            FILE *check = st_fopen(real_model_paths[i], "rb");
-            if (check) {
-                fseek(check, 0, SEEK_END);
-                long fsize = ftell(check);
-                fclose(check);
-                if (fsize > 1024 * 1024) {  /* > 1MB minimum */
-                    found_model = real_model_paths[i];
-                    break;
-                }
-            }
-        }
-    }
-
-    if (found_model) {
-        /* ================================================================
-         * PART A: Real GGUF model �?Pippenger inference
-         * ================================================================ */
-        printf("\n[REAL MODEL] Loading: %s\n", found_model);
-
-        GGUFModelConfig cfg;
-        int ret = gguf_parse_config(found_model, &cfg);
-        if (ret != 0) { printf("[FAIL] Cannot parse GGUF\n"); return; }
-        printf("       dim=%d, layers=%d, heads=%d(kv=%d), ffn=%d, vocab=%d\n",
-               cfg.dim, cfg.n_layers, cfg.n_heads, cfg.n_kv_heads,
-               cfg.ffn_dim, cfg.vocab_size);
-
-        GGUFWeights loaded;
-        memset(&loaded, 0, sizeof(loaded));
-        loaded.cfg = cfg;  /* copy parsed config for weight allocation */
-        ret = gguf_load_weights(found_model, &loaded);
-        if (ret != 0) { printf("[FAIL] Cannot load weights\n"); return; }
-        printf("       Weights loaded OK\n");
-
-        GGUFInferenceState ist;
-        ret = gguf_inference_init(&ist, &loaded);
-        if (ret != 0) { printf("[FAIL] Inference init failed\n");
-                         gguf_weights_free(&loaded); return; }
-
-        Tokenizer tok;
-        tokenizer_init_from_gguf(&tok, &cfg);
-        printf("       Pippenger default: ON (use_pippenger=%d)\n",
-               ist.use_pippenger);
-
-        int im_start_id = -1, im_end_id = -1, newline_id = -1, user_id = -1, assistant_id = -1, colon_id = -1;
-        /* Find chat template tokens in GGUF vocabulary */
-        for (int vi = 0; vi < cfg.vocab_size && cfg.tok_strings; vi++) {
-            if (!cfg.tok_strings[vi]) continue;
-            if (im_start_id < 0 && strcmp(cfg.tok_strings[vi], "<|im_start|>") == 0) im_start_id = vi;
-            if (im_end_id < 0 && strcmp(cfg.tok_strings[vi], "<|im_end|>") == 0) im_end_id = vi;
-            if (newline_id < 0) {
-                const char *ts = cfg.tok_strings[vi];
-                /* Try multiple representations of newline */
-                if (strcmp(ts, "\n") == 0) newline_id = vi;
-                else if (strcmp(ts, "<0x0A>") == 0) newline_id = vi;
-                else if (strlen(ts) == 1 && (unsigned char)ts[0] == 0x0A) newline_id = vi;
-                else if (ts[0] == '\n' && ts[1] == '\0') newline_id = vi;
-            }
-            if (user_id < 0 && strcmp(cfg.tok_strings[vi], "user") == 0) user_id = vi;
-            if (assistant_id < 0 && strcmp(cfg.tok_strings[vi], "assistant") == 0) assistant_id = vi;
-            if (colon_id < 0 && strcmp(cfg.tok_strings[vi], ":") == 0) colon_id = vi;
-        }
-        printf("       im_start=%d, im_end=%d, newline=%d, user=%d, assistant=%d, colon=%d\n",
-               im_start_id, im_end_id, newline_id, user_id, assistant_id, colon_id);
-
-        /* ====== BOS-ONLY SANITY TEST ======
-         * Feed just BOS token and check top predictions.
-         * A working model should predict common sentence starters. */
-        {
-            printf("\n         [BOS-ONLY TEST]\n");
-            for (int l = 0; l < ist.cfg.n_layers; l++)
-                ist.cache_len[l] = 0;
-            ist.seq_len = 0;
-            memset(ist.hidden, 0, (size_t)ist.cfg.n_layers * ist.cfg.dim * sizeof(float));
-
-            int bos_tok = cfg.bos_id > 0 ? cfg.bos_id : 1;
-            gguf_model_forward(&ist, bos_tok);
-            printf("         BOS(%d) -> Top-20: ", bos_tok);
-            fflush(stdout);
-            /* Get top 20 logits */
-            float s20[20];
-            int i20[20];
-            for (int si = 0; si < 20; si++) { s20[si] = -1e9f; i20[si] = -1; }
-            for (int vi = 0; vi < cfg.vocab_size; vi++) {
-                float v = ist.logits[vi];
-                for (int si = 0; si < 20; si++) {
-                    if (v > s20[si]) {
-                        for (int sj = 19; sj > si; sj--) {
-                            s20[sj] = s20[sj-1]; i20[sj] = i20[sj-1];
-                        }
-                        s20[si] = v; i20[si] = vi; break;
-                    }
-                }
-            }
-            for (int si = 0; si < 20; si++)
-                printf("[%d:%.1f] ", i20[si], s20[si]);
-            printf("\n");
-            fflush(stdout);
-        }
-
-        /* Chat-format test: use proper instruct template with hardcoded tokens.
-         * SmolLM2-Instruct format:
-         * <|im_start|>user\n{text}<|im_end|>\n<|im_start|>assistant\n
-         * We build this manually to avoid tokenizer BPE issues. */
-        {
-            printf("\n         [CHAT-FORMAT TEST]\n");
-            for (int l = 0; l < ist.cfg.n_layers; l++)
-                ist.cache_len[l] = 0;
-            ist.seq_len = 0;
-            memset(ist.hidden, 0, (size_t)ist.cfg.n_layers * ist.cfg.dim * sizeof(float));
-
-            /* Encode "The future of" with tokenizer (no BOS) */
-            int chat_prompt[64];
-            int np = tokenizer_encode(&tok, "The future of", chat_prompt, 64);
-
-            /* Build chat template by tokenizing the full string.
-             * SmolLM2-Instruct format:
-             * <|im_start|>user\n{text}<|im_end|>\n<|im_start|>assistant\n
-             * Since we lack a real BPE tokenizer, encode the entire string
-             * with our greedy tokenizer which matches against GGUF vocab. */
-            char chat_str[512];
-            snprintf(chat_str, sizeof(chat_str),
-                     "<|im_start|>user\nThe future of<|im_end|>\n<|im_start|>assistant\n");
-            int chat_tokens[128];
-            int nt = tokenizer_encode(&tok, chat_str, chat_tokens, 128);
-
-            printf("         Chat seq (%d tokens): ", nt);
-            for (int i = 0; i < nt; i++) {
-                printf("%d ", chat_tokens[i]);
-                gguf_model_forward(&ist, chat_tokens[i]);
-            }
-            fflush(stdout);
-
-            printf("\n         Gen: \"");
-            fflush(stdout);
-
-            /* Now generate */
-            for (int t = 0; t < 8; t++) {
-                int next = sample_token(ist.logits, cfg.vocab_size, 0.0f, 0.95f);
-                if (next == cfg.eos_id) break;
-                const char *ts = tokenizer_decode(&tok, next);
-                printf("[%d:%s]", next, ts ? ts : "NULL");
-                fflush(stdout);
-                gguf_model_forward(&ist, next);
-            }
-            printf("\"\n");
-            fflush(stdout);
-        }
-
-        const char *prompts[] = {
-            "The capital of France is",
-            "The first president of the United States was",
-            "The chemical symbol for water is",
-        };
-        int num_prompts = 3;
-        int max_gen = 8;
-        int eos = cfg.eos_id ? cfg.eos_id : -1;
-
-        for (int p = 0; p < num_prompts; p++) {
-            for (int l = 0; l < ist.cfg.n_layers; l++)
-                ist.cache_len[l] = 0;
-            ist.seq_len = 0;
-            memset(ist.hidden, 0, (size_t)ist.cfg.n_layers * ist.cfg.dim * sizeof(float));
-
-            int prompt_ids[64];
-            int np = tokenizer_encode(&tok, prompts[p], prompt_ids, 64);
-
-            printf("         [PROMPT %d tokens]\n", np);
-            fflush(stdout);
-            clock_t t0 = clock();
-            for (int i = 0; i < np; i++) gguf_model_forward(&ist, prompt_ids[i]);
-
-            printf("       [%s]\n         -> \"", prompts[p]);
-            fflush(stdout);
-            int actual_gen = 0;
-            for (int t = 0; t < max_gen; t++) {
-                int next = sample_token(ist.logits, cfg.vocab_size, 0.8f, 0.95f);
-                if (next == eos) break;
-                const char *ts = tokenizer_decode(&tok, next);
-                printf("[%d:%s]", next, ts ? ts : "NULL");
-                fflush(stdout);
-                gguf_model_forward(&ist, next);
-                actual_gen++;
-            }
-            printf("\"\n");
-            clock_t t1 = clock();
-            double elapsed = (double)(t1 - t0) / CLOCKS_PER_SEC;
-            printf("         (%d tok, %.1f tok/s, %.3f sec)\n",
-                   np + actual_gen,
-                   (double)(np + actual_gen) / elapsed,
-                   elapsed);
-        }
-        printf("       [PASS] Pippenger real-model inference complete\n");
-
-        /* ---- High-Concurrency Block Pippenger Benchmark ---- */
-        {
-            /* Build a long prompt by repeating a phrase to get >= 2 blocks (128+ tokens).
-             * This tests block-level Pippenger (PIP_BLOCK_SIZE=64) under realistic
-             * long-sequence conditions where block precomputation can be amortized. */
-            const char *phrase = "The capital of France is Paris. ";
-            /* Repeat phrase to reach ~150+ tokens (2+ blocks of 64) */
-            char long_prompt[2048];
-            long_prompt[0] = '\0';
-            for (int r = 0; r < 30; r++)
-                strcat(long_prompt, phrase);
-            int bm_gen = 6;
-            float time_on = 0, time_off = 0;
-            int actual_on = 0, actual_off = 0;
-            LARGE_INTEGER freq2c, bqt0, bqt1;
-            QueryPerformanceFrequency(&freq2c);
-
-            printf("\n       [BLOCK-PIPPENGER BENCHMARK] Long prompt, ON vs OFF\n");
-
-            for (int mode = 0; mode < 2; mode++) {
-                /* Full reset: KV cache, block precomp, hidden state */
-                for (int l = 0; l < ist.cfg.n_layers; l++)
-                    ist.cache_len[l] = 0;
-                ist.seq_len = 0;
-                memset(ist.hidden, 0, (size_t)ist.cfg.n_layers * ist.cfg.dim * sizeof(float));
-                /* Reset block precomputation state */
-                int max_blocks = (ist.cfg.max_seq_len + PIP_BLOCK_SIZE - 1) / PIP_BLOCK_SIZE;
-                memset(ist.pip_n_blocks, 0, (size_t)ist.cfg.n_layers * sizeof(int));
-                memset(ist.pip_blk_k, 0,
-                       (size_t)ist.cfg.n_layers * max_blocks * ist.cfg.n_kv_heads * ist.cfg.head_dim * sizeof(float));
-                memset(ist.pip_blk_v, 0,
-                       (size_t)ist.cfg.n_layers * max_blocks * ist.cfg.n_kv_heads * ist.cfg.head_dim * sizeof(float));
-
-                int prompt_ids[2048];
-                int np = tokenizer_encode(&tok, long_prompt, prompt_ids, 2048);
-
-                ist.use_pippenger = (mode == 0) ? 1 : 0;
-
-                /* Prefill */
-                QueryPerformanceCounter(&bqt0);
-                for (int i = 0; i < np; i++)
-                    gguf_model_forward(&ist, prompt_ids[i]);
-
-                /* Generate a few more tokens to measure sustained throughput */
-                int gen_count = 0;
-                for (int t = 0; t < bm_gen; t++) {
-                    int next = sample_token(ist.logits, ist.cfg.vocab_size, 0.8f, 0.95f);
-                    if (next == ist.cfg.eos_id) break;
-                    gguf_model_forward(&ist, next);
-                    gen_count++;
-                }
-                QueryPerformanceCounter(&bqt1);
-                double dt = (double)(bqt1.QuadPart - bqt0.QuadPart) / (double)freq2c.QuadPart;
-
-                int nblk = ist.pip_n_blocks[0];
-                if (mode == 0)      { time_on  = dt; actual_on  = np + gen_count; }
-                else                { time_off = dt; actual_off = np + gen_count; }
-                printf("         %s: %d tok, %d blocks, %.0f ms (%.1f tok/s)\n",
-                       mode == 0 ? "Pippenger" : "Standard ",
-                       np + gen_count, nblk,
-                       dt * 1000, (double)(np + gen_count) / dt);
-            }
-
-            printf("         ----------  ---  ---------  -----\n");
-            printf("         Pippenger   %3d  blocks=%d  %5.1f tok/s\n",
-                   actual_on, (int)((actual_on - bm_gen + PIP_BLOCK_SIZE - 1) / PIP_BLOCK_SIZE),
-                   actual_on / time_on);
-            printf("         Standard    %3d  blocks=%d  %5.1f tok/s\n",
-                   actual_off, (int)((actual_off - bm_gen + PIP_BLOCK_SIZE - 1) / PIP_BLOCK_SIZE),
-                   actual_off / time_off);
-            if (time_off > 0 && time_on > 0) {
-                double speedup = time_off / time_on;
-                printf("         Speedup:    %.2fx (Block-Pippenger/Standard)\n", speedup);
-                if (speedup > 1.05)
-                    printf("         VERDICT:    Block-Pippenger FASTER by %.0f%% �?"
-                           "axiom block-precompute effective.\n",
-                           (speedup - 1.0) * 100);
-                else if (speedup < 0.95)
-                    printf("         VERDICT:    Block-Pippenger SLOWER by %.0f%% �?"
-                           "precompute cost not amortized.\n",
-                           (1.0 - speedup) * 100);
-                else
-                    printf("         VERDICT:    Marginal difference (< 5%%) �?"
-                           "attention not the bottleneck.\n");
-            }
-        }
-
-        /* ---- Multi-User Concurrent Pippenger Benchmark ----
-         *
-         * This is where Pippenger's block precomputation SHOULD shine:
-         * N users share the same KV cache (common prompt prefix).
-         * Precompute is done once (during prefill), then each user
-         * pays only block-level Q·K (O(n_blocks)) instead of
-         * per-token Q·K (O(S)).
-         *
-         * Scenario: 100 concurrent users, same prompt prefix,
-         * each generates 1 token.
-         *
-         * Expected if Pippenger works:
-         *   Standard:  per_user �?S  = 216 (linear in seq_len)
-         *   Pippenger: per_user �?n_blocks = 3  (linear in blocks)
-         *   Speedup �?~S/n_blocks �?72x for attention portion */
-        {
-            enum { N_USERS = 100 };
-            /* Shared prompt must be >= PIP_BLOCK_SIZE (64) tokens to create
-             * precomputed blocks. Repeat a phrase to reach 100+ tokens. */
-            const char *phrase = "The capital of France is Paris. ";
-            char shared_prompt[1024];
-            shared_prompt[0] = '\0';
-            for (int r = 0; r < 14; r++)
-                strcat(shared_prompt, phrase);
-            /* ~98 tokens (14 × 7 tokens) �?should create 1-2 blocks */
-            int prompt_ids[512];
-            int np = tokenizer_encode(&tok, shared_prompt, prompt_ids, 512);
-
-            /* Test queries: short continuations, one per simulated user */
-            const char *queries[N_USERS];
-            int query_ids[N_USERS];
-            for (int u = 0; u < N_USERS; u++) {
-                static const char *pool[] = {
-                    "The", "What", "In", "This", "A", "It", "For", "Many", "Some",
-                    "One", "Paris", "London", "Tokyo", "Berlin", "France", "Europe",
-                    "History", "Science", "People", "World"
-                };
-                queries[u] = pool[u % 20];
-                int qids[8];
-                int nq = tokenizer_encode(&tok, queries[u], qids, 8);
-                query_ids[u] = (nq > 0) ? qids[0] : 0;
-            }
-
-            printf("\n       [MULTI-USER CONCURRENT BENCHMARK] %d users, "
-                   "%d-token shared prefix\n", N_USERS, np);
-
-            for (int mode = 0; mode < 2; mode++) {
-                int nkv = ist.cfg.n_kv_heads, hd = ist.cfg.head_dim;
-                int d = ist.cfg.dim, nl = ist.cfg.n_layers;
-                int kv_dim = nkv * hd;
-                int max_blocks = (ist.cfg.max_seq_len + PIP_BLOCK_SIZE - 1) / PIP_BLOCK_SIZE;
-
-                /* Full reset */
-                for (int l = 0; l < nl; l++) ist.cache_len[l] = 0;
-                ist.seq_len = 0;
-                memset(ist.hidden, 0, (size_t)nl * d * sizeof(float));
-                memset(ist.pip_n_blocks, 0, (size_t)nl * sizeof(int));
-                memset(ist.pip_blk_k, 0, (size_t)nl * max_blocks * kv_dim * sizeof(float));
-                memset(ist.pip_blk_v, 0, (size_t)nl * max_blocks * kv_dim * sizeof(float));
-
-                ist.use_pippenger = (mode == 0) ? 1 : 0;
-
-                /* Phase 0: Prefill shared prompt (builds KV cache + block precompute) */
-                for (int i = 0; i < np; i++)
-                    gguf_model_forward(&ist, prompt_ids[i]);
-
-                int shared_blocks = ist.pip_n_blocks[0];
-                int shared_len = ist.cache_len[0];
-
-                /* Snapshot state that each user must restore */
-                int    *saved_cache_len = malloc((size_t)nl * sizeof(int));
-                float  *saved_hidden    = malloc((size_t)nl * d * sizeof(float));
-                int    *saved_n_blocks  = malloc((size_t)nl * sizeof(int));
-                int     saved_seq_len;
-
-                memcpy(saved_cache_len, ist.cache_len,  (size_t)nl * sizeof(int));
-                memcpy(saved_hidden,    ist.hidden,     (size_t)nl * d * sizeof(float));
-                memcpy(saved_n_blocks,  ist.pip_n_blocks,(size_t)nl * sizeof(int));
-                saved_seq_len = ist.seq_len;
-
-                /* Phase 1: N concurrent users, each generates 1 token */
-                LARGE_INTEGER freq2d, uqt0, uqt1;
-                QueryPerformanceFrequency(&freq2d);
-                QueryPerformanceCounter(&uqt0);
-
-                for (int u = 0; u < N_USERS; u++) {
-                    /* Restore shared state */
-                    memcpy(ist.cache_len,   saved_cache_len, (size_t)nl * sizeof(int));
-                    memcpy(ist.hidden,      saved_hidden,    (size_t)nl * d * sizeof(float));
-                    memcpy(ist.pip_n_blocks, saved_n_blocks,  (size_t)nl * sizeof(int));
-                    ist.seq_len = saved_seq_len;
-
-                    /* Each user generates 1 token from their query */
-                    gguf_model_forward(&ist, query_ids[u]);
-                }
-
-                QueryPerformanceCounter(&uqt1);
-                double total_dt = (double)(uqt1.QuadPart - uqt0.QuadPart) / (double)freq2d.QuadPart;
-                double per_user_ms = (total_dt * 1000.0) / N_USERS;
-
-                printf("         %s: %d users, %d tok, %d blocks, "
-                       "total=%.1f ms, per_user=%.2f ms\n",
-                       mode == 0 ? "Pippenger" : "Standard ",
-                       N_USERS, shared_len, shared_blocks,
-                       total_dt * 1000, per_user_ms);
-
-                if (mode == 1) {
-                    /* Both modes done �?compare */
-                    /* time_on, time_off already captured; need to store them */
-                }
-
-                free(saved_cache_len);
-                free(saved_hidden);
-                free(saved_n_blocks);
-
-                /* Store timing for comparison (inelegant but works) */
-                static float mu_time_on = 0, mu_time_off = 0;
-                if (mode == 0) mu_time_on  = (float)(total_dt * 1000);
-                else           mu_time_off = (float)(total_dt * 1000);
-
-                if (mode == 1) {
-                    printf("         ----------  ------  ---------  -----\n");
-                    printf("         Pippenger   %d users  %8.1f ms  "
-                           "%.2f ms/user\n",
-                           N_USERS, mu_time_on, mu_time_on / N_USERS);
-                    printf("         Standard    %d users  %8.1f ms  "
-                           "%.2f ms/user\n",
-                           N_USERS, mu_time_off, mu_time_off / N_USERS);
-                    double speedup = mu_time_off / mu_time_on;
-                    printf("         Speedup:    %.2fx (Pippenger/Standard)\n", speedup);
-                    if (speedup > 1.10)
-                        printf("         VERDICT:    Pippenger %.0f%% FASTER �?"
-                               "block precompute amortization works!\n",
-                               (speedup - 1.0) * 100);
-                    else if (speedup > 1.02)
-                        printf("         VERDICT:    Moderate benefit (%.0f%%) �?"
-                               "precompute helps but FFN still dominates.\n",
-                               (speedup - 1.0) * 100);
-                    else
-                        printf("         VERDICT:    No measurable benefit �?"
-                               "attention is negligible vs FFN even for %d users.\n",
-                               N_USERS);
-                }
-            }
-        }
-
-        gguf_inference_free(&ist);
-        tokenizer_free(&tok);
-        gguf_weights_free(&loaded);
-        if (cfg.tok_strings) {
-            for (int i = 0; i < cfg.tok_count; i++) free(cfg.tok_strings[i]);
-            free(cfg.tok_strings);
-        }
-        return;
-    }
-
-    /* ================================================================
-     * PART B: Synthetic model roundtrip (fallback when no real model)
-     * ================================================================ */
-    printf("\n[SYNTHETIC] No real GGUF model found on disk.\n");
-    printf("       To use a real model, download e.g.:\n");
-    printf("       SmolLM2-135M-Instruct-Q8_0.gguf (~138MB)\n");
-    printf("       from huggingface.co/bartowski/SmolLM2-135M-Instruct-GGUF\n");
-    printf("       and place it in the build/ directory.\n\n");
-    printf("       Running fallback synthetic test...\n");
-
-    /* Create a tiny model with known weights */
-    printf("[1/4] Creating tiny model weights...\n");
-    ModelWeights *original = malloc(sizeof(ModelWeights));
-    if (!original) { printf("[FAIL] Out of memory\n"); return; }
-    weights_init(original);
-
-    /* Export to GGUF */
-    const char *gguf_path = "test_model.gguf";
-    printf("[2/4] Exporting to GGUF: %s\n", gguf_path);
-    int ret = gguf_export_tiny(original, gguf_path,
-                                TINY_HIDDEN_DIM, TINY_NUM_LAYERS,
-                                TINY_NUM_HEADS, TINY_FFN_DIM,
-                                TINY_VOCAB_SIZE);
-    if (ret != 0) {
-        printf("[FAIL] GGUF export failed\n");
-        return;
-    }
-
-    /* Parse config from GGUF */
-    printf("[3/4] Parsing GGUF config...\n");
-    GGUFModelConfig cfg;
-    ret = gguf_parse_config(gguf_path, &cfg);
-    if (ret != 0) {
-        printf("[FAIL] GGUF config parse failed\n");
-        return;
-    }
-
-    /* Verify config matches */
-    int cfg_ok = (cfg.dim == TINY_HIDDEN_DIM &&
-                  cfg.n_layers == TINY_NUM_LAYERS &&
-                  cfg.n_heads == TINY_NUM_HEADS &&
-                  cfg.ffn_dim == TINY_FFN_DIM &&
-                  cfg.vocab_size == TINY_VOCAB_SIZE);
-    printf("       Config match: %s\n", cfg_ok ? "PASS" : "FAIL");
-    printf("       dim=%d layers=%d heads=%d ffn=%d vocab=%d\n",
-           cfg.dim, cfg.n_layers, cfg.n_heads, cfg.ffn_dim, cfg.vocab_size);
-
-    /* Load weights from GGUF */
-    printf("[4/4] Loading weights from GGUF...\n");
-    GGUFWeights loaded;
-    memset(&loaded, 0, sizeof(loaded));
-    loaded.cfg = cfg;
-    ret = gguf_load_weights(gguf_path, &loaded);
-    if (ret != 0) {
-        printf("[FAIL] GGUF weight load failed\n");
-        return;
-    }
-
-    /* Verify a few key weight matrices match */
-    int hd = TINY_HEAD_DIM;
-    int d = TINY_HIDDEN_DIM;
-    int vc = TINY_VOCAB_SIZE;
-    int ff = TINY_FFN_DIM;
-    int num_checks = 5;
-    int checks_passed = 0;
-
-    /* Check token embeddings: first 10 elements */
-    int emb_ok = 1;
-    for (int i = 0; i < 10; i++) {
-        if (fabsf(loaded.token_embed[i] - original->token_embed[i]) > 1e-6f) {
-            emb_ok = 0; break;
-        }
-    }
-    printf("       token_embd[0:10]: %s\n", emb_ok ? "MATCH" : "MISMATCH");
-    if (emb_ok) checks_passed++;
-
-    /* Check final_norm */
-    int norm_ok = 1;
-    for (int i = 0; i < d; i++) {
-        if (fabsf(loaded.final_norm[i] - original->final_norm[i]) > 1e-6f) {
-            norm_ok = 0; break;
-        }
-    }
-    printf("       final_norm: %s\n", norm_ok ? "MATCH" : "MISMATCH");
-    if (norm_ok) checks_passed++;
-
-    /* Check attn_norm for layer 0 */
-    int a_ok = 1;
-    for (int i = 0; i < d; i++) {
-        if (fabsf(loaded.attn_norm[i] - original->layers[0].attn_norm[i]) > 1e-6f) {
-            a_ok = 0; break;
-        }
-    }
-    printf("       attn_norm[0]: %s\n", a_ok ? "MATCH" : "MISMATCH");
-    if (a_ok) checks_passed++;
-
-    /* Check q_weight for layer 0: first 10 elements */
-    int q_ok = 1;
-    for (int i = 0; i < 10; i++) {
-        if (fabsf(loaded.q_weight[i] - original->layers[0].q_weight[i]) > 1e-6f) {
-            q_ok = 0; break;
-        }
-    }
-    printf("       q_weight[0][0:10]: %s\n", q_ok ? "MATCH" : "MISMATCH");
-    if (q_ok) checks_passed++;
-
-    /* Check ffn_gate for layer 1 */
-    int ffn_gate_ok = 1;
-    float *l1_gate = loaded.gate_weight + 1 * ff * d;
-    for (int i = 0; i < 10; i++) {
-        if (fabsf(l1_gate[i] - original->layers[1].gate_weight[i]) > 1e-6f) {
-            ffn_gate_ok = 0; break;
-        }
-    }
-    printf("       gate_weight[1][0:10]: %s\n",
-           ffn_gate_ok ? "MATCH" : "MISMATCH");
-    if (ffn_gate_ok) checks_passed++;
-
-    printf("\n       Weight verification: %d/%d checks passed\n",
-           checks_passed, num_checks);
-
-    /* ---- Pippenger Attention Inference (default path) ---- */
-    printf("\n       === Pippenger Attention Inference ===\n");
-    printf("       (Pippenger is the DEFAULT attention backend)\n");
-
-    GGUFInferenceState ist;
-    ret = gguf_inference_init(&ist, &loaded);
-    if (ret != 0) {
-        printf("[FAIL] GGUF inference init failed\n");
-        gguf_weights_free(&loaded);
-        return;
-    }
-
-    Tokenizer tok;
-    tokenizer_init(&tok);
-
-    /* Multi-prompt Pippenger generation */
-    const char *prompts[] = {
-        "the future of",
-        "machine learning",
-        "hello world",
-        "once upon a"
-    };
-    int num_prompts = 4;
-
-    for (int p = 0; p < num_prompts; p++) {
-        /* Reset state for each prompt */
-        for (int l = 0; l < TINY_NUM_LAYERS; l++)
-            ist.cache_len[l] = 0;
-        ist.seq_len = 0;
-        memset(ist.hidden, 0, (size_t)ist.cfg.n_layers * ist.cfg.dim * sizeof(float));
-
-        int prompt_ids[32];
-        int np = tokenizer_encode(&tok, prompts[p], prompt_ids, 32);
-
-        /* Prefill */
-        for (int i = 0; i < np; i++)
-            gguf_model_forward(&ist, prompt_ids[i]);
-
-        /* Generate 6 tokens */
-        printf("       Prompt[%d]: \"%s\"\n", p + 1, prompts[p]);
-        printf("       Output[%d]: \"", p + 1);
-        for (int t = 0; t < 6; t++) {
-            int next = sample_token(ist.logits, vc, 0.8f, 0.9f);
-            const char *ts = tokenizer_decode(&tok, next);
-            if (ts && ts[0] && strcmp(ts, "<unk>") != 0) {
-                printf("%s", ts);
-                if (t < 5) printf(" ");
-            }
-            gguf_model_forward(&ist, next);
-        }
-        printf("\"\n");
-    }
-    printf("       [PASS] Pippenger multi-prompt generation complete\n");
-
-    /* Lightweight precision vs standard comparison */
-     printf("\n       === Precision vs Standard Attention ===\n");
-     {
-         /* Save Pippenger logits on fresh prompt, then compare with standard */
-         for (int l = 0; l < TINY_NUM_LAYERS; l++)
-             ist.cache_len[l] = 0;
-         ist.seq_len = 0;
-         memset(ist.hidden, 0, (size_t)ist.cfg.n_layers * ist.cfg.dim * sizeof(float));
-
-         int cmp_ids[32];
-         int nc = tokenizer_encode(&tok, "the future of", cmp_ids, 32);
-         for (int i = 0; i < nc; i++)
-             gguf_model_forward(&ist, cmp_ids[i]);
-
-         /* Copy Pippenger logits */
-         float *pip_logits = malloc(vc * sizeof(float));
-         memcpy(pip_logits, ist.logits, vc * sizeof(float));
-
-         /* Run standard attention on same prompt */
-         GGUFInferenceState ist_std;
-         int rc = gguf_inference_init(&ist_std, &loaded);
-         if (rc == 0) {
-             ist_std.use_pippenger = 0;
-             for (int i = 0; i < nc; i++)
-                 gguf_model_forward(&ist_std, cmp_ids[i]);
-
-             float max_diff = 0.0f, avg_diff = 0.0f;
-             for (int i = 0; i < vc; i++) {
-                 float diff = fabsf(pip_logits[i] - ist_std.logits[i]);
-                 avg_diff += diff;
-                 if (diff > max_diff) max_diff = diff;
-             }
-             avg_diff /= (float)vc;
-             printf("       Logits: max_diff=%.6f  avg_diff=%.8f �?%s\n",
-                    max_diff, avg_diff,
-                    avg_diff < 0.01f ? "PASS" : "ACCEPTABLE");
-
-             gguf_inference_free(&ist_std);
-         }
-         free(pip_logits);
-     }
-
-    /* Performance benchmark */
-    printf("\n       === Performance ===\n");
-    for (int mode = 0; mode < 2; mode++) {
-        /* Reset */
-        for (int l = 0; l < TINY_NUM_LAYERS; l++)
-            ist.cache_len[l] = 0;
-        ist.seq_len = 0;
-        memset(ist.hidden, 0, (size_t)ist.cfg.n_layers * ist.cfg.dim * sizeof(float));
-
-        int saved = ist.use_pippenger;
-        ist.use_pippenger = (mode == 0) ? 1 : 0;  /* Pippenger first, then standard */
-
-        int bench_ids[32];
-        int nb = tokenizer_encode(&tok, "hello world", bench_ids, 32);
-
-        clock_t t0 = clock();
-        for (int i = 0; i < nb; i++) gguf_model_forward(&ist, bench_ids[i]);
-        for (int t = 0; t < 8; t++) {
-            int next = sample_token(ist.logits, vc, 0.8f, 0.9f);
-            gguf_model_forward(&ist, next);
-        }
-        clock_t t1 = clock();
-        double elapsed = (double)(t1 - t0) / CLOCKS_PER_SEC;
-        const char *label = (mode == 0) ? "Pippenger" : "Standard ";
-        printf("       %s: %.4f sec �?%.1f tok/s\n",
-               label, elapsed, (double)(nb + 8) / elapsed);
-
-        ist.use_pippenger = saved;
-    }
-    printf("       [PASS] GGUF roundtrip + Pippenger inference complete\n");
-
-    /* Cleanup */
-    gguf_inference_free(&ist);
-    tokenizer_free(&tok);
-    gguf_weights_free(&loaded);
-    free(original);
-    original = NULL;
-    loaded.is_allocated = 0;
-
-    printf("\n[PASS] GGUF roundtrip test complete\n");
-}
-#endif /* Test 8: GGUF roundtrip */
-
-/* ================================================================
- * Test 9: Qwen3-VL-8B-Instruct Model Inference
- * ================================================================ */
-static void test_qwen3vl_inference(void) {
-    printf("\n=== Test 9: Qwen3-VL-8B-Instruct Inference ===\n");
-
-    /* Find model directory */
-    const char *model_paths[] = {
-        "../../Modl/千问3_VL_8B_Instruct",
-        "../Modl/千问3_VL_8B_Instruct",
-        "Modl/千问3_VL_8B_Instruct",
-        "../../Modl/Qwen3VL-8B-Instruct",
-        "../Modl/Qwen3VL-8B-Instruct",
-        "Modl/Qwen3VL-8B-Instruct",
-        NULL
-    };
-    const char *model_dir = NULL;
-    for (int i = 0; model_paths[i]; i++) {
-        char test_path[1024];
-        snprintf(test_path, sizeof(test_path), "%s/config.json", model_paths[i]);
-        if (st_access(test_path, 0) == 0) {
-            model_dir = model_paths[i];
-            break;
-        }
-    }
-    if (!model_dir) {
-        printf("[SKIP] Qwen3-VL model not found on disk.\n");
-        printf("       Place model at Modl/千问3_VL_8B_Instruct/\n");
-        return;
-    }
-    printf("[1/5] Model found: %s\n", model_dir);
-
-    /* Parse config */
-    STModelConfig cfg;
-    int ret = st_parse_config(model_dir, &cfg);
-    if (ret != 0) {
-        printf("[FAIL] Cannot parse model config\n");
-        return;
-    }
-    printf("[2/5] Config parsed: dim=%d layers=%d heads=%d(kv=%d) ffn=%d vocab=%d\n",
-           cfg.dim, cfg.n_layers, cfg.n_heads, cfg.n_kv_heads,
-           cfg.ffn_dim, cfg.vocab_size);
-    printf("       q_norm=%d mrope=%d rope_theta=%.0f\n",
-           cfg.has_q_norm, cfg.has_mrope, cfg.rope_theta);
-
-    /* Load tokenizer */
-    QwenTokenizer tok;
-    ret = qwen_tokenizer_load(&tok, model_dir);
-    if (ret != 0) {
-        printf("[FAIL] Cannot load tokenizer\n");
-        st_config_free(&cfg);
-        return;
-    }
-    qwen_tokenizer_load_special(&tok, model_dir);
-    printf("[3/5] Tokenizer loaded: %d tokens\n", tok.vocab_size);
-
-    /* Encode/Decode test */
-    {
-        const char *test_str = "Hello world";
-        int ids[64];
-        int n = qwen_tokenizer_encode(&tok, test_str, ids, 64);
-        printf("       Encode '%s' -> [", test_str);
-        for (int i = 0; i < n; i++) {
-            printf("%d", ids[i]);
-            if (i < n - 1) printf(", ");
-        }
-        printf("] (%d tokens)\n", n);
-
-        printf("       Decode -> \"");
-        for (int i = 0; i < n; i++) {
-            const char *s = qwen_tokenizer_decode(&tok, ids[i]);
-            if (s && s[0]) {
-                /* Skip Ġ prefix in display */
-                if ((unsigned char)s[0] == 0xC4 && (unsigned char)s[1] == 0xA0)
-                    printf("%s", s + 2);
-                else
-                    printf("%s", s);
-            }
-        }
-        printf("\"\n");
-    }
-
-    /* Chinese test */
-    {
-        const char *test_str = "\xe4\xbd\xa0\xe5\xa5\xbd";  /* 你好 in UTF-8 */
-        int ids[64];
-        int n = qwen_tokenizer_encode(&tok, test_str, ids, 64);
-        printf("       Encode '你好' -> [");
-        for (int i = 0; i < n; i++) {
-            printf("%d", ids[i]);
-            if (i < n - 1) printf(", ");
-        }
-        printf("] (%d tokens)\n", n);
-    }
-
-    /* Allocate all 36 layers with Q8_0-FFN (F32 attention + Q8_0 FFN ~17 GB) */
-    STModelWeights w;
-    st_weights_alloc_layers_q8ffn(&w, &cfg, cfg.n_layers);
-    if (!w.is_allocated) {
-        printf("[SKIP] Not enough memory for full model (~%.1f GB needed).\n",
-               (double)((size_t)cfg.vocab_size * cfg.dim * 2 +  /* embed + lm_head */
-                        (size_t)cfg.n_layers * cfg.dim * cfg.n_heads * cfg.head_dim * 4 +
-                        (size_t)cfg.n_layers * cfg.ffn_dim * cfg.dim * 3 / 4)  /* Q8 FFN */
-               / (1024.0 * 1024.0 * 1024.0));
-        printf("       Running tokenizer-only validation test.\n");
-        qwen_tokenizer_free(&tok);
-        st_weights_free(&w);
-        st_config_free(&cfg);
-        return;
-    }
-
-    /* Load token embeddings and final norm */
-    ret = st_load_tensor(&cfg, "model.language_model.embed_tokens.weight",
-                          w.token_embed, cfg.vocab_size * cfg.dim);
-    if (ret == 0) printf("       token_embed loaded OK\n");
-
-    ret = st_load_tensor(&cfg, "model.language_model.norm.weight",
-                          w.final_norm, cfg.dim);
-    if (ret == 0) printf("       final_norm loaded OK\n");
-
-    /* lm_head: skip if Q8_0-only (loaded later via temp buffer) */
-    if (w.lm_head) {
-        ret = st_load_tensor(&cfg, "lm_head.weight",
-                              w.lm_head, cfg.vocab_size * cfg.dim);
-        if (ret == 0) printf("       lm_head loaded OK\n");
-    }
-
-    /* Load all layers */
-    LARGE_INTEGER freq, t_ls, t_le;
-    QueryPerformanceFrequency(&freq);
-    QueryPerformanceCounter(&t_ls);
-    ret = st_load_layer_weights(&cfg, &w, 0, cfg.n_layers);
-    QueryPerformanceCounter(&t_le);
-    double load_sec = (double)(t_le.QuadPart - t_ls.QuadPart) / (double)freq.QuadPart;
-    if (ret == 0) printf("       %d layers loaded OK (%.1f sec)\n", cfg.n_layers, load_sec);
-
-    /* Verify a few weights */
-    printf("       Weight check: embed[0:4] = [");
-    for (int i = 0; i < 4; i++) printf("%.4f ", w.token_embed[i]);
-    printf("], final_norm[0:4] = [");
-    for (int i = 0; i < 4; i++) printf("%.4f ", w.final_norm[i]);
-    printf("]\n");
-
-    /* Quantize lm_head to Q8_0 + Q4_0 (axiom: fixedpoint_quantize_saturate)
-     * Load into temp buffer, quantize, free. Reduces 2.49 GB F32 → 660 MB Q8_0
-     * / 331 MB Q4_0. */
-    if (w.q8_lm_weight) {
-        printf("       Loading & quantizing lm_head to Q8_0 + Q4_0...\n");
-        fflush(stdout);
-        float *tmp_lm = malloc((size_t)cfg.vocab_size * cfg.dim * sizeof(float));
-        if (tmp_lm) {
-            st_load_tensor(&cfg, "lm_head.weight", tmp_lm, cfg.vocab_size * cfg.dim);
-            if (w.q8_lm_weight) {
-                if (w.q8_buf_q4)
-                    f32_to_q4i8(w.q8_lm_weight, tmp_lm, cfg.vocab_size * cfg.dim);
-                else if (st_wmode_effective() == 4)
-                    f32_to_g256q8(w.q8_lm_weight, tmp_lm, cfg.vocab_size * cfg.dim);
-                else
-                    f32_to_q8_0(w.q8_lm_weight, tmp_lm, cfg.vocab_size * cfg.dim);
-            }
-            if (w.q4_lm_weight)
-                f32_to_q4_0(w.q4_lm_weight, tmp_lm, cfg.vocab_size * cfg.dim);
-            if (w.q4_lm_weight)
-                repack_q4_0_4x4_inplace(w.q4_lm_weight, cfg.vocab_size, cfg.dim);
-            if (w.q8_lm_weight)
-                repack_q8_0_tiled_inplace(w.q8_lm_weight, cfg.vocab_size, cfg.dim);
-            free(tmp_lm);
-            printf("       Q8_0 + Q4_0 lm_head ready\n");
-        } else {
-            printf("       OOM: cannot load lm_head\n");
-        }
-    }
-
-    /* F32 attention & lm_head: already freed during per-layer temp loading.
-     * All F32 weight pointers are NULL �?forward pass uses Q8_0 exclusively. */
-    if (w.has_q8 && w.q8_q_weight) {
-        printf("       All attention + lm_head in Q8_0 (peak mem ~9 GB).\n");
-    }
-
-    /* ================================================================
-     * Full model inference benchmark
-     * ================================================================ */
-    {
-        printf("[4/5] Initializing inference state...\n");
-        fflush(stdout);
-
-        STQwenInferenceState ist;
-        ret = st_qwen_inference_init(&ist, &w);
-        if (ret != 0) {
-            printf("[FAIL] Cannot init inference state\n");
-            qwen_tokenizer_free(&tok);
-            st_weights_free(&w);
-            st_config_free(&cfg);
-            return;
-        }
-        printf("       KV-cache: %d tokens x %d layers, Q8_0 FFN: %s\n",
-               w.cfg.max_seq_len, cfg.n_layers, w.has_q8 ? "ON" : "OFF");
-
-        /* BOS single-token forward */
-        int bos = tok.bos_id > 0 ? tok.bos_id : 151643;
-        QueryPerformanceCounter(&t_ls);
-        st_qwen_model_forward(&ist, bos);
-        QueryPerformanceCounter(&t_le);
-        double bos_sec = (double)(t_le.QuadPart - t_ls.QuadPart) / (double)freq.QuadPart;
-        printf("\n       --- BOS Forward (single token) ---\n");
-        printf("       Time: %.3f sec\n", bos_sec);
-        printf("       Top-10 predictions:\n");
-        {
-            float top10[10]; int top10i[10];
-            for (int i = 0; i < 10; i++) { top10[i] = -1e9f; top10i[i] = -1; }
-            for (int t = 0; t < cfg.vocab_size; t++) {
-                float v = ist.logits[t];
-                for (int j = 0; j < 10; j++) {
-                    if (v > top10[j]) {
-                        for (int k = 9; k > j; k--) { top10[k] = top10[k-1]; top10i[k] = top10i[k-1]; }
-                        top10[j] = v; top10i[j] = t; break;
-                    }
-                }
-            }
-            for (int i = 0; i < 10; i++) {
-                const char *s = qwen_tokenizer_decode(&tok, top10i[i]);
-                printf("         #%d: tid=%d score=%.2f", i + 1, top10i[i], top10[i]);
-                if (s && s[0]) {
-                    if ((unsigned char)s[0] == 0xC4 && (unsigned char)s[1] == 0xA0)
-                        printf(" -> \"%s\"", s + 2);
-                    else
-                        printf(" -> \"%s\"", s);
-                }
-                printf("\n");
-            }
-        }
-
-        /* Decode speed test: 5 tokens after BOS */
-        printf("\n       --- Decode Speed (5 tokens) ---\n");
-        fflush(stdout);
-        {
-            QueryPerformanceCounter(&t_ls);
-            int prev_tok = bos;
-            for (int step = 0; step < 5; step++) {
-                /* Greedy decode: pick argmax logit */
-                float best = -1e9f; int best_id = 0;
-                for (int t = 0; t < cfg.vocab_size; t++) {
-                    if (ist.logits[t] > best) { best = ist.logits[t]; best_id = t; }
-                }
-                prev_tok = best_id;
-                st_qwen_model_forward(&ist, prev_tok);
-            }
-            QueryPerformanceCounter(&t_le);
-            double dec_sec = (double)(t_le.QuadPart - t_ls.QuadPart) / (double)freq.QuadPart;
-            printf("       Decode 5 tokens: %.3f sec (%.1f tok/s)\n",
-                   dec_sec, 5.0 / dec_sec);
-        }
-
-        /* Prefill speed test: 32-token prompt */
-        printf("\n       --- Prefill Speed (32 tokens) ---\n");
-        fflush(stdout);
-        {
-            const char *prompt_str = "The capital of France is";
-            int prompt_ids[64];
-            int prompt_n = qwen_tokenizer_encode(&tok, prompt_str, prompt_ids, 64);
-            if (prompt_n <= 0) { prompt_n = 5; prompt_ids[0] = bos; }
-            printf("       Prompt: \"%s\" (%d tokens)\n", prompt_str, prompt_n);
-
-            /* Re-init clean state */
-            st_qwen_inference_free(&ist);
-            st_qwen_inference_init(&ist, &w);
-            ist.seq_len = 0;
-            for (int l = 0; l < cfg.n_layers; l++) ist.cache_len[l] = 0;
-
-            QueryPerformanceCounter(&t_ls);
-            for (int t = 0; t < prompt_n; t++)
-                st_qwen_model_forward(&ist, prompt_ids[t]);
-            QueryPerformanceCounter(&t_le);
-            double prefill_sec = (double)(t_le.QuadPart - t_ls.QuadPart) / (double)freq.QuadPart;
-            printf("       Prefill %d tokens: %.3f sec (%.1f tok/s)\n",
-                   prompt_n, prefill_sec, (double)prompt_n / prefill_sec);
-
-            /* Decode 5 more tokens after prefill */
-            printf("       --- Decode after Prefill (5 tokens) ---\n");
-            fflush(stdout);
-            QueryPerformanceCounter(&t_ls);
-            for (int step = 0; step < 5; step++) {
-                float best = -1e9f; int best_id = 0;
-                for (int t = 0; t < cfg.vocab_size; t++) {
-                    if (ist.logits[t] > best) { best = ist.logits[t]; best_id = t; }
-                }
-                st_qwen_model_forward(&ist, best_id);
-            }
-            QueryPerformanceCounter(&t_le);
-            double dec2_sec = (double)(t_le.QuadPart - t_ls.QuadPart) / (double)freq.QuadPart;
-            printf("       Decode 5 tokens (32-tok ctx): %.3f sec (%.1f tok/s)\n",
-                   dec2_sec, 5.0 / dec2_sec);
-        }
-
-        /* Complete generation test */
-        printf("\n       --- Generate 20 tokens (greedy, from BOS) ---\n");
-        fflush(stdout);
-        {
-            st_qwen_inference_free(&ist);
-            st_qwen_inference_init(&ist, &w);
-
-            int prev_tok = bos;
-            QueryPerformanceCounter(&t_ls);
-            printf("       Output: ");
-            fflush(stdout);
-            for (int step = 0; step < 20; step++) {
-                st_qwen_model_forward(&ist, prev_tok);
-                float best = -1e9f; int best_id = 0;
-                for (int t = 0; t < cfg.vocab_size; t++) {
-                    if (ist.logits[t] > best) { best = ist.logits[t]; best_id = t; }
-                }
-                const char *s = qwen_tokenizer_decode(&tok, best_id);
-                if (s && s[0]) {
-                    if ((unsigned char)s[0] == 0xC4 && (unsigned char)s[1] == 0xA0)
-                        printf("%s", s + 2);
-                    else
-                        printf("%s", s);
-                }
-                fflush(stdout);
-                prev_tok = best_id;
-            }
-            printf("\n");
-            QueryPerformanceCounter(&t_le);
-            double gen_sec = (double)(t_le.QuadPart - t_ls.QuadPart) / (double)freq.QuadPart;
-            printf("       Generation: 20 tokens in %.3f sec (%.1f tok/s)\n",
-                   gen_sec, 20.0 / gen_sec);
-        }
-
-        /* Chat template generation test */
-        printf("\n       --- Generate 30 tokens (chat template) ---\n");
-        fflush(stdout);
-        {
-            st_qwen_inference_free(&ist);
-            st_qwen_inference_init(&ist, &w);
-
-            /* Build chat template tokens:
-             * <|im_start|>system\nYou are a helpful assistant.<|im_end|>\n
-             * <|im_start|>user\nHello, who are you?<|im_end|>\n
-             * <|im_start|>assistant\n */
-            int prompt_ids[256];
-            int pn = 0;
-            int im_start = tok.im_start_id > 0 ? tok.im_start_id : 151644;
-            int im_end   = tok.im_end_id   > 0 ? tok.im_end_id   : 151645;
-            int nl_tok   = 198;  /* Ċ token = newline in Qwen tokenizer */
-            int tmp_ids[128]; int n;
-
-            /* <|im_start|>system\nYou are a helpful assistant.<|im_end|>\n */
-            prompt_ids[pn++] = im_start;
-            n = qwen_tokenizer_encode(&tok, "system", tmp_ids, 128);
-            for (int i = 0; i < n; i++) prompt_ids[pn++] = tmp_ids[i];
-            prompt_ids[pn++] = nl_tok;
-            n = qwen_tokenizer_encode(&tok, "You are a helpful assistant.", tmp_ids, 128);
-            for (int i = 0; i < n; i++) prompt_ids[pn++] = tmp_ids[i];
-            prompt_ids[pn++] = im_end;
-            prompt_ids[pn++] = nl_tok;
-
-            /* <|im_start|>user\nHello, who are you?<|im_end|>\n */
-            prompt_ids[pn++] = im_start;
-            n = qwen_tokenizer_encode(&tok, "user", tmp_ids, 128);
-            for (int i = 0; i < n; i++) prompt_ids[pn++] = tmp_ids[i];
-            prompt_ids[pn++] = nl_tok;
-            n = qwen_tokenizer_encode(&tok, "Hello, who are you?", tmp_ids, 128);
-            for (int i = 0; i < n; i++) prompt_ids[pn++] = tmp_ids[i];
-            prompt_ids[pn++] = im_end;
-            prompt_ids[pn++] = nl_tok;
-
-            /* <|im_start|>assistant\n */
-            prompt_ids[pn++] = im_start;
-            n = qwen_tokenizer_encode(&tok, "assistant", tmp_ids, 128);
-            for (int i = 0; i < n; i++) prompt_ids[pn++] = tmp_ids[i];
-            prompt_ids[pn++] = nl_tok;
-
-            printf("       Chat prompt: %d tokens\n", pn);
-
-            /* Prefill with chat template */
-            for (int i = 0; i < pn; i++)
-                st_qwen_model_forward(&ist, prompt_ids[i]);
-
-            /* Generate */
-            printf("       Output: ");
-            fflush(stdout);
-            QueryPerformanceCounter(&t_ls);
-            for (int step = 0; step < 30; step++) {
-                float best = -1e9f; int best_id = 0;
-                for (int t = 0; t < cfg.vocab_size; t++) {
-                    if (ist.logits[t] > best) { best = ist.logits[t]; best_id = t; }
-                }
-                /* Stop at EOS */
-                if (best_id == tok.eos_id || best_id == im_end) break;
-                const char *s = qwen_tokenizer_decode(&tok, best_id);
-                if (s && s[0]) {
-                    if ((unsigned char)s[0] == 0xC4 && (unsigned char)s[1] == 0xA0)
-                        printf("%s", s + 2);
-                    else
-                        printf("%s", s);
-                }
-                fflush(stdout);
-                st_qwen_model_forward(&ist, best_id);
-            }
-            printf("\n");
-            QueryPerformanceCounter(&t_le);
-            double gen_sec = (double)(t_le.QuadPart - t_ls.QuadPart) / (double)freq.QuadPart;
-            printf("       Chat gen: 30 tokens in %.3f sec (%.1f tok/s)\n",
-                   gen_sec, 30.0 / gen_sec);
-        }
-
-        /* Summary */
-        printf("\n       === Full Model (%d layers) Summary ===\n", cfg.n_layers);
-        printf("       dim=%d heads=%d(kv=%d) ffn=%d vocab=%d\n",
-               cfg.dim, cfg.n_heads, cfg.n_kv_heads, cfg.ffn_dim, cfg.vocab_size);
-        printf("       Weight loading: %.1f sec\n", load_sec);
-        printf("       BOS forward: %.3f sec\n", bos_sec);
-        printf("       Q8_0 FFN: %s\n", w.has_q8 ? "ACTIVE" : "off");
-        printf("       [PASS] Qwen3-VL full model inference complete\n");
-
-        st_qwen_inference_free(&ist);
-    }
-
-    qwen_tokenizer_free(&tok);
-    st_weights_free(&w);
-    st_config_free(&cfg);
-    return;
-
-}  /* test_qwen3vl_inference */
 
 /* ================================================================
  * Test 10: Performance Benchmark �?Single-User & Multi-User Concurrent
@@ -1593,6 +484,11 @@ static void test_qwen3vl_inference(void) {
  * single-user TTFT/TPOT stays the primary CPU-vs-NPU comparison metric. */
 static int g_bench_users = 10;
 
+/* --bench-users N 被显式指定 → 触发完整 Part A/B/C 多用户基准
+ * （回移来源：GitHupSRC/src/main.c:4897-4900；旧引擎由无参默认路径调用
+ *  test_performance_benchmark，这里改为显式标志，保证无 flag 默认行为不变）。 */
+static int g_bench_users_set = 0;
+
 /* --perf-partA: run only Part A (single-user TTFT/TPOT) of the performance
  * benchmark, then stop. Skips the multi-user Part B/C to bound wall time on
  * the SD-card board; Part A is the CPU-vs-NPU comparison core. */
@@ -1614,9 +510,9 @@ static int g_longctx_ctx = 0;
 static int  g_serve_port = -1;
 static int  g_serve_port_explicit = 0;  /* set only by --port (no interactive prompt) */
 static const char *g_serve_model_dir = NULL;
-static const char *g_convert_vqf = NULL; /* --convert-vqf <out>: dump VQF and exit */
-static const char *g_convert_gguf = NULL; /* --convert-gguf <out>: GGUF -> VQF and exit */
-static const char *g_gguf_info = NULL;    /* --gguf-info <path>: dump GGUF structure and exit */
+static int g_stream_test = 0;   /* --stream-test: AirLLM 型分层驻留验证 */
+static int g_stream_n    = 12;  /* --stream-n N: decode token 数 */
+static int g_moe_l0      = -1;  /* --moe-l0 <tok>: M3 layer-0 单 token 对拍 dump */
 static const char *g_serve_model_id = NULL;
 static int  g_serve_threads = 8;       /* HTTP worker threads */
 static int  g_serve_max_queued = 16;   /* max queued inference requests (429 beyond) */
@@ -1630,8 +526,12 @@ static int  g_serve_auto_load = 0;     /* --auto-load: load the model at startup
 static int  g_serve_load_on_use = 0;   /* --load-on-use: 请求到达且模型未加载时自动加载（用时加载） */
 static long g_serve_auto_unload_s = 0; /* --auto-unload N: 空闲 N 秒后自动卸载模型（不用时卸载，
                                         * 隐含启用 --load-on-use 形成 加载→使用→空闲→卸载 循环） */
-static int  g_serve_load_format = 0;   /* --load-format: 0=auto(VQF>GGUF>safetensors),
-                                        * 1=vqf优先, 2=safetensors优先, 3=gguf优先 */
+static int  g_serve_load_format = 0;   /* --load-format: 0=auto(VQF), 1=vqf */
+
+/* Last model dir whose NPU strip-cache (st_npu_gw_*) is resident. Loading a
+ * DIFFERENT model must drop the stale strips (different weights/geometry);
+ * same-model reloads keep them so a reloaded request skips the rebuild storm. */
+static char g_npu_loaded_model[1024];
 
 /* Device classification (auto-detected, overridable via --device). */
 static VDevInfo g_dev;                       /* detection result */
@@ -1652,6 +552,10 @@ static int g_prefix_kv = 1;
  * as its default sampler; request body min_p overrides. */
 static double g_serve_min_p = 0.0;
 
+/* serve: default top-k sampling truncation (0 = off, --top-k N). Qwen3
+ * thinking 档官方建议 top_k=20；请求体 top_k 可逐请求覆盖。 */
+static int    g_serve_top_k = 0;
+
 /* serve: disk KV persistence (--disk-kv DIR). F32 KV snapshots of finished
  * conversations survive process restarts; see vllm_server.c / st_kv_disk_*. */
 static int    g_disk_kv = 0;
@@ -1661,6 +565,19 @@ static char   g_disk_kv_dir[512] = {0};
  * Greedy-only and text-only; default draft length 4 (--spec-k). */
 static int    g_spec = 0;
 static int    g_spec_k = 4;
+
+/* serve: 内存驻留策略（档位阶梯）CLI 覆盖。vllm_res_defaults 提供默认空闲
+ * 计划 {5m,15m,30m,60m}；以下选项可在启动时改写（管理页运行期仍可调）：
+ *   --res-auto        空闲逐级自动降级开（等价管理页"自动降级"勾选）
+ *   --res-idle a,b,c,d 各档停留秒数（L4→L3,L3→L2,L2→L1,L1→L0；0=停在该档）
+ *   --res-soft-mb N   软水位（可用内存低于 N MB → 自动降一档）
+ *   --res-low N       自动动作允许的最低档（0..4；设 3 可只降 KV 淘汰）
+ *   --res-w-keep N    L2 权重窗口层数（保留 0..N 层，默认 8） */
+static int  g_res_auto = 0;
+static long g_res_idle_s[4] = {0, 0, 0, 0};   /* 0 = 使用默认计划 */
+static int  g_res_soft_mb = 0;
+static int  g_res_low_lvl = -1;               /* -1 = 使用默认(0) */
+static int  g_res_w_keep = 0;                 /* 0 = 使用默认(8) */
 
 /* Transparent RK3588 NPU offload (--npu). When enabled, prefill GEMM stages
  * are offered to the NPU; any missing model / absent runtime falls back to
@@ -1882,11 +799,83 @@ static int build_needle_prompt(QwenTokenizer *tok, int S,
     return pos;
 }
 
+/* VLLM_L3_DIAG=1: evict 段 VmRSS 采样 + mirror 尺寸统计。验证 serve 多轮下
+ * 的 L3 RSS 棘轮（2026-09-07 实测 FS/NS 每轮 +~309MB，尽管日志逐轮
+ * "evicted ... freed 236/49MB"——逻辑 free ≠ RSS 实降；根因与结论见
+ * 方案文档 §5.1）。 */
+static int l3_diag_on(void) {
+    const char *e = getenv("VLLM_L3_DIAG");
+    return (e && e[0] == '1') ? 1 : 0;
+}
+#ifdef __linux__
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/mman.h>
+static long l3_diag_rss_kb(void) {
+    FILE *f = fopen("/proc/self/status", "r");
+    if (!f) return -1;
+    char line[256];
+    long kb = -1;
+    while (fgets(line, sizeof(line), f)) {
+        if (sscanf(line, "VmRSS: %ld kB", &kb) == 1) break;
+    }
+    fclose(f);
+    return kb;
+}
+/* pagemap resident 统计（present bit）：页对齐内窗的驻留字节数。
+ * 用于 L3 evict 前核对"将 munmap 的块实际驻留多少页"，判定 RSS 回落
+ * 不对称（anon 页返回问题）根因。自进程 /proc/self/pagemap 可读。 */
+static long l3_diag_resident_bytes(const void *p, size_t len) {
+    long pg = sysconf(_SC_PAGESIZE);
+    if (pg <= 0 || !p || len == 0) return -1;
+    uintptr_t a = (uintptr_t)p;
+    uintptr_t lo = (a + (uintptr_t)pg - 1) & ~((uintptr_t)pg - 1);
+    uintptr_t hi = (a + len) & ~((uintptr_t)pg - 1);
+    if (hi <= lo) return 0;
+    size_t n = (size_t)((hi - lo) / (uintptr_t)pg);
+    int fd = open("/proc/self/pagemap", O_RDONLY);
+    if (fd < 0) return -1;
+    off_t base_off = (off_t)(lo / (uintptr_t)pg) * 8;
+    unsigned char buf[4096];
+    size_t per = sizeof(buf) / 8;
+    long res = 0;
+    size_t done = 0;
+    while (done < n) {
+        size_t chunk = n - done;
+        if (chunk > per) chunk = per;
+        ssize_t rd = pread(fd, buf, chunk * 8, base_off + (off_t)done * 8);
+        if (rd != (ssize_t)(chunk * 8)) break;
+        for (size_t i = 0; i < chunk; i++) {
+            uint64_t e;
+            memcpy(&e, buf + i * 8, 8);
+            if (e & (1ull << 63)) res++;   /* present bit */
+        }
+        done += chunk;
+    }
+    close(fd);
+    return res * pg;
+}
+#else
+static long l3_diag_rss_kb(void) { (void)0; return -1; }
+static long l3_diag_resident_bytes(const void *p, size_t len) {
+    (void)p; (void)len;
+    return -1;   /* /proc/self/pagemap 仅 Linux 可用 */
+}
+#endif
+
 /* Phase-2 hook: after prefill, pack the cold KV blocks into the Q4 disk file
  * (--l3-evict) and physically free them from RAM. Sparse decode re-reads
  * evicted blocks on demand from st->l3 in compressed Q4 form.
- * Shared by the bench path and the HTTP serve path (vllm_server.c). */
-void l3_evict_after_prefill(STQwenInferenceState *st) {
+ * Shared by the bench path and the HTTP serve path (vllm_server.c).
+ *
+ * P3：
+ *   keep_lcp    = 本轮复用的前缀长度（0 = 全量 prefill）。用于判定哪些块的
+ *                 内容本轮被改写（行 >= keep_lcp）→ 其旧载荷作废。
+ *   incremental = 1（门 VLLM_L3_PREFIX_REUSE 开）时跨轮保留 L3 状态、只重打包
+ *                 被改写的块；0 时保持旧的"每轮 rewind + 全量重打包"语义。
+ * 注意：keep_lcp 只影响 incremental 分支，incremental=0 时行为与加参数前逐位一致。
+ */
+void l3_evict_after_prefill(STQwenInferenceState *st, int keep_lcp, int incremental) {
     if (!g_l3_evict) return;
     if (!g_sparse_attn) {
         fprintf(stderr, "[L3] warning: --l3-evict requires --sparse-attn "
@@ -1894,16 +883,30 @@ void l3_evict_after_prefill(STQwenInferenceState *st) {
         return;
     }
     STL3State *l3 = &st->l3;
+    int diag = l3_diag_on();
+    long rss_enter = diag ? l3_diag_rss_kb() : -1;
+    /* VLLM_L3_MADV=1：evict 释放前先对块做 MADV_DONTNEED（对比档）——
+     * 验证残余棘轮是否因 munmap 单独回收滞后，而显式 DONTNEED 丢弃页可即时回落。 */
+    static int g_l3_madv = -1;
+    if (g_l3_madv < 0) {
+        const char *e = getenv("VLLM_L3_MADV");
+        g_l3_madv = (e && e[0] == '1') ? 1 : 0;
+    }
+    /* P1 跨轮镜像复用（VLLM_L3_MIRROR_REUSE=0 回退旧语义，默认开）。
+     * 旧路径每轮 l3_state_free + l3_state_init + l3_load_to_mem 会把 Q4 镜像
+     * 整块重建（malloc+memset+全量 read），是 serve 同用户多轮 RSS 残余
+     * +51.7MB/轮 的来源之一（《内存分页优化方案》D1）。复用时把上一轮的镜像
+     * 摘出来交回 init 覆盖写；l3_load_to_mem 负责把本轮读不到的尾部页归还内核。
+     * 所有权规则：pm 一旦摘出，除交给 l3_state_init_reuse 外，本函数任一早退
+     * 都必须 free(pm)（init 失败路径由 init 内部释放）。 */
+    static int g_l3_mirror_reuse = -1;
+    if (g_l3_mirror_reuse < 0) {
+        const char *e = getenv("VLLM_L3_MIRROR_REUSE");
+        g_l3_mirror_reuse = (e && e[0] == '0') ? 0 : 1;
+    }
     int nl = st->weights.n_layers_allocated;
     int kv_dim = st->cfg.n_kv_heads * st->cfg.head_dim;
     int seq_len = st->cache_len[0];
-    /* Eviction trigger threshold: skip until the context is long enough
-     * (--l3-min-seq). Below the threshold the full KV stays in RAM. */
-    if (g_l3_min_seq > 0 && seq_len < g_l3_min_seq) {
-        fprintf(stderr, "[L3] skipped: seq=%d < l3-min-seq=%d (KV stays in RAM)\n",
-                seq_len, g_l3_min_seq);
-        return;
-    }
     /* L3 cache file path: per-user file (serve, --l3-evict + user field),
      * else --l3-path, else kv_l3.bin in the CWD. */
     const char *l3path = (g_l3_cur_path && g_l3_cur_path[0]) ? g_l3_cur_path
@@ -1925,46 +928,208 @@ void l3_evict_after_prefill(STQwenInferenceState *st) {
                 g_l3_max_size, capacity, st->kv_n_blocks,
                 (L3_HEADER_SIZE + (double)nl * capacity * bb) / 1048576.0);
     }
-    if (l3_state_init(l3, l3path, nl, st->cfg.n_kv_heads,
-                      st->cfg.head_dim, st->kv_bs, capacity) != 0) {
-        fprintf(stderr, "[L3] eviction skipped: cannot open %s\n", l3path);
+
+    /* P3 增量：门开且上一轮状态同文件/同几何/同容量 → **保留** blocks[]、fp
+     * 与镜像，块载荷跨轮续用；只对被改写的块重打包。这既消掉 R1（每轮
+     * Q4→反量化→Q4 重复量化），也让 keep>0 时仍能驱逐（R4）。
+     * incremental=0（门关，默认）时恒为 0 → 完全走旧的每轮重建路径。 */
+    int retain = incremental && l3_state_matches(l3, l3path, nl,
+                                                st->cfg.n_kv_heads,
+                                                st->cfg.head_dim, st->kv_bs,
+                                                capacity);
+    uint8_t *pm = NULL;
+    size_t pc = 0;
+    if (retain) {
+        fprintf(stderr, "[L3] incremental: retain state (packed_total=%d, "
+                        "cursor=%.2f MB)\n",
+                l3->evicted, (double)l3->wcursor / 1048576.0);
+        fflush(stderr);
+    } else if (l3->mem || l3->fp || l3->blocks || l3->evicted) {
+        /* 释放上一轮残留的 L3 状态。serve 同用户多轮此前没有任何清理点：
+         * 下一轮 l3_state_init 的 memset(s,0) 会直接把上一轮 Q4 镜像指针
+         * s->mem（修复前按全容量 ~280MiB 分配）丢弃 -> 每轮泄漏一个镜像，
+         * 实测 FS/NS 多轮 RSS 棘轮 +~309 MB/轮（方案文档 §5.1）。先重置再重建
+         * （l3_state_free/l3_state_rewind 对零结构安全；evict 本轮的 decode 需要
+         * 本次新建的镜像，上一轮镜像在本次 prefill 期间已是死重）。 */
+        if (diag) {
+            fprintf(stderr, "[L3-DIAG] evict enter rss=%ld kB, stale "
+                            "mirror=%zu B (cap %zu), fp=%s -> %s\n",
+                    rss_enter, l3->mem_size, l3->mem_cap,
+                    l3->fp ? "open" : "null",
+                    g_l3_mirror_reuse ? "rewind(keep mirror)" : "state_free");
+            fflush(stderr);
+        }
+        if (g_l3_mirror_reuse) l3_state_rewind(l3, &pm, &pc);
+        else                   l3_state_free(l3);
+        if (diag) {
+            fprintf(stderr, "[L3-DIAG] after stale reset rss=%ld kB "
+                            "(reused mirror %zu B)\n", l3_diag_rss_kb(), pc);
+            fflush(stderr);
+        }
+    }
+    /* Eviction trigger threshold: skip until the context is long enough
+     * (--l3-min-seq). Below the threshold the full KV stays in RAM. */
+    if (g_l3_min_seq > 0 && seq_len < g_l3_min_seq) {
+        fprintf(stderr, "[L3] skipped: seq=%d < l3-min-seq=%d (KV stays in RAM)\n",
+                seq_len, g_l3_min_seq);
+        free(pm);   /* P1：本轮不驱逐，摘出的镜像不再复用，交还堆 */
         return;
     }
+    if (!retain) {
+        /* P1：把上一轮摘出的镜像交回复用（容量不足时 init 内部会自行扩容）；
+         * 失败路径由 l3_state_init_common 负责释放 pm。 */
+        if (l3_state_init_reuse(l3, l3path, nl, st->cfg.n_kv_heads,
+                                st->cfg.head_dim, st->kv_bs, capacity,
+                                pm, pc) != 0) {
+            fprintf(stderr, "[L3] eviction skipped: cannot open %s\n", l3path);
+            return;
+        }
+        pm = NULL; pc = 0;   /* 所有权已转移给 l3（后续早退不得再 free） */
+    }
+
+    /* evict 是每轮瞬态标记：先全清（含 b >= n_blocks 的尾部块），再由
+     * l3_evict_layer 置位。 */
+    for (size_t i = 0; i < (size_t)nl * (size_t)l3->max_blocks; i++)
+        l3->blocks[i].evict = 0;
+    /* 增量：**完全落在本轮复用前缀内**的块内容未变（只有行 >= keep 被本轮
+     * prefill/decode 改写），其载荷继续有效；其余（含 b >= n_blocks 的、
+     * 序列变短后残留的）必须标 stale —— 否则只释放 RAM 会让 decode 读到
+     * 与当前内容不符的旧 KV。 */
+    if (retain) {
+        int bs = st->kv_bs > 0 ? st->kv_bs : 32;
+        int blk_full = keep_lcp > 0 ? keep_lcp / bs : 0;
+        for (int l = 0; l < nl; l++)
+            for (int b = blk_full; b < l3->max_blocks; b++) {
+                STL3Block *bm = &l3->blocks[(size_t)l * (size_t)l3->max_blocks
+                                            + (size_t)b];
+                if (bm->on_disk) bm->stale = 1;
+            }
+    }
+    int round_packed = 0;
     for (int l = 0; l < nl; l++) {
-        l3_evict_layer(l3, l, st->k_cache[l], st->v_cache[l], kv_dim,
-                       seq_len, st->prefill_importance, g_l3_ratio, st->kv_bs);
+        if (st->k_cache && st->k_cache[l]) {
+            round_packed += l3_evict_layer(l3, l, st->k_cache[l], st->v_cache[l],
+                                           kv_dim, seq_len, st->prefill_importance,
+                                           g_l3_ratio, st->kv_bs);
+        } else if (st->use_kv_q8 && st->k_cache_q8 && st->k_cache_q8[l]) {
+            /* P2 nof32：f32 正典未分配 → 从 q8+scale 打包 Q4 镜像（位级 =
+             * kv_dequant_roundtrip 反量化行，见 vllm_l3.h l3_evict_layer_q8） */
+            round_packed += l3_evict_layer_q8(l3, l, st->k_cache_q8[l],
+                                              st->v_cache_q8[l],
+                                              st->k_scale[l], st->v_scale[l],
+                                              kv_dim, seq_len,
+                                              st->prefill_importance, g_l3_ratio,
+                                              st->kv_bs, st->cfg.n_kv_heads);
+        }
     }
 
     /* Mirror the payload into RAM so sparse decode serves evicted blocks from
      * memory: no FILE I/O in the decode hot path (the shared-fp fseek/fread
-     * churn corrupted the heap) and much lower decode latency. */
-    if (l3_load_to_mem(l3) != 0)
-        fprintf(stderr, "[L3] warning: could not mirror kv_l3.bin to RAM; "
-                        "decode will read the file directly\n");
+     * churn corrupted the heap) and much lower decode latency.
+     * P3 增量：本轮没重打包任何块时镜像仍是上一轮的有效内容，无需重读。 */
+    if (round_packed > 0 || l3->mem_size == 0) {
+        if (l3_load_to_mem(l3) != 0)
+            fprintf(stderr, "[L3] warning: could not mirror kv_l3.bin to RAM; "
+                            "decode will read the file directly\n");
+    }
+    if (diag) {
+        size_t cap_total = (size_t)L3_HEADER_SIZE
+                         + (size_t)nl * (size_t)capacity * l3->block_bytes;
+        fprintf(stderr, "[L3-DIAG] mirror extent=%zu B (%.1f MiB), cap=%zu B "
+                        "(%.1f MiB); old full-capacity sizing would be %zu B "
+                        "(%.1f MiB); rss=%ld kB\n",
+                l3->mem_size, l3->mem_size / 1048576.0,
+                l3->mem_cap, l3->mem_cap / 1048576.0,
+                cap_total, cap_total / 1048576.0, l3_diag_rss_kb());
+        fflush(stderr);
+    }
 
-    /* Phase 2b: physically free the evicted blocks from RAM. Sparse decode
-     * serves them straight from the Q4 disk state (see sparse_attn_head). */
+    /* Phase 2b: physically free the blocks this round decided to move out of
+     * RAM (bm->evict). Sparse decode serves them straight from the Q4 disk
+     * state (see sparse_attn_head). P3 增量下，这与"本轮是否重打包"解耦：
+     * 载荷有效的块只释放 RAM，不重打包。 */
     size_t freed_bytes = 0;
+    int round_evict = 0;
     int nblocks = (seq_len + st->kv_bs - 1) / st->kv_bs;
+    /* VLLM_L3_PAGEMAP=1：free 前对将 munmap 的块做 pagemap resident 统计，
+     * 与 evict 段实测 RSS 回落对照——判定"逻辑 freed 量 vs 实际驻留 vs
+     * RSS 实降"的不对称来自假释放（未触页）还是 munmap 回收滞后。 */
+    if (diag && getenv("VLLM_L3_PAGEMAP") && getenv("VLLM_L3_PAGEMAP")[0] == '1') {
+        size_t res_f32 = 0, res_q8 = 0, n_on = 0;
+        for (int l = 0; l < nl; l++) {
+            float **kfl = st->k_cache ? st->k_cache[l] : NULL;
+            for (int b = 0; b < nblocks; b++) {
+                STL3Block *bm = &l3->blocks[(size_t)l * l3->max_blocks + b];
+                if (!bm->evict) continue;
+                n_on++;
+                size_t fdat = (size_t)st->kv_bs * (size_t)kv_dim * sizeof(float);
+                size_t idat = (size_t)st->kv_bs * (size_t)kv_dim;
+                if (kfl && kfl[b]) {
+                    long r = l3_diag_resident_bytes(kfl[b], fdat);
+                    if (r >= 0) res_f32 += (size_t)r;
+                }
+                if (st->k_cache_q8[l] && st->k_cache_q8[l][b]) {
+                    long r = l3_diag_resident_bytes(st->k_cache_q8[l][b], idat);
+                    if (r >= 0) res_q8 += (size_t)r;
+                }
+            }
+        }
+        fprintf(stderr, "[L3-DIAG] pre-free evict=%zu resident f32=%.1f MB q8=%.1f MB "
+                        "(sum %.1f MB)\n",
+                n_on, res_f32 / 1048576.0, res_q8 / 1048576.0,
+                (res_f32 + res_q8) / 1048576.0);
+        fflush(stderr);
+    }
     for (int l = 0; l < nl; l++) {
+        float **kfl = st->k_cache ? st->k_cache[l] : NULL;   /* P3/P2: nof32 无 f32 块 */
+        float **vfl = st->v_cache ? st->v_cache[l] : NULL;
         for (int b = 0; b < nblocks; b++) {
             STL3Block *bm = &l3->blocks[(size_t)l * l3->max_blocks + b];
-            if (bm->on_disk && st->k_cache[l][b]) {
-                freed_bytes += 2 * (size_t)st->kv_bs * (size_t)kv_dim * sizeof(float);
-                st_qwen_kv_free_raw((uint8_t *)st->k_cache[l][b] - KV_GUARD);  st->k_cache[l][b] = NULL;
-                st_qwen_kv_free_raw((uint8_t *)st->v_cache[l][b] - KV_GUARD);  st->v_cache[l][b] = NULL;
+            /* P3 增量：释放判据从 on_disk 改为 evict —— on_disk 现在表示
+             * "载荷有效"（跨轮保留），evict 才是"本轮要移出 RAM"。沿用 on_disk
+             * 会把"上一轮冷、这一轮热"的块也误释放，等于丢掉 L3 的热块语义。 */
+            if (bm->evict) {
+                round_evict++;
+                size_t fdat = (size_t)st->kv_bs * (size_t)kv_dim * sizeof(float);
+                size_t idat = (size_t)st->kv_bs * (size_t)kv_dim;
+                if (kfl && kfl[b]) {
+                    freed_bytes += 2 * fdat;
+#ifdef __linux__
+                    if (g_l3_madv) {
+                        madvise(kfl[b], fdat, MADV_DONTNEED);
+                        madvise(vfl[b], fdat, MADV_DONTNEED);
+                    }
+#endif
+                    st_qwen_kv_free_block(kfl[b], fdat);  kfl[b] = NULL;
+                    st_qwen_kv_free_block(vfl[b], fdat);  vfl[b] = NULL;
+                }
                 if (st->k_cache_q8[l] && st->k_cache_q8[l][b]) {
-                    freed_bytes += 2 * (size_t)st->kv_bs * (size_t)kv_dim;
-                    st_qwen_kv_free_raw((uint8_t *)st->k_cache_q8[l][b] - KV_GUARD); st->k_cache_q8[l][b] = NULL;
-                    st_qwen_kv_free_raw((uint8_t *)st->v_cache_q8[l][b] - KV_GUARD); st->v_cache_q8[l][b] = NULL;
+                    freed_bytes += 2 * idat;
+#ifdef __linux__
+                    if (g_l3_madv) {
+                        madvise(st->k_cache_q8[l][b], idat, MADV_DONTNEED);
+                        madvise(st->v_cache_q8[l][b], idat, MADV_DONTNEED);
+                    }
+#endif
+                    st_qwen_kv_free_block(st->k_cache_q8[l][b], idat); st->k_cache_q8[l][b] = NULL;
+                    st_qwen_kv_free_block(st->v_cache_q8[l][b], idat); st->v_cache_q8[l][b] = NULL;
                 }
             }
         }
     }
-    fprintf(stderr, "[L3] evicted %d blocks -> %s (%.1f MB, seq=%d, "
-                    "ratio=%.2f), freed %.1f MB from RAM\n",
-            l3->evicted, l3path, (double)l3->evicted * l3->block_bytes / 1048576.0,
-            seq_len, g_l3_ratio, (double)freed_bytes / 1048576.0);
+    fprintf(stderr, "[L3] evicted %d blocks -> %s (cursor=%.2f MB, seq=%d, "
+                    "keep=%d, ratio=%.2f, packed_now=%d, total_packed=%d), "
+                    "freed %.1f MB from RAM\n",
+            round_evict, l3path, (double)l3->wcursor / 1048576.0, seq_len,
+            keep_lcp, g_l3_ratio, round_packed, l3->evicted,
+            (double)freed_bytes / 1048576.0);
+    if (diag) {
+        fprintf(stderr, "[L3-DIAG] evict exit rss=%ld kB "
+                        "(enter %ld kB, delta %ld kB)\n",
+                l3_diag_rss_kb(), rss_enter,
+                l3_diag_rss_kb() - rss_enter);
+        fflush(stderr);
+    }
     /* st->l3 stays open: sparse decode reads evicted blocks from it */
 }
 
@@ -2072,7 +1237,7 @@ static void test_longctx_quality_ab(STModelWeights *w, const STModelConfig *cfg,
         }
 
         /* Phase 2a: L3 cold-block Q4 disk eviction (--l3-evict). */
-        l3_evict_after_prefill(&ist);
+        l3_evict_after_prefill(&ist, 0, 0);
 
         /* Snapshot so every decode run starts from an identical state. */
         int   *saved_cache_len = (int*)malloc((size_t)nl * sizeof(int));
@@ -2709,155 +1874,97 @@ h_done:
     free(prefix_ids);
 }
 
+
+/* ================================================================
+ * 性能基准：Part A / B / C（单用户 TTFT/TPOT + 多用户并发）
+ *
+ * 回移来源：GitHupSRC/src/main.c:2775-3413（test_performance_benchmark）。
+ * 与旧副本的差异仅限“模型加载”一段：当前引擎走自包含 VQF 路径
+ * （vqf_load + qwen_tokenizer_load*），cfg 内嵌于 w.cfg 故不再调用
+ * st_config_free；计时沿用当前引擎已有的 QueryPerformanceCounter/
+ * LARGE_INTEGER 垫片；Part A/B/C 的度量口径与打印行保持与旧副本一致，
+ * 以便历史基准脚本（tools/bench_fair.sh、tools/_perf_matrix.sh 等，入口
+ * 均为 `--perf-partA --bench-seqlen N`）可直接复用。
+ * ================================================================ */
+static int vqf_dir_find(const char *dir, char *buf, size_t cap);  /* 定义见下方 */
 static void test_performance_benchmark(void) {
     printf("\n=== Test 10: Performance Benchmark ===\n");
-    printf("       Qwen3-VL-8B-Instruct | Q8_0 quant | OMP_NUM_THREADS=%d\n",
-           vllm_tp_threads()
-    );
+    printf("       wmode=%d | OMP/TP threads=%d\n", g_st_wmode, vllm_tp_threads());
     fflush(stdout);
 
-    /* Find model */
-    const char *model_paths[] = {
-        "../../Modl/千问3_VL_8B_Instruct",
-        "../Modl/千问3_VL_8B_Instruct",
-        "Modl/千问3_VL_8B_Instruct",
-        "../modl/千问3_VL_8B_Instruct",
-        "modl/千问3_VL_8B_Instruct",
-    };
-    const char *model_dir = NULL;
-    for (int i = 0; i < 5; i++) {
-        char test_path[1024];
-        snprintf(test_path, sizeof(test_path), "%s/config.json", model_paths[i]);
-        if (st_access(test_path, 0) == 0) { model_dir = model_paths[i]; break; }
+    /* 模型目录：优先 --model，其次回退历史默认路径。
+     * 回移来源：GitHupSRC/src/main.c:2782-2799（默认路径列表）。 */
+    const char *model_dir = g_serve_model_dir;
+    if (!model_dir) {
+        const char *model_paths[] = {
+            "Modl/Qwen3-VL-2B-q4",
+            "../../Modl/Qwen3-VL-2B-q4",
+            "../Modl/Qwen3-VL-2B-q4",
+            "Modl/千问3_VL_8B_Instruct",
+            "../Modl/千问3_VL_8B_Instruct",
+            "../../Modl/千问3_VL_8B_Instruct",
+            NULL
+        };
+        for (int i = 0; model_paths[i]; i++) {
+            char tp[1024];
+            snprintf(tp, sizeof(tp), "%s/config.json", model_paths[i]);
+            if (st_access(tp, 0) == 0) { model_dir = model_paths[i]; break; }
+        }
     }
     if (!model_dir) {
-        printf("       [SKIP] Model not found\n");
+        printf("       [SKIP] Model not found (use --model <dir>)\n");
         return;
     }
     printf("       Model: %s\n", model_dir);
     fflush(stdout);
 
-    /* Parse config + load tokenizer */
-    STModelConfig cfg;
-    if (st_parse_config(model_dir, &cfg) != 0) {
-        printf("       [FAIL] Config parse failed\n");
-        return;
+    /* 定位 VQF 权重 + 词表目录（与 run_stream_test 同口径）。 */
+    char vqf_path[1024]; vqf_path[0] = 0;
+    char tok_dir[1024];
+    if (vqf_is_file(model_dir)) {
+        snprintf(vqf_path, sizeof(vqf_path), "%s", model_dir);
+        snprintf(tok_dir, sizeof(tok_dir), "%s", model_dir);
+        char *sl = strrchr(tok_dir, '/');
+        if (sl) { *sl = '\0'; if (!tok_dir[0]) snprintf(tok_dir, sizeof(tok_dir), "."); }
+        else    snprintf(tok_dir, sizeof(tok_dir), ".");
+    } else {
+        if (!vqf_dir_find(model_dir, vqf_path, sizeof(vqf_path))) {
+            printf("       [SKIP] no model.vqf under %s\n", model_dir);
+            return;
+        }
+        snprintf(tok_dir, sizeof(tok_dir), "%s", model_dir);
     }
 
+    LARGE_INTEGER freq, t_start, t_end;
+    QueryPerformanceFrequency(&freq);
+    STModelWeights w;
+    memset(&w, 0, sizeof(w));
+    double load_t0 = st_now_sec();
+    if (vqf_load(&w, vqf_path) != 0) {
+        printf("       [FAIL] vqf_load %s\n", vqf_path);
+        return;
+    }
+    STModelConfig *cfg = &w.cfg;   /* VQF 自包含（config 内嵌） */
+    double load_sec = st_now_sec() - load_t0;
+
     QwenTokenizer tok;
-    if (qwen_tokenizer_load(&tok, model_dir) != 0) {
-        printf("       [SKIP] Tokenizer load failed\n");
-        st_config_free(&cfg);
+    if (qwen_tokenizer_load(&tok, tok_dir) != 0 ||
+        qwen_tokenizer_load_special(&tok, tok_dir) != 0) {
+        printf("       [FAIL] tokenizer load from %s\n", tok_dir);
+        st_weights_free(&w);
         return;
     }
     printf("       Tokenizer: %d tokens loaded\n", tok.vocab_size);
-
-    /* Allocate Q8_0-only weights */
-    LARGE_INTEGER freq, t_start, t_end;
-    QueryPerformanceFrequency(&freq);
-
-    STModelWeights w;
-    memset(&w, 0, sizeof(w));
-    QueryPerformanceCounter(&t_start);
-    st_weights_alloc_layers_q8ffn(&w, &cfg, cfg.n_layers);
-
-    /* Load embed, final_norm, lm_head */
-    st_load_tensor(&cfg, "model.language_model.embed_tokens.weight",
-                    w.token_embed, cfg.vocab_size * cfg.dim);
-    st_load_tensor(&cfg, "model.language_model.norm.weight",
-                    w.final_norm, cfg.dim);
-
-    /* lm_head: load into temp, quantize to Q8_0 + Q4_0 (or whichever mode) */
-    if (w.q8_lm_weight || w.q4_lm_weight) {
-        int vc = cfg.vocab_size;
-        int dm = cfg.dim;
-        int64_t lm_elems = (int64_t)vc * (int64_t)dm;
-        int chunk_rows = 256;
-        if (chunk_rows > vc) chunk_rows = vc;
-        int64_t chunk_elems = (int64_t)chunk_rows * (int64_t)dm;
-        float *tmp_lm = (float *)malloc((size_t)chunk_elems * sizeof(float));
-        while (!tmp_lm && chunk_rows > 1) {
-            chunk_rows /= 2;
-            chunk_elems = (int64_t)chunk_rows * (int64_t)dm;
-            tmp_lm = (float *)malloc((size_t)chunk_elems * sizeof(float));
-        }
-        if (!tmp_lm) {
-            printf("       [FAIL] OOM: cannot allocate lm_head chunk buffer\n");
-            st_weights_free(&w); st_config_free(&cfg);
-            qwen_tokenizer_free(&tok);
-            return;
-        }
-
-        printf("       Loading & quantizing lm_head to Q8_0 + Q4_0...\n");
-        fflush(stdout);
-        for (int64_t off = 0; off < lm_elems; off += chunk_elems) {
-            int64_t n = lm_elems - off;
-            if (n > chunk_elems) n = chunk_elems;
-            if (st_load_tensor_slice(&cfg, "lm_head.weight", off, tmp_lm, n) != 0) {
-                printf("       [FAIL] lm_head slice load failed\n");
-                free(tmp_lm);
-                st_weights_free(&w); st_config_free(&cfg);
-                qwen_tokenizer_free(&tok);
-                return;
-            }
-            if (w.q8_lm_weight) {
-                if (w.q8_buf_q4)
-                    f32_to_q4i8(w.q8_lm_weight + (off / 32) * 34, tmp_lm, (int)n);
-                else if (st_wmode_effective() == 4)
-                    f32_to_g256q8(w.q8_lm_weight + (off / 32) * 34, tmp_lm, (int)n);
-                else
-                    f32_to_q8_0(w.q8_lm_weight + (off / 32) * 34, tmp_lm, (int)n);
-            }
-            if (w.q4_lm_weight) {
-                f32_to_q4_0(w.q4_lm_weight + (off / 32) * 18, tmp_lm, (int)n);
-                repack_q4_0_4x4_inplace(
-                    w.q4_lm_weight + (size_t)(off / dm) * (((dm + 31) / 32) * 18),
-                    (int)(n / dm), dm);
-            }
-            if (w.q8_lm_weight)
-                repack_q8_0_tiled_inplace(
-                    w.q8_lm_weight + (size_t)(off / dm) * (((dm + 31) / 32) * 34),
-                    (int)(n / dm), dm);
-        }
-        free(tmp_lm);
-        printf("       Q8_0 + Q4_0 lm_head ready\n");
-    }
-
-    if (st_load_layer_weights(&cfg, &w, 0, cfg.n_layers) != 0) {
-        printf("       [FAIL] Weight loading failed\n");
-        st_weights_free(&w); st_config_free(&cfg);
-        qwen_tokenizer_free(&tok);
-        return;
-    }
-    QueryPerformanceCounter(&t_end);
-    double load_sec = (double)(t_end.QuadPart - t_start.QuadPart) / (double)freq.QuadPart;
     printf("       Weights loaded: %.1f sec\n", load_sec);
+    fflush(stdout);
 
     int im_start = tok.im_start_id > 0 ? tok.im_start_id : 151644;
     int im_end   = tok.im_end_id   > 0 ? tok.im_end_id   : 151645;
     int nl_tok   = 198;
-    int bos      = tok.bos_id > 0 ? tok.bos_id : 151643;
-
-    if (g_longctx_quality) {
-        test_longctx_quality_ab(&w, &cfg, &tok);
-        st_weights_free(&w);
-        st_config_free(&cfg);
-        qwen_tokenizer_free(&tok);
-        return;
-    }
-
-    if (g_prefix_cache) {
-        test_prefix_cache_ab(&w, &cfg, &tok);
-        test_prefix_cache_lcp(&w, &cfg, &tok);
-        test_continuous_batching(&w, &cfg, &tok);
-        st_weights_free(&w);
-        st_config_free(&cfg);
-        qwen_tokenizer_free(&tok);
-        return;
-    }
 
     /* ============================================================
      * Part A: Single-User Performance (5 different prompts)
+     * 回移来源：GitHupSRC/src/main.c:2922-3116
      * ============================================================ */
     printf("\n  --- Part A: Single-User Performance ---\n");
     fflush(stdout);
@@ -2879,16 +1986,15 @@ static void test_performance_benchmark(void) {
     memset(&ist, 0, sizeof(ist));
     if (st_qwen_inference_init(&ist, &w) != 0) {
         printf("       [FAIL] Inference init\n");
-        st_weights_free(&w); st_config_free(&cfg);
-        qwen_tokenizer_free(&tok);
+        st_weights_free(&w); qwen_tokenizer_free(&tok);
         return;
     }
 
     for (int pi = 0; pi < n_single_prompts; pi++) {
         /* Reset inference state: clear KV cache and reset position */
-        for (int l = 0; l < cfg.n_layers; l++) ist.cache_len[l] = 0;
+        for (int l = 0; l < cfg->n_layers; l++) ist.cache_len[l] = 0;
         ist.seq_len = 0;
-        memset(ist.hidden, 0, (size_t)cfg.dim * sizeof(float));
+        memset(ist.hidden, 0, (size_t)cfg->dim * sizeof(float));
 
         /* Build chat template */
         int prompt_ids[PERF_MAX_CTX]; int pn = 0;
@@ -2922,7 +2028,8 @@ static void test_performance_benchmark(void) {
 
         /* --bench-seqlen N: pad to a fixed prefill length (e.g. 64) so TTFT
          * matches the earliest S=64 CPU baseline. Neutral filler is prepended
-         * before the system prompt; the real prompt stays at the tail. */
+         * before the system prompt; the real prompt stays at the tail.
+         * 回移来源：GitHupSRC/src/main.c:2986-3003 */
         if (g_bench_seqlen > 0 && pn < g_bench_seqlen) {
             static const char *filler = "The quick brown fox jumps over the lazy dog. ";
             int fill_ids[64]; int fn = qwen_tokenizer_encode(&tok, filler, fill_ids, 64);
@@ -2939,7 +2046,7 @@ static void test_performance_benchmark(void) {
             }
         }
 
-        /* Prefill (mini-batch �?axiom: blas_qkv_fusion_categorical) */
+        /* Prefill (mini-batch - axiom: blas_qkv_fusion_categorical) */
         fflush(stdout);
         QueryPerformanceCounter(&t_start);
         st_qwen_model_prefill_batch(&ist, prompt_ids, pn);
@@ -2955,7 +2062,8 @@ static void test_performance_benchmark(void) {
         char output[4096]; int out_len = 0;
         QueryPerformanceCounter(&t_start);
         /* M4g: 开启 decode kernel 分解（与 longctx 模式同口径），输出
-         * DECODE-TIMING/DECODE-KERNELS 到 stderr。 */
+         * DECODE-TIMING/DECODE-KERNELS 到 stderr。
+         * 回移来源：GitHupSRC/src/main.c:3020-3080 */
         ist.profile_decode = 1;
         ist.dec_t_qkv = 0.0;
         ist.dec_t_attn = 0.0;
@@ -2968,7 +2076,7 @@ static void test_performance_benchmark(void) {
         for (int step = 0; step < PERF_MAX_TOKENS; step++) {
             /* Use logits from previous forward pass (prefill or last decode) */
             float best = -1e9f; int best_id = 0;
-            for (int t = 0; t < cfg.vocab_size; t++) {
+            for (int t = 0; t < cfg->vocab_size; t++) {
                 if (ist.logits[t] > best) { best = ist.logits[t]; best_id = t; }
             }
             if (best_id == tok.eos_id || best_id == im_end) break;
@@ -3037,9 +2145,10 @@ static void test_performance_benchmark(void) {
            total_throughput / n_single_prompts);
 
     if (g_perf_part_a) {
-        /* --perf-partA: single-user only (CPU-vs-NPU comparison core). */
+        /* --perf-partA: single-user only (CPU-vs-NPU comparison core).
+         * 回移来源：GitHupSRC/src/main.c:3102-3116 */
         printf("\n  === Performance Summary (Part A only) ===\n");
-        printf("  Model: Qwen3-VL-8B-Instruct\n");
+        printf("  Model: %s\n", model_dir);
         printf("  Weights loading: %.1f sec\n", load_sec);
         printf("  Single-user avg: TTFT=%.0fms | TPOT=%.0fms/tok | %.1f tok/s\n",
                total_ttft / n_single_prompts * 1000.0,
@@ -3047,13 +2156,14 @@ static void test_performance_benchmark(void) {
                total_throughput / n_single_prompts);
         fflush(stdout);
         st_qwen_inference_free(&ist);
-        st_weights_free(&w); st_config_free(&cfg);
+        st_weights_free(&w);
         qwen_tokenizer_free(&tok);
         return;
     }
 
     /* ============================================================
      * Part B: Multi-User Sequential (Round-Robin)
+     * 回移来源：GitHupSRC/src/main.c:3118-3275
      * ============================================================ */
     printf("\n  --- Part B: Multi-User (Shared State) ---\n");
     fflush(stdout);
@@ -3120,7 +2230,7 @@ static void test_performance_benchmark(void) {
     char base_output[MAX_PERF_USERS][2048] = {{0}};
     double base_prefill_ms = 0.0;
     for (int u = 0; u < n_users; u++) {
-        for (int l = 0; l < cfg.n_layers; l++) ist.cache_len[l] = 0;
+        for (int l = 0; l < cfg->n_layers; l++) ist.cache_len[l] = 0;
         ist.seq_len = 0;
 
         LARGE_INTEGER p0, p1;
@@ -3131,7 +2241,7 @@ static void test_performance_benchmark(void) {
 
         int pos = 0;
         for (int step = 0; step < max_new_tokens; step++) {
-            int best_id = greedy_argmax(ist.logits, cfg.vocab_size);
+            int best_id = greedy_argmax(ist.logits, cfg->vocab_size);
             if (best_id == tok.eos_id || best_id == im_end) break;
             append_tok_str(base_output[u], &pos, (int)sizeof(base_output[u]), &tok, best_id);
             st_qwen_model_forward(&ist, best_id);
@@ -3141,7 +2251,7 @@ static void test_performance_benchmark(void) {
     /* ---- Cached (B-scheme): prefill shared system prompt once, then fork its
      * KV-cache into each user via st_qwen_copy_kv_prefix; each user prefills
      * only their unique question suffix. ---- */
-    for (int l = 0; l < cfg.n_layers; l++) ist.cache_len[l] = 0;
+    for (int l = 0; l < cfg->n_layers; l++) ist.cache_len[l] = 0;
     ist.seq_len = 0;
 
     LARGE_INTEGER p0, p1;
@@ -3174,7 +2284,7 @@ static void test_performance_benchmark(void) {
         int gen_tok = 0;
         int pos = 0;
         for (int step = 0; step < max_new_tokens; step++) {
-            int best_id = greedy_argmax(st.logits, cfg.vocab_size);
+            int best_id = greedy_argmax(st.logits, cfg->vocab_size);
             if (best_id == tok.eos_id || best_id == im_end) break;
             gen_tok++;
             append_tok_str(user_output[u], &pos, (int)sizeof(user_output[u]), &tok, best_id);
@@ -3213,18 +2323,7 @@ static void test_performance_benchmark(void) {
 
     /* ============================================================
      * Part C: Token-Level Interleaved Concurrent Multi-User
-     *
-     * Each user gets an independent inference state (own KV-cache,
-     * hidden state, logits).  Tokens are interleaved at decode step
-     * level (user-A step 0, user-B step 0, user-A step 1, user-B
-     * step 1, ...).  All 8 OMP threads work on the current user's
-     * forward pass at full speed.
-     *
-     * This demonstrates true concurrent scheduling: both users make
-     * progress simultaneously rather than sequentially.  Wall-clock
-     * time �?sum of both users (no HW parallel speedup without batch
-     * matmul), but per-user TPOT is preserved at the single-user
-     * level (each gets 8-thread matvecs interleaved).
+     * 回移来源：GitHupSRC/src/main.c:3277-3411
      * ============================================================ */
     printf("\n  --- Part C: Multi-User Token-Interleaved Concurrent ---\n");
     fflush(stdout);
@@ -3241,9 +2340,9 @@ static void test_performance_benchmark(void) {
         }
     }
     if (!par_init_ok) {
-        printf("       [SKIP] Part C failed �?reporting sequential results only\n");
+        printf("       [SKIP] Part C failed - reporting sequential results only\n");
         printf("\n  === Performance Summary ===\n");
-        printf("  Model: Qwen3-VL-8B-Instruct (Q8_0 quant, ~10 GB)\n");
+        printf("  Model: %s\n", model_dir);
         printf("  Weights loading: %.1f sec\n", load_sec);
         printf("  Single-user avg: TTFT=%.0fms | TPOT=%.0fms/tok | %.1f tok/s\n",
                total_ttft / n_single_prompts * 1000.0,
@@ -3253,7 +2352,7 @@ static void test_performance_benchmark(void) {
                n_users, seq_total_tok / seq_prefill_sec, seq_total_tok, seq_prefill_sec);
         printf("  Multi-user (%d users) concurrent: [SKIP]\n", n_users);
         st_qwen_inference_free(&ist);
-        st_weights_free(&w); st_config_free(&cfg);
+        st_weights_free(&w);
         qwen_tokenizer_free(&tok);
         return;
     }
@@ -3269,7 +2368,7 @@ static void test_performance_benchmark(void) {
     LARGE_INTEGER u_t0[MAX_PERF_USERS], u_t1[MAX_PERF_USERS];
     for (int u = 0; u < n_users; u++) QueryPerformanceCounter(&u_t0[u]);
 
-    /* Prefill all users (mini-batch per user �?axiom: blas_qkv_fusion_categorical) */
+    /* Prefill all users (mini-batch per user - axiom: blas_qkv_fusion_categorical) */
     for (int u = 0; u < n_users; u++) {
         st_qwen_model_prefill_batch(&ist_c[u], user_prompt_ids[u], user_pn[u]);
     }
@@ -3282,7 +2381,7 @@ static void test_performance_benchmark(void) {
 
             /* Decode one token for this user */
             float best = -1e9f; int best_id = 0;
-            for (int t = 0; t < cfg.vocab_size; t++) {
+            for (int t = 0; t < cfg->vocab_size; t++) {
                 if (ist_c[u].logits[t] > best) { best = ist_c[u].logits[t]; best_id = t; }
             }
             if (best_id == tok.eos_id || best_id == im_end || user_pos[u] >= max_new_tokens) {
@@ -3315,11 +2414,11 @@ static void test_performance_benchmark(void) {
     for (int u = 0; u < n_users; u++) par_total_tok += parallel_gen_tok[u];
 
     printf("       Token-interleaved (%d users): %.3fs wall-clock\n", n_users, par_total_sec);
-    printf("       (Each user gets full 8-thread matvecs, interleaved step-by-step)\n");
+    printf("       (Each user gets full TP-thread matvecs, interleaved step-by-step)\n");
     printf("       Speedup vs sequential: %.2fx (same total compute, concurrent scheduling)\n",
            seq_prefill_sec / par_total_sec);
     for (int u = 0; u < n_users; u++) {
-        printf("         User %d: %.0fms, %d tokens �?\"%s\"\n",
+        printf("         User %d: %.0fms, %d tokens - \"%s\"\n",
                u + 1, parallel_user_time[u] * 1000.0, parallel_gen_tok[u],
                parallel_output[u][0] ? parallel_output[u] : "(empty)");
     }
@@ -3331,7 +2430,7 @@ static void test_performance_benchmark(void) {
      * Summary
      * ============================================================ */
     printf("\n  === Performance Summary ===\n");
-    printf("  Model: Qwen3-VL-8B-Instruct (Q8_0 quant, ~10 GB)\n");
+    printf("  Model: %s\n", model_dir);
     printf("  Weights loading: %.1f sec\n", load_sec);
     printf("  Single-user avg: TTFT=%.0fms | TPOT=%.0fms/tok | %.1f tok/s\n",
            total_ttft / n_single_prompts * 1000.0,
@@ -3344,660 +2443,9 @@ static void test_performance_benchmark(void) {
 
     st_qwen_inference_free(&ist);
     st_weights_free(&w);
-    st_config_free(&cfg);
     qwen_tokenizer_free(&tok);
-
 }  /* test_performance_benchmark */
 
-#if 0 /* Test 9: Synthetic Pippenger validation — vllm_gguf.c removed from build */
-static void test_synthetic_pippenger(void) {
-    printf("\n=== Test 9: Synthetic Model Pippenger Validation ===\n");
-    printf("       Goal: Verify Pippenger speedup on attention-dominated model\n");
-    fflush(stdout);
-
-    /* Synthetic model: attention �?92% of total compute */
-    int synth_dim = 256, synth_heads = 8, synth_layers = 4;
-    int synth_ffn = 64, synth_hd = 32, synth_nkv = 8;
-    int synth_vocab = 1024, synth_maxseq = 2048;
-
-    /* Step 1: Create synthetic weights */
-    GGUFWeights w;
-    memset(&w, 0, sizeof(w));
-    if (gguf_weights_init_synthetic(&w, synth_dim, synth_heads, synth_layers,
-            synth_ffn, synth_hd, synth_nkv, synth_vocab, synth_maxseq) != 0) {
-        printf("       [FAIL] Cannot create synthetic weights\n");
-        return;
-    }
-
-    /* Step 2: Init inference state */
-    GGUFInferenceState ist;
-    memset(&ist, 0, sizeof(ist));
-    if (gguf_inference_init(&ist, &w) != 0) {
-        printf("       [FAIL] Cannot init inference state\n");
-        gguf_weights_free(&w);
-        return;
-    }
-    printf("       Model: dim=%d heads=%d hd=%d kv=%d layers=%d ffn=%d\n",
-           synth_dim, synth_heads, synth_hd, synth_nkv, synth_layers, synth_ffn);
-
-    /* Step 3: Prefill 640 tokens (10 blocks of 64) */
-    int prefill_len = 640;
-    int n_blocks = prefill_len / PIP_BLOCK_SIZE;  /* 10 blocks */
-
-    /* Compute FLOP per decode token (attention scales with seq_len) */
-    {
-        float seq_len_f = (float)prefill_len;
-        float attn_flops = seq_len_f * (float)synth_heads * (float)synth_hd * (float)synth_hd * 2.0f
-                           + (float)synth_heads * (float)synth_hd * (float)synth_dim;
-        float ffn_flops  = (float)synth_dim * (float)synth_ffn * 3.0f;
-        float attn_pct_local = 100.0f * attn_flops / (attn_flops + ffn_flops);
-        printf("       Attention/FFN FLOP ratio: %.0f%% / %.0f%% (per-decode-token, %d-tok ctx)\n",
-               attn_pct_local, 100.0f - attn_pct_local, prefill_len);
-    }
-
-    printf("       Prefilling %d tokens (%d blocks)...\n", prefill_len, n_blocks);
-    fflush(stdout);
-
-    /* Use sequential token IDs starting from 10 to avoid special tokens */
-    for (int t = 0; t < prefill_len; t++)
-        gguf_model_forward(&ist, 10 + t % (synth_vocab - 10));
-
-    printf("       KV-cache: %d tokens, %d blocks precomputed\n",
-           ist.seq_len, ist.pip_n_blocks[0]);
-
-    /* Step 4: Snapshot state for multi-user benchmark */
-    int d = synth_dim, nl = synth_layers;
-    float *saved_hidden = malloc((size_t)d * sizeof(float));
-    int  *saved_cache_len = malloc((size_t)nl * sizeof(int));
-    int  *saved_pip_nb = malloc((size_t)nl * sizeof(int));
-    int   saved_seq = ist.seq_len;
-    memcpy(saved_hidden, ist.hidden, (size_t)d * sizeof(float));
-    memcpy(saved_cache_len, ist.cache_len, (size_t)nl * sizeof(int));
-    memcpy(saved_pip_nb, ist.pip_n_blocks, (size_t)nl * sizeof(int));
-
-    /* Step 5: Benchmark �?Decode phase (attention bottleneck visible here)
-     * In decode, each new token needs attention over entire 640-token history.
-     * Block-Pippenger reduces this from O(640) scoring to O(10) block scores. */
-    enum { N_USERS = 50 };
-
-    /* Generate different query tokens for each user (within vocab range) */
-     int *query_tokens = malloc(N_USERS * sizeof(int));
-     for (int u = 0; u < N_USERS; u++)
-         query_tokens[u] = (10 + u * 20) % synth_vocab;
-
-    printf("\n       --- Multi-User Decode Benchmark (%d users, %d-token context) ---\n",
-           N_USERS, saved_seq);
-
-    double ms_std, ms_pip;
-
-    /* Test A: Standard attention (Pippenger OFF) */
-    {
-        ist.use_pippenger = 0;
-
-        LARGE_INTEGER freq, t1, t2;
-        QueryPerformanceFrequency(&freq);
-        QueryPerformanceCounter(&t1);
-        for (int u = 0; u < N_USERS; u++) {
-            /* Restore snapshot for clean per-user measurement */
-            memcpy(ist.hidden, saved_hidden, (size_t)d * sizeof(float));
-            memcpy(ist.cache_len, saved_cache_len, (size_t)nl * sizeof(int));
-            memcpy(ist.pip_n_blocks, saved_pip_nb, (size_t)nl * sizeof(int));
-            ist.seq_len = saved_seq;
-            /* Disable block update (already precomputed) */
-            gguf_model_forward(&ist, query_tokens[u]);
-        }
-        QueryPerformanceCounter(&t2);
-        ms_std = (double)(t2.QuadPart - t1.QuadPart) * 1000.0 / (double)freq.QuadPart;
-    }
-
-    /* Test B: Block-level Pippenger attention (Pippenger ON) */
-    {
-        ist.use_pippenger = 1;
-
-        LARGE_INTEGER freq, t3, t4;
-        QueryPerformanceFrequency(&freq);
-        QueryPerformanceCounter(&t3);
-        for (int u = 0; u < N_USERS; u++) {
-            memcpy(ist.hidden, saved_hidden, (size_t)d * sizeof(float));
-            memcpy(ist.cache_len, saved_cache_len, (size_t)nl * sizeof(int));
-            memcpy(ist.pip_n_blocks, saved_pip_nb, (size_t)nl * sizeof(int));
-            ist.seq_len = saved_seq;
-            gguf_model_forward(&ist, query_tokens[u]);
-        }
-        QueryPerformanceCounter(&t4);
-        ms_pip = (double)(t4.QuadPart - t3.QuadPart) * 1000.0 / (double)freq.QuadPart;
-    }
-
-    double speedup = (ms_pip > 0) ? ms_std / ms_pip : 0.0;
-
-    /* Print results */
-    printf("\n");
-    printf("       %-25s %6s  %8s  %10s  %12s  %10s\n",
-           "Method","Users","Context","Total(ms)","tok/s/user","Speedup");
-    printf("       %-25s %6d  %8d  %10.1f  %12.1f  %10s\n",
-           "Standard Attention", N_USERS, saved_seq, ms_std,
-           1000.0 / (ms_std / N_USERS), "1.00x (baseline)");
-    printf("       %-25s %6d  %8d  %10.1f  %12.1f  %9.2fx\n",
-           "Block-Pippenger (ours)", N_USERS, saved_seq, ms_pip,
-           1000.0 / (ms_pip / N_USERS), speedup);
-
-    /* Analysis */
-    printf("\n       --- Analysis ---\n");
-    printf("       Block-level scoring: O(%d) vs O(%d) per head\n",
-           n_blocks, saved_seq);
-    {
-        float seq_f = (float)saved_seq;
-        float a_flops = seq_f * (float)synth_heads * (float)synth_hd * (float)synth_hd * 2.0f
-                        + (float)synth_heads * (float)synth_hd * (float)synth_dim;
-        float f_flops = (float)synth_dim * (float)synth_ffn * 3.0f;
-        float a_pct = 100.0f * a_flops / (a_flops + f_flops);
-        printf("       Theoretical max speedup (Amdahl): %.1fx (%.0f%% attention bound)\n",
-               1.0f / (1.0f - a_pct / 100.0f), a_pct);
-    }
-    printf("       Measured speedup: %.2fx\n", speedup);
-
-    if (speedup > 1.50)
-        printf("       VERDICT: Pippenger highly effective (>1.5x) on attention-dominated models.\n");
-    else if (speedup > 1.15)
-        printf("       VERDICT: Pippenger shows clear benefit (>1.15x) for long-context decode.\n");
-    else if (speedup > 1.03)
-        printf("       VERDICT: Pippenger provides measurable but modest benefit (1.03-1.15x).\n");
-    else
-        printf("       VERDICT: Pippenger not beneficial at this scale - overhead dominates.\n"
-               "                May require longer context or more heads to show advantage.\n");
-
-    /* Cleanup */
-    free(saved_hidden);
-    free(saved_cache_len);
-    free(saved_pip_nb);
-    free(query_tokens);
-    gguf_inference_free(&ist);
-    gguf_weights_free(&w);
-
-    printf("       [PASS] Synthetic Pippenger validation complete\n");
-    fflush(stdout);
-}
-#endif /* Test 9: Synthetic Pippenger validation */
-
-/* ================================================================
- * Test 11: Multimodal Image/Video Analysis
- *
- * Demonstrates Qwen3-VL vision encoder + LLM reasoning for:
- *   - Image analysis (describing, analyzing visual content)
- *   - Video analysis (understanding video frames over time)
- *
- * Uses synthetic test images since we don't require external files.
- * Axioms: blas_matrix_block_natural_isomorphism (Vit QKV/O_proj)
- *         blas_precision_efficiency_tradeoff (Q8_0 ViT weights)
- *         tensor_decomposition_graph_mapping (DeepStack multi-scale)
- * ================================================================ */
-static void test_multimodal_analysis(const char **image_paths, int n_images, const char *video_dir) {
-    printf("\n=== Multimodal Performance Test ===\n");
-    printf("       Model: Qwen3-VL-8B-Instruct with Vision Encoder\n");
-    printf("       OMP_NUM_THREADS=%d\n",
-           vllm_tp_threads()
-    );
-    fflush(stdout);
-
-    /* ---- Parse config and load model weights ---- */
-    /* Try multiple paths since exe location varies (build/ vs build/Release/) */
-    const char *model_paths_mm[] = {
-        "../../Modl/千问3_VL_8B_Instruct",
-        "../Modl/千问3_VL_8B_Instruct",
-        "Modl/千问3_VL_8B_Instruct",
-        NULL
-    };
-    const char *model_dir = NULL;
-    for (int i_mp = 0; model_paths_mm[i_mp]; i_mp++) {
-        char test_path[1024];
-        snprintf(test_path, sizeof(test_path), "%s/config.json", model_paths_mm[i_mp]);
-        if (st_access(test_path, 0) == 0) {
-            model_dir = model_paths_mm[i_mp];
-            break;
-        }
-    }
-    if (!model_dir) {
-        printf("       SKIP: Model not found on disk\n");
-        printf("       Place model at Modl/千问3_VL_8B_Instruct/\n");
-        return;
-    }
-    STModelConfig cfg;
-    memset(&cfg, 0, sizeof(cfg));
-    if (st_parse_config(model_dir, &cfg) != 0) {
-        printf("       SKIP: Cannot parse model config\n");
-        return;
-    }
-    if (!cfg.has_vision) {
-        printf("       SKIP: Model has no vision encoder\n");
-        st_config_free(&cfg);
-        return;
-    }
-
-    printf("       Vision: ViT %d layers, hidden=%d, heads=%d, patch=%d\n",
-           cfg.vis_depth, cfg.vis_hidden, cfg.vis_heads, cfg.vis_patch);
-    fflush(stdout);
-
-    /* Load weights */
-    STModelWeights w;
-    memset(&w, 0, sizeof(w));
-    double start_sec = vllm_tp_wtime();
-    st_weights_alloc_layers_q8ffn(&w, &cfg, -1);
-
-    /* Load token embeddings + final norm (not loaded by st_load_layer_weights) */
-    st_load_tensor(&cfg, "model.language_model.embed_tokens.weight",
-                    w.token_embed, cfg.vocab_size * cfg.dim);
-    st_load_tensor(&cfg, "model.language_model.norm.weight",
-                    w.final_norm, cfg.dim);
-    /* lm_head: load into temp F32, quantize to Q8_0 + Q4_0 */
-    if (w.q8_lm_weight || w.q4_lm_weight) {
-        float *tmp_lm = malloc((size_t)cfg.vocab_size * cfg.dim * sizeof(float));
-        if (tmp_lm) {
-            if (st_load_tensor(&cfg, "model.language_model.lm_head.weight",
-                               tmp_lm, cfg.vocab_size * cfg.dim) != 0)
-                st_load_tensor(&cfg, "lm_head.weight",
-                               tmp_lm, cfg.vocab_size * cfg.dim);
-            if (w.q8_lm_weight) {
-                if (w.q8_buf_q4)
-                    f32_to_q4i8(w.q8_lm_weight, tmp_lm, cfg.vocab_size * cfg.dim);
-                else if (st_wmode_effective() == 4)
-                    f32_to_g256q8(w.q8_lm_weight, tmp_lm, cfg.vocab_size * cfg.dim);
-                else
-                    f32_to_q8_0(w.q8_lm_weight, tmp_lm, cfg.vocab_size * cfg.dim);
-            }
-            if (w.q4_lm_weight)
-                f32_to_q4_0(w.q4_lm_weight, tmp_lm, cfg.vocab_size * cfg.dim);
-            if (w.q4_lm_weight)
-                repack_q4_0_4x4_inplace(w.q4_lm_weight, cfg.vocab_size, cfg.dim);
-            if (w.q8_lm_weight)
-                repack_q8_0_tiled_inplace(w.q8_lm_weight, cfg.vocab_size, cfg.dim);
-            free(tmp_lm);
-        }
-    }
-
-    st_load_layer_weights(&cfg, &w, 0, cfg.n_layers);
-
-    /* Load vision weights */
-    STVisionWeights vis_w;
-    memset(&vis_w, 0, sizeof(vis_w));
-    st_vision_weights_alloc(&vis_w, &cfg);
-    if (st_vision_load_weights(&vis_w, &cfg) != 0) {
-        printf("       FAIL: Vision weight loading failed\n");
-        st_config_free(&cfg);
-        st_weights_free(&w);
-        st_vision_weights_free(&vis_w);
-        return;
-    }
-    double load_sec = vllm_tp_wtime() - start_sec;
-    printf("       Weights loading: %.1f sec\n", load_sec);
-
-    /* ---- Initialize tokenizer ---- */
-    QwenTokenizer tok;
-    memset(&tok, 0, sizeof(tok));
-    char vocab_path[512];
-    snprintf(vocab_path, sizeof(vocab_path), "%s/vocab.bin", model_dir);
-    if (qwen_tokenizer_load(&tok, model_dir) != 0) {
-        printf("       FAIL: Tokenizer load failed\n");
-        st_config_free(&cfg);
-        st_weights_free(&w);
-        st_vision_weights_free(&vis_w);
-        return;
-    }
-    /* Set vision special tokens */
-    tok.image_token_id = cfg.image_token_id;
-    tok.video_token_id = cfg.video_token_id;
-    tok.vision_start_id = cfg.vision_start_id;
-    tok.vision_end_id = cfg.vision_end_id;
-    printf("       Tokenizer: %d tokens, vision IDs: start=%d end=%d img=%d vid=%d\n",
-           tok.vocab_size, cfg.vision_start_id, cfg.vision_end_id,
-           cfg.image_token_id, cfg.video_token_id);
-
-    /* ---- Image Analysis (loop over provided images) ---- */
-    int total_images = (n_images > 0) ? n_images : 1;
-    int img_w = 64, img_h = 64;  /* function scope, reused by video section */
-    STQwenInferenceState ist;
-    STVisionState vis_st;        /* function scope, reused by video section */
-    for (int img_idx = 0; img_idx < total_images; img_idx++) {
-        const char *image_path = (n_images > 0) ? image_paths[img_idx] : NULL;
-
-        /* Load this image */
-        uint8_t *test_img = NULL;
-        int img_is_external = 0;
-
-        if (image_path && image_path[0]) {
-            test_img = media_load_image(image_path, &img_w, &img_h);
-            if (test_img) {
-                img_is_external = 1;
-                printf("\n       --- Image %d/%d: %s (%dx%d) ---\n",
-                       img_idx + 1, total_images, image_path, img_w, img_h);
-            }
-        }
-
-        if (!test_img) {
-            /* Fallback: synthetic test image (64x64 RGB gradient) */
-            img_w = 64; img_h = 64;
-            test_img = (uint8_t *)malloc((size_t)img_w * img_h * 3);
-            for (int y = 0; y < img_h; y++) {
-                for (int x = 0; x < img_w; x++) {
-                    int idx = (y * img_w + x) * 3;
-                    test_img[idx + 0] = (uint8_t)(x * 255 / img_w);
-                    test_img[idx + 1] = (uint8_t)(y * 255 / img_h);
-                    test_img[idx + 2] = (uint8_t)(128);
-                }
-            }
-            printf("\n       --- Image %d/%d: synthetic (64x64) ---\n",
-                   img_idx + 1, total_images);
-        }
-
-        /* ---- Initialize per-image inference state ---- */
-        memset(&ist, 0, sizeof(ist));
-        st_qwen_inference_init(&ist, &w);
-
-        /* Step 1: Initialize vision state and link weights */
-        memset(&vis_st, 0, sizeof(vis_st));
-        st_vision_init(&vis_st, &cfg);
-        vis_st.w = vis_w;
-
-        double enc_start = vllm_tp_wtime();
-        int n_vis_tokens = st_vision_encode_image(&vis_st, test_img, img_w, img_h);
-        double enc_sec = vllm_tp_wtime() - enc_start;
-        if (n_vis_tokens < 0) {
-            printf("       FAIL: Image encoding failed\n");
-            st_qwen_inference_free(&ist);
-            st_vision_free(&vis_st);
-            if (img_is_external) media_free_image(test_img); else free(test_img);
-            continue;
-        }
-        const float *vis_tokens = st_vision_get_tokens(&vis_st);
-        int grid_h = vis_st.grid_h / cfg.vis_merge;
-        int grid_w = vis_st.grid_w / cfg.vis_merge;
-        printf("       %dx%d -> %d patches -> %d visual tokens (grid %dx%d)\n",
-               img_w, img_h, n_vis_tokens, n_vis_tokens, grid_h, grid_w);
-        printf("       [VIS] Encode: %.1f ms\n", enc_sec * 1000.0);
-
-        /* Step 2: Build multimodal prompt */
-        int n_img_pad = n_vis_tokens;
-        int prompt_tokens[4096];
-        int pn = 0;
-
-        prompt_tokens[pn++] = tok.im_start_id > 0 ? tok.im_start_id : 151644;
-        prompt_tokens[pn++] = cfg.vision_start_id;
-        for (int i = 0; i < n_img_pad && pn < 4095; i++) {
-            prompt_tokens[pn++] = cfg.image_token_id;
-        }
-        prompt_tokens[pn++] = cfg.vision_end_id;
-
-        const char *text_prompt = "\nDescribe this image.";
-        {
-            int n = qwen_tokenizer_encode(&tok, text_prompt,
-                                           prompt_tokens + pn, 4096 - pn);
-            pn += n;
-        }
-        {
-            int n = qwen_tokenizer_encode(&tok, "<|im_end|>\n<|im_start|>assistant\n",
-                                           prompt_tokens + pn, 4096 - pn);
-            pn += n;
-        }
-
-        printf("       Prompt: %d tokens (%d text, %d visual)\n",
-               pn, pn - n_img_pad - 3, n_img_pad + 2);
-        fflush(stdout);
-
-        /* --bench-seqlen N: pad the multimodal prompt to a fixed total
-         * prefill length (visual tokens + text = N) so TTFT is comparable
-         * with llama at the same context size. Neutral filler is prepended
-         * at the head of the token array (outside the chat template); the
-         * engine treats it as ordinary context tokens. */
-        if (g_bench_seqlen > 0 && pn < g_bench_seqlen) {
-            static const char *filler = "The quick brown fox jumps over the lazy dog. ";
-            int fill_ids[64]; int fn = qwen_tokenizer_encode(&tok, filler, fill_ids, 64);
-            int need = g_bench_seqlen - pn;
-            if (fn > 0 && need > 0) {
-                int f[4096]; int fi = 0;
-                while (fi < need) {
-                    for (int k = 0; k < fn && fi < need; k++) f[fi++] = fill_ids[k];
-                }
-                memmove(prompt_tokens + need, prompt_tokens, (size_t)pn * sizeof(int));
-                memcpy(prompt_tokens, f, (size_t)need * sizeof(int));
-                pn = g_bench_seqlen;
-                printf("       [PAD] padded to %d tokens (prepend %d filler)\n", pn, need);
-            }
-        }
-
-        /* Step 3: Multimodal prefill */
-        int grid_thw[3];
-        grid_thw[0] = 1;
-        grid_thw[1] = grid_h;
-        grid_thw[2] = grid_w;
-
-        double prefill_start = vllm_tp_wtime();
-        int ret = st_qwen_model_multimodal_prefill(&ist, prompt_tokens, pn,
-                                                    vis_tokens, n_vis_tokens,
-                                                    grid_thw);
-        double prefill_sec = vllm_tp_wtime() - prefill_start;
-
-        if (ret != 0) {
-            printf("       FAIL: Multimodal prefill failed\n");
-            st_qwen_inference_free(&ist);
-            st_vision_free(&vis_st);
-            if (img_is_external) media_free_image(test_img); else free(test_img);
-            continue;
-        }
-        printf("       Prefill: %.0fms (%.2f tok/s)\n",
-               prefill_sec * 1000.0, pn / prefill_sec);
-
-        /* Step 4: Decode response with detailed timing */
-        printf("       Decoding...\n");
-        fflush(stdout);
-        int max_new_tokens = 60;
-        int img_tokens_generated = 0;
-        double decode_start = vllm_tp_wtime();
-        for (int step = 0; step < max_new_tokens; step++) {
-            int best_id = 0;
-            float best_logit = -1e9f;
-            for (int i = 0; i < cfg.vocab_size; i++) {
-                if (ist.logits[i] > best_logit) {
-                    best_logit = ist.logits[i];
-                    best_id = i;
-                }
-            }
-            if (best_id == tok.eos_id || best_id == tok.im_end_id) break;
-            const char *token_str = qwen_tokenizer_decode(&tok, best_id);
-            if (token_str) printf("%s", token_str);
-            img_tokens_generated++;
-            st_qwen_model_forward(&ist, best_id);
-        }
-        double decode_sec = vllm_tp_wtime() - decode_start;
-        printf("\n");
-        printf("       Decode: %d tokens in %.0fms (TPOT=%.0fms, %.1f tok/s)\n",
-               img_tokens_generated,
-               decode_sec * 1000.0,
-               img_tokens_generated > 0 ? (decode_sec * 1000.0) / img_tokens_generated : 0.0,
-               img_tokens_generated > 0 ? img_tokens_generated / decode_sec : 0.0);
-        printf("       Total: TTFT=%.0fms E2E=%.0fms\n",
-               prefill_sec * 1000.0,
-               (prefill_sec + decode_sec) * 1000.0);
-
-        /* Per-image cleanup */
-        st_qwen_inference_free(&ist);
-        st_vision_free(&vis_st);
-        if (img_is_external) media_free_image(test_img); else free(test_img);
-    }
-
-    /* ======== Video Analysis ======== */
-    printf("\n       --- Video Analysis ---\n");
-    fflush(stdout);
-
-    /* Load video frames: external directory or synthetic */
-    int n_frames = 0;
-    uint8_t **video_frames = NULL;
-    int vid_ext = 0;
-    int vid_w = 64, vid_h = 64;
-
-    /* ---- Video-specific variables (re-declared for this scope) ---- */
-    int n_vis_tokens = 0;
-    const float *vis_tokens = NULL;
-    int pn = 0;
-    int prompt_tokens[4096];
-    int n_img_pad = 0;
-    int grid_thw[3];
-    double prefill_start, prefill_sec;
-    int ret;
-    int max_new_tokens = 60;
-
-    if (video_dir && video_dir[0]) {
-        video_frames = media_load_video_frames(video_dir, &vid_w, &vid_h,
-                                                &n_frames, 16);
-        if (video_frames && n_frames > 0) {
-            vid_ext = 1;
-            printf("       Loaded external video: %d frames %dx%d\n",
-                   n_frames, vid_w, vid_h);
-        }
-    }
-
-    if (!video_frames || n_frames == 0) {
-        /* Fallback: synthetic video (4 frames of shifting gradient) */
-        n_frames = 4;
-        vid_w = 64; vid_h = 64;
-        video_frames = (uint8_t **)malloc((size_t)n_frames * sizeof(uint8_t *));
-        for (int f = 0; f < n_frames; f++) {
-            video_frames[f] = (uint8_t *)malloc((size_t)vid_w * vid_h * 3);
-            for (int y = 0; y < vid_h; y++) {
-                for (int x = 0; x < vid_w; x++) {
-                    int idx = (y * vid_w + x) * 3;
-                    video_frames[f][idx + 0] = (uint8_t)((x + f * 16) * 255 / vid_w);
-                    video_frames[f][idx + 1] = (uint8_t)((y + f * 8) * 255 / vid_h);
-                    video_frames[f][idx + 2] = (uint8_t)(128 + f * 30);
-                }
-            }
-        }
-        printf("       Using synthetic video (%d frames, 64x64)\n", n_frames);
-    }
-
-    /* Reset inference state for video test (already freed by last image iteration) */
-    memset(&ist, 0, sizeof(ist));
-    st_qwen_inference_init(&ist, &w);
-
-    memset(&vis_st, 0, sizeof(vis_st));
-    st_vision_init(&vis_st, &cfg);
-    vis_st.w = vis_w;
-
-    /* Step 1: Video encode */
-    double enc_start = vllm_tp_wtime();
-    n_vis_tokens = st_vision_encode_video(&vis_st,
-                                           (const uint8_t **)video_frames,
-                                           vid_w, vid_h, n_frames);
-    double enc_sec = vllm_tp_wtime() - enc_start;
-    if (n_vis_tokens < 0) {
-        printf("       FAIL: Video encoding failed\n");
-    } else {
-        vis_tokens = st_vision_get_tokens(&vis_st);
-        printf("       Video %d frames %dx%d -> %d visual tokens\n",
-               n_frames, vid_w, vid_h, n_vis_tokens);
-        printf("       [VIS] Encode: %.1f ms\n", enc_sec * 1000.0);
-
-        /* Step 2: Build video prompt */
-        const char *vid_prompt = "<|im_start|>user\n";
-        pn = qwen_tokenizer_encode(&tok, vid_prompt, prompt_tokens, 4096);
-        prompt_tokens[pn++] = cfg.vision_start_id;
-        n_img_pad = n_vis_tokens;
-        for (int i = 0; i < n_img_pad && pn < 4095; i++) {
-            prompt_tokens[pn++] = cfg.video_token_id;  /* 151656 */
-        }
-        prompt_tokens[pn++] = cfg.vision_end_id;
-
-        /* Text part */
-        {
-            int n = qwen_tokenizer_encode(&tok,
-                "\nDescribe this video.<|im_end|>\n<|im_start|>assistant\n",
-                prompt_tokens + pn, 4096 - pn);
-            pn += n;
-        }
-
-        grid_thw[0] = (n_frames + cfg.vis_temporal - 1) / cfg.vis_temporal;
-        grid_thw[1] = vis_st.grid_h / cfg.vis_merge;
-        grid_thw[2] = vis_st.grid_w / cfg.vis_merge;
-
-        /* --bench-seqlen N: pad to a fixed total prefill length (same filler
-         * and head-prepend scheme as the image branch). */
-        if (g_bench_seqlen > 0 && pn < g_bench_seqlen) {
-            static const char *filler = "The quick brown fox jumps over the lazy dog. ";
-            int fill_ids[64]; int fn = qwen_tokenizer_encode(&tok, filler, fill_ids, 64);
-            int need = g_bench_seqlen - pn;
-            if (fn > 0 && need > 0) {
-                int f[4096]; int fi = 0;
-                while (fi < need) {
-                    for (int k = 0; k < fn && fi < need; k++) f[fi++] = fill_ids[k];
-                }
-                memmove(prompt_tokens + need, prompt_tokens, (size_t)pn * sizeof(int));
-                memcpy(prompt_tokens, f, (size_t)need * sizeof(int));
-                pn = g_bench_seqlen;
-                printf("       [PAD] padded to %d tokens (prepend %d filler)\n", pn, need);
-            }
-        }
-
-        prefill_start = vllm_tp_wtime();
-        ret = st_qwen_model_multimodal_prefill(&ist, prompt_tokens, pn,
-                                                vis_tokens, n_vis_tokens,
-                                                grid_thw);
-        prefill_sec = vllm_tp_wtime() - prefill_start;
-
-        if (ret != 0) {
-            printf("       FAIL: Video multimodal prefill failed\n");
-        } else {
-            printf("       Prefill: %.0fms (%.1f tok/s)\n",
-                   prefill_sec * 1000.0, pn / prefill_sec);
-            printf("       Decoding...\n");
-            fflush(stdout);
-
-            int vid_tokens_generated = 0;
-            double vid_decode_start = vllm_tp_wtime();
-            for (int step = 0; step < max_new_tokens; step++) {
-                int best_id = 0;
-                float best_logit = -1e9f;
-                for (int i = 0; i < cfg.vocab_size; i++) {
-                    if (ist.logits[i] > best_logit) {
-                        best_logit = ist.logits[i];
-                        best_id = i;
-                    }
-                }
-                if (best_id == tok.eos_id || best_id == tok.im_end_id) break;
-                const char *token_str = qwen_tokenizer_decode(&tok, best_id);
-                if (token_str) printf("%s", token_str);
-                vid_tokens_generated++;
-                st_qwen_model_forward(&ist, best_id);
-            }
-            double vid_decode_sec = vllm_tp_wtime() - vid_decode_start;
-            printf("\n");
-            printf("       Video Decode: %d tokens in %.0fms (TPOT=%.0fms/tok, %.1f tok/s)\n",
-                   vid_tokens_generated,
-                   vid_decode_sec * 1000.0,
-                   vid_tokens_generated > 0 ? (vid_decode_sec * 1000.0) / vid_tokens_generated : 0.0,
-                   vid_tokens_generated > 0 ? vid_tokens_generated / vid_decode_sec : 0.0);
-            printf("       Video E2E: TTFT=%.0fms, Total=%.0fms\n",
-                   prefill_sec * 1000.0,
-                   (prefill_sec + vid_decode_sec) * 1000.0);
-        }
-    }
-
-    /* Video frame cleanup */
-    if (vid_ext) {
-        media_free_video_frames(video_frames, n_frames);
-    } else {
-        for (int f = 0; f < n_frames; f++) free(video_frames[f]);
-        free(video_frames);
-    }
-    st_qwen_inference_free(&ist);
-    st_vision_free(&vis_st);
-
-    st_vision_weights_free(&vis_w);
-
-    st_config_free(&cfg);
-    st_weights_free(&w);
-    qwen_tokenizer_free(&tok);
-
-    printf("\n       [Multimodal Test Complete]\n");
-    fflush(stdout);
-}
 
 /* ================================================================
  * OpenAI-compatible HTTP server mode (--serve)
@@ -4019,8 +2467,7 @@ typedef struct {
     int has_vision;
     int cfg_is_vqf;        /* cfg 指向 w->cfg（VQF mmap），不单独 free */
     char model_dir[1024];
-    int format_prio;       /* 模型加载格式优先级: 0=自动(VQF>GGUF>safetensors),
-                            * 1=VQF优先, 2=safetensors优先, 3=GGUF优先 */
+    int format_prio;       /* 保留：仅 VQF（0=auto/vqf，serve 恒为 VQF） */
 } ServeModel;
 
 /* 模型目录内定位 VQF 权重文件（model.vqf 优先）。返回 1 找到。 */
@@ -4034,168 +2481,772 @@ static int vqf_dir_find(const char *dir, char *buf, size_t cap) {
     return 0;
 }
 
-/* --convert-vqf <out.vqf>：把 safetensors 模型经与 serve 完全相同的加载序列
- * （alloc → 逐层量化 → repack → lm_head）量化后 dump 成 VQF 单文件。
- * 需配合 --model <dir> 与目标运行时的 wmode（默认 dual）。 */
-static int load_quant_weights(STModelConfig *cfg, STModelWeights *w); /* 见下 */
-static int run_convert_vqf(const char *model_dir, const char *out_path) {
-    STModelConfig cfg; memset(&cfg, 0, sizeof(cfg));
-    if (st_parse_config(model_dir, &cfg) != 0) {
-        printf("[VQF] config parse failed: %s\n", model_dir);
-        return 1;
+/* ================================================================
+ * --stream-test：AirLLM 型"分层驻留"验证（只走自研 VQF 格式）
+ *
+ * 验证对象 = VQF 单文件 mmap + 层切片驱逐（vqf_stream_layer_advance 用
+ * MADV_DONTNEED/WILLNEED 控制页驻留）：
+ *   1) vqf_load（mmap 直挂、零转换），模型目录必须含 model.vqf；
+ *   2) 固定 prompt 一次 prefill + N token 贪心 decode；
+ *   3) 逐阶段打印 VmRSS 与 token/时延。
+ * 判定口径：
+ *   A. token 位级一致：VLLM_VQF_STREAM 开/关 的 TOKIDS 输出必须完全一致
+ *      （驱逐只丢干净文件页，内容由文件重建）；
+ *   B. RSS 收敛：分层档稳态 RSS ≈ 常驻段 + keep 层，而非整文件拉满；
+ *   C. 速度代价诚实披露：eMMC 冷读使 tok/s 下降，不做营销化表述。
+ * 仅明文 VQF（加密 VQF 由 vqf_stream_setup 自动 REFUSED 并告警）。
+ * ================================================================ */
+/* P1a/质量门共用：从当前 ist.logits 起强迫续写 text，返回逐 token 平均 NLL
+ * （与 corpus/COPYTEST 同一 log-softmax 实现，double 累加，确定性）。 */
+static double nll_forced_forward(STModelConfig *cfg, QwenTokenizer *tok,
+                                 STQwenInferenceState *ist, const char *text,
+                                 int *out_n) {
+    int ids[512];
+    int rn = qwen_tokenizer_encode(tok, text, ids, 512);
+    double s = 0.0;
+    int n = 0;
+    for (int step = 0; step < rn; step++) {
+        double mx = -1e30;
+        for (int t = 0; t < cfg->vocab_size; t++)
+            if ((double)ist->logits[t] > mx) mx = (double)ist->logits[t];
+        double sum = 0.0;
+        for (int t = 0; t < cfg->vocab_size; t++)
+            sum += exp((double)ist->logits[t] - mx);
+        double lse = mx + log(sum);
+        s += lse - (double)ist->logits[ids[step]];
+        n++;
+        if (step + 1 < rn) st_qwen_model_forward(ist, ids[step]);
     }
-    if (cfg.max_seq_len > 8192) cfg.max_seq_len = 8192;
-    STModelWeights w; memset(&w, 0, sizeof(w));
-    if (load_quant_weights(&cfg, &w) != 0) {
-        printf("[VQF] weight load failed\n");
-        st_config_free(&cfg);
-        return 1;
-    }
-    /* 多模态：转换时顺带加载 vision 权重（safetensors 读取 + Q8 量化，
-     * 与 serve 完全同一路径），VQF 固化 Q8 大矩阵 + F32 小张量。
-     * 失败仅告警（仍可产出纯文本 VQF），成功则 w.vision 供 vqf_collect。 */
-    STVisionWeights *vvis = NULL;
-    if (cfg.has_vision) {
-        vvis = (STVisionWeights *)calloc(1, sizeof(STVisionWeights));
-        if (vvis && st_vision_weights_alloc(vvis, &cfg) == 0 &&
-            st_vision_load_weights(vvis, &cfg) == 0) {
-            /* 推理只读 Q8 副本：固化前释放 F32 大矩阵（省内存 & 文件体积） */
-            st_vision_weights_free_f32(vvis);
-            w.vision = vvis;
-            printf("[VQF] vision weights loaded (ViT %d layers, hidden=%d)\n",
-                   cfg.vis_depth, cfg.vis_hidden);
-        } else {
-            printf("[VQF] WARNING: vision weight load failed -> text-only VQF\n");
-            if (vvis) { st_vision_weights_free(vvis); free(vvis); }
-            vvis = NULL;
-        }
-    }
-    /* 布局 flags：与当前引擎配置（wmode / VLLM_Q8_8X8 / repack 门控）一致 */
-    uint32_t flags = 0;
-    if (w.q8_buf_q4) flags |= VQF_FLAG_Q8BUF_Q4;
-    if (w.has_x8)    flags |= VQF_FLAG_X8;
-    if (st_wmode_effective() == 4) flags |= VQF_FLAG_G256;
-    extern int g_st_q8_repack, g_st_q4_repack;
-    if (g_st_q8_repack) {
-        const char *e = getenv("VLLM_Q8_8X8");
-        if (!(e && e[0] == '0')) flags |= VQF_FLAG_Q8_8X8;
-    }
-    if (g_st_q4_repack) flags |= VQF_FLAG_Q4_4X4;
-    int rc = vqf_write(out_path, &w, &cfg, flags);
-    if (rc == 0) {
-        /* 自检：转换后立即 mmap 重新加载验证（checksum/布局/指针挂载） */
-        STModelWeights w2; memset(&w2, 0, sizeof(w2));
-        if (vqf_load(&w2, out_path) == 0) {
-            printf("[VQF] self-check PASS: %s reload OK (flags=0x%x)\n",
-                   out_path, flags);
-            st_weights_free(&w2);
-        } else {
-            printf("[VQF] self-check FAIL: %s\n", out_path);
-            rc = 1;
-        }
-    }
-    if (vvis) { st_vision_weights_free(vvis); free(vvis); }
-    w.vision = NULL;
-    st_weights_free(&w);
-    st_config_free(&cfg);
-    return rc;
+    if (out_n) *out_n = n;
+    return n > 0 ? s / (double)n : 0.0;
 }
 
-/* 加载全部量化权重：serve 与 --convert-vqf 共用同一代码路径，保证 VQF
- * 转换与内存加载位级一致（fixedpoint_quantize_saturate red line）。
- * 序列 = alloc(q8ffn) → embed/norm → 逐层 load+量化+repack → lm_head chunked
- * 量化+repack（含 tied embeddings 回退）。返回 0 成功。 */
-static int load_quant_weights(STModelConfig *cfg, STModelWeights *w) {
-    st_weights_alloc_layers_q8ffn(w, cfg, cfg->n_layers);
-    fprintf(stderr, "[M-C] weights allocated\n"); fflush(stderr);
-    if (!w->is_allocated) {
-        printf("[SERVE] weight allocation failed (~%.1f GB needed)\n",
-               (double)((size_t)cfg->vocab_size * cfg->dim * 2 +
-                        (size_t)cfg->n_layers * cfg->dim * cfg->n_heads * cfg->head_dim * 4 +
-                        (size_t)cfg->n_layers * cfg->ffn_dim * cfg->dim * 3 / 4) /
-               (1024.0 * 1024.0 * 1024.0));
+/* M3 对拍：单 token decode（seq=0 全新 KV），l==0 各阶段 dump
+ * （VLLM_MOE_DUMP=1 时 stdout 打 [L0D]），供 python numpy 逐段复算对比。 */
+static int run_moe_l0_test(const char *model_dir, int tok) {
+    printf("\n=== [L0] MoE layer-0 single-token dump (token=%d) ===\n", tok);
+    fflush(stdout);
+    char vqf_path[1024]; vqf_path[0] = 0;
+    if (vqf_is_file(model_dir)) {
+        snprintf(vqf_path, sizeof(vqf_path), "%s", model_dir);
+    } else if (!vqf_dir_find(model_dir, vqf_path, sizeof(vqf_path))) {
+        printf("[L0] FAIL: no model.vqf under %s\n", model_dir);
         return 1;
     }
-    if (st_load_tensor(cfg, "model.language_model.embed_tokens.weight",
-                       w->token_embed, cfg->vocab_size * cfg->dim) != 0) {
-        printf("[SERVE] embed load failed\n");
+    STModelWeights w; memset(&w, 0, sizeof(w));
+    if (vqf_load(&w, vqf_path) != 0) {
+        printf("[L0] FAIL: vqf_load %s\n", vqf_path);
         return 1;
     }
-    st_load_tensor(cfg, "model.language_model.norm.weight", w->final_norm, cfg->dim);
-    fprintf(stderr, "[M-D] embed+norm loaded\n"); fflush(stderr);
-    if (st_load_layer_weights(cfg, w, 0, cfg->n_layers) != 0) {
-        printf("[SERVE] layer weights load failed\n");
+    STModelConfig *cfg = &w.cfg;
+    STQwenInferenceState ist; memset(&ist, 0, sizeof(ist));
+    if (st_qwen_inference_init(&ist, &w) != 0) {
+        printf("[L0] FAIL: inference init\n");
+        st_weights_free(&w);
         return 1;
     }
-    fprintf(stderr, "[M-E] layers loaded\n"); fflush(stderr);
-    if (w->q8_lm_weight || w->q4_lm_weight) {
-        printf("[SERVE] loading & quantizing lm_head (Q8_0 + Q4_0)...\n");
+    for (int l = 0; l < cfg->n_layers; l++) ist.cache_len[l] = 0;
+    ist.seq_len = 0;
+    memset(ist.hidden, 0, (size_t)cfg->dim * sizeof(float));
+    const char *toks_env = getenv("VLLM_L0_TOKS");   /* 多 token 顺序 decode（KV 保留） */
+    if (toks_env && toks_env[0]) {
+        char buf[256]; snprintf(buf, sizeof(buf), "%s", toks_env);
+        char *p = buf; int st_ = 0;
+        while (1) {
+            int id = 0;
+            while (*p == ',' || *p == ' ') p++;
+            if (*p < '0' || *p > '9') break;
+            while (*p >= '0' && *p <= '9') { id = id * 10 + (*p - '0'); p++; }
+            printf("[L0] step %d token %d\n", st_++, id); fflush(stdout);
+            st_qwen_model_forward(&ist, id);
+            if (!*p) break;
+        }
+    } else {
+        st_qwen_model_forward(&ist, tok);
+    }
+    if (getenv("VLLM_MOE_DUMP") && getenv("VLLM_MOE_DUMP")[0] == '1') {
+        int am = 0; float amv = -1e30f;
+        for (int t = 0; t < cfg->vocab_size; t++)
+            if (ist.logits[t] > amv) { amv = ist.logits[t]; am = t; }
+        printf("[L0D] S12_logits argmax=%d v=%.9e\n", am, (double)amv);
+        printf("[L0D] S12_logits_v");
+        for (int t = 0; t < cfg->vocab_size && t < 320; t++)
+            printf(" %.9e", (double)ist.logits[t]);
+        printf("\n");
+        printf("[L0D] S13_hidden");
+        for (int t = 0; t < cfg->dim && t < 64; t++)
+            printf(" %.9e", (double)ist.hidden[t]);
+        printf("\n");
         fflush(stdout);
-        /* Chunked slice load: a single 2.49 GB F32 staging buffer may fail
-         * on 32 GB hosts; a failed malloc silently disabled the quantized
-         * head and decode fell back to the slow scalar F32 path. */
-        int64_t lm_elems = (int64_t)cfg->vocab_size * cfg->dim;
-        int chunk_rows = 16384;
-        int64_t chunk_elems = (int64_t)chunk_rows * cfg->dim;
-        float *tmp_lm = (float *)malloc((size_t)chunk_elems * sizeof(float));
-        while (!tmp_lm && chunk_rows > 1) {
-            chunk_rows /= 2;
-            chunk_elems = (int64_t)chunk_rows * cfg->dim;
-            tmp_lm = (float *)malloc((size_t)chunk_elems * sizeof(float));
-        }
-        if (!tmp_lm) {
-            fprintf(stderr, "[SERVE] WARNING: lm_head chunk buffer OOM -> F32 head\n");
-        } else {
-            for (int64_t off = 0; off < lm_elems; off += chunk_elems) {
-                int64_t n = lm_elems - off;
-                if (n > chunk_elems) n = chunk_elems;
-                if (st_load_tensor_slice(cfg, "lm_head.weight", off, tmp_lm, n) != 0) {
-                    /* tie_word_embeddings (e.g. Qwen3-VL-2B): lm_head.weight is
-                     * absent, lm_head == embed_tokens.weight (already loaded as
-                     * F32 into w->token_embed). Quantize from that instead. */
-                    fprintf(stderr,
-                            "[SERVE] lm_head.weight absent -> tied embeddings, "
-                            "using embed_tokens\n");
-                    if (off >= 0 && off + n <=
-                        (int64_t)cfg->vocab_size * (int64_t)cfg->dim) {
-                        memcpy(tmp_lm, w->token_embed + off,
-                               (size_t)n * sizeof(float));
-                    } else {
-                        break;
-                    }
-                }
-                if (w->q8_lm_weight) {
-                    if (w->q8_buf_q4)
-                        f32_to_q4i8(w->q8_lm_weight + (off / 32) * 34, tmp_lm, (int)n);
-                    else if (st_wmode_effective() == 4)
-                        f32_to_g256q8(w->q8_lm_weight + (off / 32) * 34, tmp_lm, (int)n);
-                    else
-                        f32_to_q8_0(w->q8_lm_weight + (off / 32) * 34, tmp_lm, (int)n);
-                }
-                if (w->q4_lm_weight)
-                    f32_to_q4_0(w->q4_lm_weight + (off / 32) * 18, tmp_lm, (int)n);
-                if (w->q4_lm_weight)
-                    repack_q4_0_4x4_inplace(
-                        w->q4_lm_weight + (size_t)(off / cfg->dim) * (((cfg->dim + 31) / 32) * 18),
-                        (int)(n / cfg->dim), cfg->dim);
-                if (w->q8_lm_weight)
-                    repack_q8_0_tiled_inplace(
-                        w->q8_lm_weight + (size_t)(off / cfg->dim) * (((cfg->dim + 31) / 32) * 34),
-                        (int)(n / cfg->dim), cfg->dim);
-            }
-            free(tmp_lm);
-            printf("[SERVE] lm_head quantized OK (peak staging %d MB)\n",
-                   chunk_rows * cfg->dim * 4 / (1024 * 1024));
-            fflush(stdout);
-        }
     }
+    printf("[L0] forward done (dim=%d layers=%d)\n", cfg->dim, cfg->n_layers);
+    fflush(stdout);
+    st_qwen_inference_free(&ist);
+    st_weights_free(&w);
     return 0;
 }
 
-/* Last model dir whose NPU strip-cache (st_npu_gw_*) is resident. Loading a
- * DIFFERENT model must drop the stale strips (different weights/geometry);
- * same-model reloads keep them so a reloaded request skips the rebuild storm. */
-static char g_npu_loaded_model[1024];
+/* ================================================================
+ * 私有提交定位（VLLM_MEMDUMP=1，init 后调用；VLLM_MEMDUMP_EXIT=1 直接退出）
+ * 枚举 committed private 大区，判定是否与 VQF mmap（COW 私有化）重叠。
+ * ================================================================ */
+#ifdef _WIN32
+typedef struct { uintptr_t base; size_t sz; DWORD prot; int in_map; } MBig;
+static void mem_dump_regions(const STModelWeights *w) {
+    uintptr_t mapB = (uintptr_t)w->vqf_map;
+    uintptr_t mapE = mapB + w->vqf_map_len;
+    MBig big[16]; int nb = 0;
+    uint64_t tot_priv = 0, tot_map = 0, map_priv = 0, map_map = 0;
+    MEMORY_BASIC_INFORMATION mi;
+    for (uintptr_t a = 0; a < (uintptr_t)1 << 47; ) {
+        SIZE_T r = VirtualQuery((void *)a, &mi, sizeof(mi));
+        if (!r) break;
+        if (mi.State == MEM_COMMIT) {
+            int in = (a < mapE && a + mi.RegionSize > mapB) ? 1 : 0;
+            if (mi.Type == MEM_PRIVATE) {
+                tot_priv += mi.RegionSize;
+                if (in) map_priv += mi.RegionSize;
+            } else if (mi.Type == MEM_MAPPED) {
+                tot_map += mi.RegionSize;
+                if (in) map_map += mi.RegionSize;
+            }
+            /* 记录最大私有区 */
+            if (mi.Type == MEM_PRIVATE && nb < 16) {
+                big[nb].base = a; big[nb].sz = mi.RegionSize;
+                big[nb].prot = mi.Protect; big[nb].in_map = in;
+                nb++;
+            }
+        }
+        a += mi.RegionSize ? mi.RegionSize : 0x10000;
+    }
+    printf("[MEMDUMP] committed MEM_PRIVATE=%.2fGB (in_vqf_map=%.2fGB)  "
+           "MEM_MAPPED=%.2fGB (in_vqf_map=%.2fGB)\n",
+           tot_priv / 1073741824.0, map_priv / 1073741824.0,
+           tot_map / 1073741824.0, map_map / 1073741824.0);
+    printf("[MEMDUMP] vqf mmap = [%p, %p) %.1f MB\n", w->vqf_map,
+           (void *)(uintptr_t)(mapB + w->vqf_map_len), w->vqf_map_len / 1048576.0);
+    /* 冒泡取 top 12（私有区） */
+    for (int i = 0; i < nb; i++)
+        for (int j = i + 1; j < nb; j++)
+            if (big[j].sz > big[i].sz) { MBig t = big[i]; big[i] = big[j]; big[j] = t; }
+    int show = nb < 12 ? nb : 12;
+    for (int i = 0; i < show; i++) {
+        printf("[MEMDUMP] priv[%2d] base=%p size=%6.1fMB prot=0x%x in_vqf_map=%d\n",
+               i, (void *)big[i].base, big[i].sz / 1048576.0, big[i].prot, big[i].in_map);
+    }
+}
+#endif
+
+static int run_stream_test(const char *model_dir, int n_tokens) {
+    printf("\n=== [STREAM] layer-resident validation (VQF only) ===\n");
+    fflush(stdout);
+
+    char vqf_path[1024]; vqf_path[0] = 0;
+    char tok_dir[1024];
+    if (vqf_is_file(model_dir)) {
+        /* --model 直接指向 .vqf：词表取其所在目录 */
+        snprintf(vqf_path, sizeof(vqf_path), "%s", model_dir);
+        snprintf(tok_dir, sizeof(tok_dir), "%s", model_dir);
+        char *sl = strrchr(tok_dir, '/');
+        if (sl) { *sl = '\0'; if (!tok_dir[0]) snprintf(tok_dir, sizeof(tok_dir), "."); }
+        else    snprintf(tok_dir, sizeof(tok_dir), ".");
+    } else {
+        if (!vqf_dir_find(model_dir, vqf_path, sizeof(vqf_path))) {
+            printf("[STREAM] FAIL: %s 无 model.vqf（本测试要求自研 VQF 格式）\n",
+                   model_dir);
+            return 1;
+        }
+        snprintf(tok_dir, sizeof(tok_dir), "%s", model_dir);
+    }
+
+    STModelWeights w; memset(&w, 0, sizeof(w));
+    double t0 = st_now_sec();
+    if (vqf_load(&w, vqf_path) != 0) {
+        printf("[STREAM] FAIL: vqf_load %s\n", vqf_path);
+        return 1;
+    }
+    STModelConfig *cfg = &w.cfg;   /* VQF 自包含（config 内嵌） */
+    printf("[STREAM] vqf_load OK (%.2fs): dim=%d layers=%d heads=%d kv=%d "
+           "ffn=%d vocab=%d max_seq=%d\n",
+           st_now_sec() - t0, cfg->dim, cfg->n_layers, cfg->n_heads,
+           cfg->n_kv_heads, cfg->ffn_dim, cfg->vocab_size, cfg->max_seq_len);
+    printf("[STREAM] rss_after_load  = %ld kB\n", vqf_stream_rss_kb());
+    fflush(stdout);
+
+    QwenTokenizer tok;
+    if (qwen_tokenizer_load(&tok, tok_dir) != 0 ||
+        qwen_tokenizer_load_special(&tok, tok_dir) != 0) {
+        printf("[STREAM] FAIL: tokenizer load from %s (需要 vocab.bin/config.json)\n",
+               tok_dir);
+        st_weights_free(&w);
+        return 1;
+    }
+    printf("[STREAM] tokenizer: %d tokens (eos=%d im_start=%d im_end=%d)\n",
+           tok.vocab_size, tok.eos_id, tok.im_start_id, tok.im_end_id);
+
+    STQwenInferenceState ist;
+    memset(&ist, 0, sizeof(ist));
+    if (st_qwen_inference_init(&ist, &w) != 0) {
+        printf("[STREAM] FAIL: inference init\n");
+        st_weights_free(&w);
+        qwen_tokenizer_free(&tok);
+        return 1;
+    }
+    printf("[STREAM] rss_after_init  = %ld kB\n", vqf_stream_rss_kb());
+    fflush(stdout);
+#ifdef _WIN32
+    if (getenv("VLLM_MEMDUMP") && getenv("VLLM_MEMDUMP")[0] == '1') {
+        mem_dump_regions(&w);   /* init 后基线（无推理分配） */
+    }
+#endif
+
+    /* ---- 固定文本 prompt（不含视觉 token，保证跨档完全确定） ---- */
+    int im_start = tok.im_start_id > 0 ? tok.im_start_id : 151644;
+    int im_end   = tok.im_end_id   > 0 ? tok.im_end_id   : 151645;
+    int nl_tok   = 198;
+    const char *user_prompt =
+        "请用中文一句话解释什么是\"逐层加载推理\"。";
+    int prompt_ids[1024]; int pn = 0;
+    int tmp_ids[128]; int n;
+    prompt_ids[pn++] = im_start;
+    n = qwen_tokenizer_encode(&tok, "system", tmp_ids, 128);
+    for (int i = 0; i < n && pn < 1024; i++) prompt_ids[pn++] = tmp_ids[i];
+    prompt_ids[pn++] = nl_tok;
+    n = qwen_tokenizer_encode(&tok, "You are a helpful assistant.", tmp_ids, 128);
+    for (int i = 0; i < n && pn < 1024; i++) prompt_ids[pn++] = tmp_ids[i];
+    prompt_ids[pn++] = im_end;
+    prompt_ids[pn++] = nl_tok;
+    prompt_ids[pn++] = im_start;
+    n = qwen_tokenizer_encode(&tok, "user", tmp_ids, 128);
+    for (int i = 0; i < n && pn < 1024; i++) prompt_ids[pn++] = tmp_ids[i];
+    prompt_ids[pn++] = nl_tok;
+    n = qwen_tokenizer_encode(&tok, user_prompt, tmp_ids, 128);
+    for (int i = 0; i < n && pn < 1024; i++) prompt_ids[pn++] = tmp_ids[i];
+    prompt_ids[pn++] = im_end;
+    prompt_ids[pn++] = nl_tok;
+    prompt_ids[pn++] = im_start;
+    n = qwen_tokenizer_encode(&tok, "assistant", tmp_ids, 128);
+    for (int i = 0; i < n && pn < 1024; i++) prompt_ids[pn++] = tmp_ids[i];
+    prompt_ids[pn++] = nl_tok;
+
+    for (int l = 0; l < cfg->n_layers; l++) ist.cache_len[l] = 0;
+    ist.seq_len = 0;
+    memset(ist.hidden, 0, (size_t)cfg->dim * sizeof(float));
+
+    /* ---- Prefill ---- */
+    const char *env_heat = getenv("VLLM_EW_HEAT");
+    if (env_heat && env_heat[0] == '1') st_moe_heat_reset(&w);  /* 真实热度采集 */
+    const char *env_single = getenv("VLLM_STREAM_SINGLE");
+    int single_prefill = env_single && env_single[0] == '1';
+    t0 = st_now_sec();
+    if (single_prefill) {
+        /* 逐 token 单步 forward 喂入（与 decode 同一内核，绕开 batch prefill
+         * 路径；30B 上 batch prefill 曾静默退出）。逐字进 KV，语义等价。 */
+        for (int _i = 0; _i < pn; _i++) {
+            st_qwen_model_forward(&ist, prompt_ids[_i]);
+        }
+    } else if (st_qwen_model_prefill_batch(&ist, prompt_ids, pn) != 0) {
+        printf("[STREAM] FAIL: prefill\n");
+        st_qwen_inference_free(&ist);
+        st_weights_free(&w);
+        qwen_tokenizer_free(&tok);
+        return 1;
+    }
+    double t_prefill = st_now_sec() - t0;
+    printf("[STREAM] prefill %d tokens in %.3fs (%.0f tok/s) [%s]\n",
+           pn, t_prefill, pn / (t_prefill > 0 ? t_prefill : 1e-9),
+           single_prefill ? "single-step" : "batch");
+    printf("[STREAM] rss_after_prefill = %ld kB\n", vqf_stream_rss_kb());
+    fflush(stdout);
+
+    /* ---- P0 质量门：强制续写固定参考句，测 NLL（对比 f32 精确 vs q8 反量化
+     * 历史段）。VLLM_STREAM_NLL=1 启用；关/开各跑一次对比 NLL_MEAN。
+     * 先做"第二轮"prefill（跨 prefill 调用读历史缓存），确保命中
+     * prefill 历史段注意力（单批 prefill prev_len=0 测不到差异）。 ---- */
+    if (getenv("VLLM_STREAM_NLL") && getenv("VLLM_STREAM_NLL")[0] == '1') {
+        /* P0 语料质量门：多段 {正文, 追问, 参考回答}，每段做"turn1 prefill +
+         * turn2 prefill（读历史缓存，命中 f32 正典读点）+ forced-NLL"。
+         * 关/开（VLLM_PREFILL_Q8CACHE）各跑一次，对比 CORPUS_NLL_MEAN。 */
+        /* P3 门禁三档（ΔNLL 口径见《内存分页优化方案》§四 P3 Phase 1）：
+         *   A = 不加 --sparse-attn          -> 稠密精确（Phase 0 基线 4.046516）
+         *   B = --sparse-attn               -> 隔离「稀疏注意力」自身近似
+         *   C = --sparse-attn --l3-evict --l3-min-seq 1 + VLLM_STREAM_NLL_L3=1
+         *                                     -> 再叠加「L3 驱逐 + Q4 重建前缀」
+         * P3 的 ΔNLL = C − B；B − A 是稀疏注意力自身的代价，不计入 P3。
+         * 档 C 直接驱动 l3_evict_after_prefill + l3_restore_prefix，不经过 serve
+         * 层的 VLLM_L3_PREFIX_REUSE 门（该门此时尚未存在）。 */
+        int nll_l3 = 0;
+        {
+            const char *e3 = getenv("VLLM_STREAM_NLL_L3");
+            nll_l3 = (e3 && e3[0] == '1') ? 1 : 0;
+        }
+        if (nll_l3) {
+            if (!(g_l3_evict && g_sparse_attn)) {
+                printf("[STREAM] L3 档需要 --sparse-attn --l3-evict "
+                       "--l3-min-seq <N>\n");
+                st_qwen_inference_free(&ist);
+                st_weights_free(&w);
+                qwen_tokenizer_free(&tok);
+                return 1;
+            }
+            if (!g_l3_path || !g_l3_path[0]) g_l3_path = strdup("/tmp/nll_l3.bin");
+            printf("[STREAM] NLL 档 C：L3 驱逐 + Q4 重建前缀 (l3-path=%s)\n",
+                   g_l3_path ? g_l3_path : "(default)");
+            fflush(stdout);
+        }
+
+        /* P3 步骤 5：长上下文 ΔNLL。VLLM_STREAM_NLL_REPEAT=N 把每段 ctx 的 token
+         * 序列重复 N 次（默认 1 = Phase 0 基线口径，与旧行为逐位相同）。目的：
+         * 短段（~62 token）只有 2 个块，keep 后 0 块可驱逐 -> L3 档"不适用"；
+         * 放大到 ~N×62 token 后每段有 ~26 块，L3 驱逐才真实生效。 */
+        int nll_rep = 1;
+        {
+            const char *er = getenv("VLLM_STREAM_NLL_REPEAT");
+            if (er && er[0]) {
+                nll_rep = atoi(er);
+                if (nll_rep < 1) nll_rep = 1;
+            }
+        }
+        if (nll_rep > 1)
+            printf("[STREAM] ctx_repeat=%d（长上下文 ΔNLL 口径）\n", nll_rep);
+
+        static const struct { const char *ctx; const char *q; const char *ref; } cps[] = {
+            {
+                "磁悬浮列车利用电磁力使车体悬浮于轨道之上，消除轮轨摩擦，"
+                "从而在高速运行时大幅降低能量损耗与机械磨损。其控制难点在于"
+                "悬浮间隙的动态稳定性：外界扰动必须在毫秒级被电磁系统纠正。",
+                "请用一句话总结这段文字。",
+                "磁悬浮列车通过消除轮轨摩擦来降低损耗，并以高速电磁控制维持悬浮稳定。",
+            },
+            {
+                "RISC-V 指令集以精简、开放与可扩展著称，近年成为边缘 AI 芯片的"
+                "重要选择。相比闭源架构，开发者可以自由定制向量扩展与矩阵加速器，"
+                "同时借助开源工具链缩短芯片验证周期。",
+                "请用一句话概括 RISC-V 的优势。",
+                "RISC-V 的开放与可扩展特性使它便于定制边缘 AI 芯片并加速验证。",
+            },
+            {
+                "量子纠错通过把单个逻辑比特编码到多个物理比特上，用冗余来探测并"
+                "修复错误。表面码是目前最有希望的候选方案之一，其容错阈值允许"
+                "物理错误率降至千分之一以下后可靠运行大规模量子算法。",
+                "这段在讲什么？",
+                "这段介绍量子纠错用多物理比特冗余编码逻辑比特，并以表面码降低错误率。",
+            },
+            {
+                "长江上游梯级水库在汛期联合调度可削峰错峰，保障中下游防洪安全；"
+                "枯水期则通过补偿下泄维持航道水深与生态流量，是流域治理的关键"
+                "基础设施。",
+                "请概括梯级水库的作用。",
+                "梯级水库汛期削峰防洪、枯水期补偿下泄，保障防洪、航运与生态。",
+            },
+        };
+        const int np_ = (int)(sizeof(cps) / sizeof(cps[0]));
+        double c_sum = 0.0;
+        int c_n = 0;
+        int n_l3_applied = 0;   /* 档 C：真正走到 L3 驱逐+重建的段数 */
+        for (int p = 0; p < np_; p++) {
+            for (int l = 0; l < cfg->n_layers; l++) ist.cache_len[l] = 0;
+            ist.seq_len = 0;
+            memset(ist.hidden, 0, (size_t)cfg->dim * sizeof(float));
+
+            /* turn1: system + user(ctx) + assistant 起始 */
+            int ids1[2048]; int m1 = 0;
+            ids1[m1++] = im_start;
+            n = qwen_tokenizer_encode(&tok, "system", tmp_ids, 128);
+            for (int i = 0; i < n && m1 < 2048; i++) ids1[m1++] = tmp_ids[i];
+            ids1[m1++] = nl_tok;
+            n = qwen_tokenizer_encode(&tok, "You are a helpful assistant.", tmp_ids, 128);
+            for (int i = 0; i < n && m1 < 2048; i++) ids1[m1++] = tmp_ids[i];
+            ids1[m1++] = im_end;
+            ids1[m1++] = nl_tok;
+            ids1[m1++] = im_start;
+            n = qwen_tokenizer_encode(&tok, "user", tmp_ids, 128);
+            for (int i = 0; i < n && m1 < 2048; i++) ids1[m1++] = tmp_ids[i];
+            ids1[m1++] = nl_tok;
+            {
+                /* nll_rep 次重复（默认 1 时与旧代码逐位相同）。 */
+                int ctx_ids[512];
+                int cn = qwen_tokenizer_encode(&tok, cps[p].ctx, ctx_ids, 512);
+                for (int r = 0; r < nll_rep; r++)
+                    for (int i = 0; i < cn && m1 < 2048; i++)
+                        ids1[m1++] = ctx_ids[i];
+            }
+            ids1[m1++] = im_end;
+            ids1[m1++] = nl_tok;
+            ids1[m1++] = im_start;
+            n = qwen_tokenizer_encode(&tok, "assistant", tmp_ids, 128);
+            for (int i = 0; i < n && m1 < 2048; i++) ids1[m1++] = tmp_ids[i];
+            ids1[m1++] = nl_tok;
+            if (st_qwen_model_prefill_batch(&ist, ids1, m1) != 0) {
+                printf("[STREAM] FAIL: passage %d turn1 prefill\n", p);
+                st_qwen_inference_free(&ist);
+                st_weights_free(&w);
+                qwen_tokenizer_free(&tok);
+                return 1;
+            }
+
+            /* P3 档 C：turn1 后驱逐冷块 → 从 Q4 载荷把前缀行重建回 RAM
+             * （等价于 serve 侧 ist_reset 复用前缀前要做的 rebuild），使 turn2
+             * 能读到完整历史 KV。 */
+            if (nll_l3) {
+                int seq1 = ist.cache_len[0];
+                l3_evict_after_prefill(&ist, 0, 0);
+                int ev = ist.l3.evicted;
+                if (ev <= 0) {
+                    /* 段太短：keep 至少保留「1 个高重要度块 + 最后 1 块」，
+                     * 块数 ≤ 2 时 ratio 再大也驱不出任何块。该段 L3 不适用，
+                     * 退回全量 RAM（等价档 B），显式标注而不算作失败。 */
+                    printf("[STREAM] P%d L3: 不适用 (seq=%d 块数不足, 0 块可驱逐) "
+                           "-> 该段等同档 B\n", p, seq1);
+                } else {
+                    int rs = l3_restore_prefix(&ist, seq1);
+                    printf("[STREAM] P%d L3: seq=%d evicted=%d restored=%d\n",
+                           p, seq1, ev, rs);
+                    if (rs <= 0) {
+                        printf("[STREAM] FAIL: passage %d L3 档未生效 "
+                               "(evicted=%d restored=%d)\n", p, ev, rs);
+                        st_qwen_inference_free(&ist);
+                        st_weights_free(&w);
+                        qwen_tokenizer_free(&tok);
+                        return 1;
+                    }
+                    n_l3_applied++;
+                }
+                fflush(stdout);
+            }
+
+            /* turn2: user(追问) + assistant 起始（读 turn1 历史缓存） */
+            int ids2[1024]; int m2 = 0;
+            ids2[m2++] = im_start;
+            n = qwen_tokenizer_encode(&tok, "user", tmp_ids, 128);
+            for (int i = 0; i < n && m2 < 1024; i++) ids2[m2++] = tmp_ids[i];
+            ids2[m2++] = nl_tok;
+            n = qwen_tokenizer_encode(&tok, cps[p].q, tmp_ids, 128);
+            for (int i = 0; i < n && m2 < 1024; i++) ids2[m2++] = tmp_ids[i];
+            ids2[m2++] = im_end;
+            ids2[m2++] = nl_tok;
+            ids2[m2++] = im_start;
+            n = qwen_tokenizer_encode(&tok, "assistant", tmp_ids, 128);
+            for (int i = 0; i < n && m2 < 1024; i++) ids2[m2++] = tmp_ids[i];
+            ids2[m2++] = nl_tok;
+            if (st_qwen_model_prefill_batch(&ist, ids2, m2) != 0) {
+                printf("[STREAM] FAIL: passage %d turn2 prefill\n", p);
+                st_qwen_inference_free(&ist);
+                st_weights_free(&w);
+                qwen_tokenizer_free(&tok);
+                return 1;
+            }
+
+            /* forced-NLL over reference */
+            int ref_ids[512];
+            int rn = qwen_tokenizer_encode(&tok, cps[p].ref, ref_ids, 512);
+            double nll_sum = 0.0;
+            int nll_n = 0;
+            for (int step = 0; step < rn; step++) {
+                double mx = -1e30;
+                for (int t = 0; t < cfg->vocab_size; t++)
+                    if ((double)ist.logits[t] > mx) mx = (double)ist.logits[t];
+                double sum = 0.0;
+                for (int t = 0; t < cfg->vocab_size; t++)
+                    sum += exp((double)ist.logits[t] - mx);
+                double lse = mx + log(sum);
+                nll_sum += lse - (double)ist.logits[ref_ids[step]];
+                nll_n++;
+                if (step + 1 < rn) st_qwen_model_forward(&ist, ref_ids[step]);
+            }
+            printf("[STREAM] P%d NLL_MEAN = %.6f (n=%d)\n", p,
+                   nll_n > 0 ? nll_sum / (double)nll_n : 0.0, nll_n);
+            fflush(stdout);
+            c_sum += nll_sum;
+            c_n += nll_n;
+        }
+        printf("[STREAM] CORPUS_NLL_MEAN = %.6f (total_n=%d, passages=%d)\n",
+               c_n > 0 ? c_sum / (double)c_n : 0.0, c_n, np_);
+        if (nll_l3) {
+            /* 不适用段（块数不足）与档 B 逐位相同，会稀释 ΔNLL —— 必须显式
+             * 报出适用段数，否则读者会把稀释后的差值当成真实差值。 */
+            printf("[STREAM] L3 applied %d/%d passages（其余段等同档 B）\n",
+                   n_l3_applied, np_);
+            if (n_l3_applied <= 0) {
+                printf("[STREAM] FAIL: L3 档在所有段都不适用\n");
+                st_qwen_inference_free(&ist);
+                st_weights_free(&w);
+                qwen_tokenizer_free(&tok);
+                return 1;
+            }
+        }
+        st_qwen_inference_free(&ist);
+        st_weights_free(&w);
+        qwen_tokenizer_free(&tok);
+        return 0;
+    }
+
+    /* ---- P1a 回归（VLLM_STREAM_COPYTEST=1）：copy_kv_prefix 忠实性 ----
+     * 同一世界内两条路必须逐位一致：
+     *   A = turn1 prefill + 同状态 turn2 prefill（不复制）；
+     *   B = 模板 turn1 prefill + copy_kv_prefix(模板→B) + B 上 turn2 prefill。
+     * 若复制存在维度/scale 错误 → NLL_A 与 NLL_B 不一致。 */
+    if (getenv("VLLM_STREAM_COPYTEST") && getenv("VLLM_STREAM_COPYTEST")[0] == '1') {
+        const char *ctx =
+            "磁悬浮列车利用电磁力使车体悬浮于轨道之上，消除轮轨摩擦，"
+            "从而在高速运行时大幅降低能量损耗与机械磨损。其控制难点在于"
+            "悬浮间隙的动态稳定性：外界扰动必须在毫秒级被电磁系统纠正。";
+        const char *q = "请用一句话总结这段文字。";
+        const char *ref =
+            "磁悬浮列车通过消除轮轨摩擦来降低损耗，并以高速电磁控制维持悬浮稳定。";
+
+        int t1[2048]; int m1 = 0;   /* system + user(ctx) + assistant 起始 */
+        int t2[1024]; int m2 = 0;   /* user(q) + assistant 起始 */
+        int k;
+        t1[m1++] = im_start;
+        k = qwen_tokenizer_encode(&tok, "system", tmp_ids, 128);
+        for (int i = 0; i < k && m1 < 2048; i++) t1[m1++] = tmp_ids[i];
+        t1[m1++] = nl_tok;
+        k = qwen_tokenizer_encode(&tok, "You are a helpful assistant.", tmp_ids, 128);
+        for (int i = 0; i < k && m1 < 2048; i++) t1[m1++] = tmp_ids[i];
+        t1[m1++] = im_end; t1[m1++] = nl_tok;
+        t1[m1++] = im_start;
+        k = qwen_tokenizer_encode(&tok, "user", tmp_ids, 128);
+        for (int i = 0; i < k && m1 < 2048; i++) t1[m1++] = tmp_ids[i];
+        t1[m1++] = nl_tok;
+        k = qwen_tokenizer_encode(&tok, ctx, tmp_ids, 128);
+        for (int i = 0; i < k && m1 < 2048; i++) t1[m1++] = tmp_ids[i];
+        t1[m1++] = im_end; t1[m1++] = nl_tok;
+        t1[m1++] = im_start;
+        k = qwen_tokenizer_encode(&tok, "assistant", tmp_ids, 128);
+        for (int i = 0; i < k && m1 < 2048; i++) t1[m1++] = tmp_ids[i];
+        t1[m1++] = nl_tok;
+
+        t2[m2++] = im_start;
+        k = qwen_tokenizer_encode(&tok, "user", tmp_ids, 128);
+        for (int i = 0; i < k && m2 < 1024; i++) t2[m2++] = tmp_ids[i];
+        t2[m2++] = nl_tok;
+        k = qwen_tokenizer_encode(&tok, q, tmp_ids, 128);
+        for (int i = 0; i < k && m2 < 1024; i++) t2[m2++] = tmp_ids[i];
+        t2[m2++] = im_end; t2[m2++] = nl_tok;
+        t2[m2++] = im_start;
+        k = qwen_tokenizer_encode(&tok, "assistant", tmp_ids, 128);
+        for (int i = 0; i < k && m2 < 1024; i++) t2[m2++] = tmp_ids[i];
+        t2[m2++] = nl_tok;
+
+        STQwenInferenceState istA, istT, istB;
+        memset(&istA, 0, sizeof(istA));
+        memset(&istT, 0, sizeof(istT));
+        memset(&istB, 0, sizeof(istB));
+        if (st_qwen_inference_init(&istA, &w) != 0 ||
+            st_qwen_inference_init(&istT, &w) != 0 ||
+            st_qwen_inference_init(&istB, &w) != 0) {
+            printf("[STREAM] FAIL: COPYTEST init\n");
+            st_weights_free(&w);
+            qwen_tokenizer_free(&tok);
+            return 1;
+        }
+
+        /* A：turn1 + turn2 同状态连续 prefill */
+        if (st_qwen_model_prefill_batch(&istA, t1, m1) != 0 ||
+            st_qwen_model_prefill_batch(&istA, t2, m2) != 0) {
+            printf("[STREAM] FAIL: COPYTEST A prefill\n");
+            return 1;
+        }
+        int nA = 0;
+        double nllA = nll_forced_forward(cfg, &tok, &istA, ref, &nA);
+
+        /* T+B：模板 turn1 → copy_kv_prefix(T→B) → B turn2 */
+        if (st_qwen_model_prefill_batch(&istT, t1, m1) != 0) {
+            printf("[STREAM] FAIL: COPYTEST T prefill\n");
+            return 1;
+        }
+        st_qwen_copy_kv_prefix(&istB, &istT, m1);
+        if (st_qwen_model_prefill_batch(&istB, t2, m2) != 0) {
+            printf("[STREAM] FAIL: COPYTEST B prefill\n");
+            return 1;
+        }
+        int nB = 0;
+        double nllB = nll_forced_forward(cfg, &tok, &istB, ref, &nB);
+
+        double diff = nllA - nllB;
+        printf("[STREAM] COPYTEST A_NLL=%.9f (n=%d)  B_NLL=%.9f (n=%d)  "
+               "diff=%.3e %s\n",
+               nllA, nA, nllB, nB, diff,
+               (nA > 0 && nB > 0 && diff > -1e-9 && diff < 1e-9) ? "PASS" : "FAIL");
+
+        /* P1b 回归（VLLM_STREAM_DKVTEST=1）：v2(q8+scale) save→load 保真度。
+         * 断言 1：恢复行的 q8 字节与 scale 与源逐字节一致；
+         * 断言 2：恢复后再 decode 一个 token，logits 与源逐位一致。
+         * （不做 prefill-logits 直比：新状态无 prefill logits，起点不等。） */
+        if (getenv("VLLM_STREAM_DKVTEST") && getenv("VLLM_STREAM_DKVTEST")[0] == '1') {
+            int tot = m1 + m2;
+            /* 快照范围 = istA 当前实驻行数。COPYTEST 的 forced-NLL 已把 ref
+             * 的前 rn-1 个 token 追加进 KV（cache_len = tot+rn-1），decode
+             * 对比若只在 tot 行上进行则两状态起点不等，恒 FAIL。 */
+            int rid2[512];
+            int rn = qwen_tokenizer_encode(&tok, ref, rid2, 512);
+            int save_n = tot + (rn > 0 ? rn - 1 : 0);
+            if (save_n > istA.cache_len[0]) save_n = istA.cache_len[0];
+            const char *dkv = "/tmp/dkvtest.bin";
+            int rcS = -1;
+            if (save_n > 0) {
+                int *toks = (int *)malloc((size_t)save_n * sizeof(int));
+                memcpy(toks, t1, (size_t)m1 * sizeof(int));
+                memcpy(toks + m1, t2, (size_t)m2 * sizeof(int));
+                for (int i = tot; i < save_n; i++) toks[i] = rid2[i - tot];
+                rcS = st_kv_disk_save(&istA, dkv, toks, save_n);
+                free(toks);
+            }
+            STQwenInferenceState istC;
+            memset(&istC, 0, sizeof(istC));
+            int rcI = 0;
+            if (rcS != 0 || st_qwen_inference_init(&istC, &w) != 0) rcI = -1;
+            if (rcI == 0 && st_kv_disk_load(&istC, dkv, save_n) != 0) rcI = -1;
+
+            int rows_ok = (rcS == 0 && rcI == 0);
+            if (rows_ok) {
+                const int kv_dim = cfg->n_kv_heads * cfg->head_dim;
+                for (int l = 0; rows_ok && l < cfg->n_layers; l++) {
+                    for (int t = 0; rows_ok && t < save_n; t++) {
+                        int b = t / istA.kv_bs, r = t % istA.kv_bs;
+                        const int8_t *kA = istA.k_cache_q8[l][b] + (size_t)r * kv_dim;
+                        const int8_t *vA = istA.v_cache_q8[l][b] + (size_t)r * kv_dim;
+                        const int8_t *kC = istC.k_cache_q8[l][b] + (size_t)r * kv_dim;
+                        const int8_t *vC = istC.v_cache_q8[l][b] + (size_t)r * kv_dim;
+                        if (memcmp(kA, kC, (size_t)kv_dim) != 0 ||
+                            memcmp(vA, vC, (size_t)kv_dim) != 0 ||
+                            memcmp(istA.k_scale[l] + (size_t)t * cfg->n_kv_heads,
+                                   istC.k_scale[l] + (size_t)t * cfg->n_kv_heads,
+                                   (size_t)cfg->n_kv_heads * sizeof(float)) != 0 ||
+                            memcmp(istA.v_scale[l] + (size_t)t * cfg->n_kv_heads,
+                                   istC.v_scale[l] + (size_t)t * cfg->n_kv_heads,
+                                   (size_t)cfg->n_kv_heads * sizeof(float)) != 0) {
+                            rows_ok = 0;
+                            break;
+                        }
+                    }
+                }
+            }
+            int log_ok = 0;
+            if (rows_ok && rn > 0) {
+                /* 两状态同处 save_n 位置，喂同一续写 token（ref 末 token），
+                 * 预测 logits 必须逐位一致（q8 世界下 v2 恢复即正典）。 */
+                st_qwen_model_forward(&istA, rid2[rn - 1]);
+                st_qwen_model_forward(&istC, rid2[rn - 1]);
+                log_ok = 1;
+                for (int x = 0; x < cfg->vocab_size; x++)
+                    if (istA.logits[x] != istC.logits[x]) { log_ok = 0; break; }
+            }
+            printf("[STREAM] DKVTEST save=%d load=%d rows=%d rows_equal=%s "
+                   "logits_equal=%s\n",
+                   rcS, rcI, save_n, rows_ok ? "PASS" : "FAIL",
+                   log_ok ? "PASS" : "FAIL");
+            if (rcI == 0) st_qwen_inference_free(&istC);
+        }
+
+        st_qwen_inference_free(&istA);
+        st_qwen_inference_free(&istT);
+        st_qwen_inference_free(&istB);
+        st_weights_free(&w);
+        qwen_tokenizer_free(&tok);
+        return 0;
+    }
+
+    /* ---- N token 贪心 decode（可配重复惩罚，C 工程兜底） ----
+     * 量化精度受限时贪婪 argmax 易落入 n-gram 确定性循环（st30b3：
+     * t3..t12 的 token 序列在 t13+ 重演）。VLLM_STREAM_REPPEN=p（p>1，
+     * HF 语义乘法惩罚：logit≥0 → ÷p，logit<0 → ×p）对最近
+     * VLLM_STREAM_REPWIN=n（默认 32，1..64）个已生成 token 逐次生效；
+     * 缺省 p=1 = 关闭，保持历史确定性行为与 A≡C 锚点。 */
+    float rep_pen = 1.0f;
+    int   rep_win = 32;
+    const char *rp = getenv("VLLM_STREAM_REPPEN");
+    if (rp && rp[0]) {
+        float p = (float)atof(rp);
+        if (p > 1.0f && p < 1e3f) rep_pen = p;
+    }
+    const char *rw = getenv("VLLM_STREAM_REPWIN");
+    if (rw && rw[0]) {
+        int w = atoi(rw);
+        if (w >= 1 && w <= 64) rep_win = w;
+    }
+    int rep_hist[64];       /* 已生成 token 历史（n_tokens ≤ 64，无需环形） */
+    int rep_cnt = 0;
+    float *rep_sc = rep_pen > 1.0f
+        ? (float *)malloc((size_t)cfg->vocab_size * sizeof(float)) : NULL;
+    char output[4096]; int out_len = 0;
+    double t_dec_all = 0.0;
+    int gen = 0;
+    printf("[STREAM] decode mode: greedy%s (rep_pen=%.3f win=%d)\n",
+           rep_pen > 1.0f ? "+reppen" : "", rep_pen, rep_win);
+    fflush(stdout);
+#ifdef _WIN32
+    if (getenv("VLLM_MEMDUMP") && getenv("VLLM_MEMDUMP")[0] == '1') {
+        mem_dump_regions(&w);   /* prefill 结束、decode 前基线 */
+    }
+#endif
+    printf("[STREAM] TOKIDS:");
+    fflush(stdout);
+    for (int step = 0; step < n_tokens; step++) {
+        const float *logp = ist.logits;
+        if (rep_sc && rep_cnt > 0) {
+            memcpy(rep_sc, ist.logits, (size_t)cfg->vocab_size * sizeof(float));
+            int cnt = rep_cnt < rep_win ? rep_cnt : rep_win;
+            for (int h = 0; h < cnt; h++) {
+                int tid = rep_hist[rep_cnt - 1 - h];  /* 从最近向前扫 */
+                if (tid < 0 || tid >= cfg->vocab_size) continue;
+                float l = rep_sc[tid];
+                rep_sc[tid] = l >= 0.0f ? l / rep_pen : l * rep_pen;
+            }
+            logp = rep_sc;
+        }
+        float best = -1e9f; int best_id = 0;
+        for (int t = 0; t < cfg->vocab_size; t++) {
+            if (logp[t] > best) { best = logp[t]; best_id = t; }
+        }
+        if (rep_cnt < 64) rep_hist[rep_cnt] = best_id;  /* 记账本次已选 */
+        rep_cnt++;
+        if (best_id == tok.eos_id || best_id == im_end) break;
+        gen++;
+        printf(" %d", best_id);
+        fflush(stdout);
+        const char *s = qwen_tokenizer_decode(&tok, best_id);
+        if (s && s[0]) {
+            int slen = (int)strlen(s);
+            if (out_len + slen < 4095) { memcpy(output + out_len, s, slen); out_len += slen; }
+        }
+        double d0 = st_now_sec();
+        st_qwen_model_forward(&ist, best_id);
+        t_dec_all += st_now_sec() - d0;
+#ifdef _WIN32
+        if (step == 0 && getenv("VLLM_MEMDUMP") && getenv("VLLM_MEMDUMP")[0] == '1') {
+            mem_dump_regions(&w);   /* decode 首个 forward 后：推理期分配应已建立 */
+            if (getenv("VLLM_MEMDUMP_EXIT") && getenv("VLLM_MEMDUMP_EXIT")[0] == '1') {
+                st_qwen_inference_free(&ist);
+                st_weights_free(&w);
+                qwen_tokenizer_free(&tok);
+                return 0;
+            }
+        }
+#endif
+        printf(" t=%d ms=%.0f rss=%ldkB\n", step + 1,
+               (st_now_sec() - d0) * 1000.0, vqf_stream_rss_kb());
+        fflush(stdout);
+    }
+    output[out_len] = '\0';
+    printf("\n[STREAM] decoded %d tokens, %.0f ms/tok (%.2f tok/s)\n",
+           gen, t_dec_all / (gen > 0 ? gen : 1) * 1000.0,
+           gen / (t_dec_all > 0 ? t_dec_all : 1e-9));
+    printf("[STREAM] text: %s\n", output[0] ? output : "(empty)");
+    printf("[STREAM] rss_end = %ld kB\n", vqf_stream_rss_kb());
+    fflush(stdout);
+    if (env_heat && env_heat[0] == '1') {
+        const char *ho = getenv("VLLM_EW_HEAT_OUT");
+        if (ho && ho[0]) st_moe_heat_save(ho);
+    }
+
+    free(rep_sc);
+    st_qwen_inference_free(&ist);
+    st_weights_free(&w);
+    qwen_tokenizer_free(&tok);
+    return 0;
+}
 
 static int serve_load_model(ServeModel *m) {
     STModelConfig *cfg = NULL;
@@ -4206,33 +3257,17 @@ static int serve_load_model(ServeModel *m) {
     STVisionState *vis = NULL;
     int has_vision = 0;
     int cfg_is_vqf = 0;
-    int model_is_gguf = 0;
     int vqf_file_mode = 0;   /* 单文件 VQF：词表需从文件所在目录加载 */
     char vqf_dirbuf[768] = {0};
     int rc = 0;
 
-    /* VQF 单文件模型：目录含 model.vqf 时跳过 safetensors 解析，mmap 直挂，
-     * cfg 自包含（vqf_load 填充 w->cfg）。否则若 --model 指向 GGUF 文件，
-     * 走 GGUF 加载（dequant → 引擎布局）。否则常规 safetensors 加载。 */
+    /* 纯自研 VQF 运行时：模型目录须含 model.vqf（目录式），或 --model 直接
+     * 指向 .vqf 单文件；cfg 自包含（vqf_load 填充 w->cfg）。原始权重
+     * （safetensors）与 GGUF 的加载/转换已整体移出引擎，由独立工具
+     * vqf_convert/（vqf_conv）承担。 */
     w = (STModelWeights *)calloc(1, sizeof(STModelWeights));
     if (!w) { rc = -1; goto done; }
     char vqf_path[768] = {0};
-    /* 格式优先级候选（m->format_prio，管理页"加载格式"下拉）：
-     *   0=自动（VQF>GGUF>safetensors） 1=VQF优先 2=safetensors优先 3=GGUF优先
-     * 优先格式不存在时回退到自动检测顺序，保证任何路径都能加载。 */
-    const int prio = m->format_prio;
-    if (prio == 2) goto safetensors_path;   /* 强制 safetensors */
-    if (prio == 3 && gguf_is_file(m->model_dir)) goto gguf_path;
-    if (prio == 1 &&
-        (vqf_dir_find(m->model_dir, vqf_path, sizeof(vqf_path)) ||
-         vqf_is_file(m->model_dir)))
-        goto vqf_path;
-    if (vqf_dir_find(m->model_dir, vqf_path, sizeof(vqf_path))) goto vqf_path;
-    if (vqf_is_file(m->model_dir)) goto vqf_path;
-    if (gguf_is_file(m->model_dir)) goto gguf_path;
-    goto safetensors_path;
-
-vqf_path:
     if (vqf_dir_find(m->model_dir, vqf_path, sizeof(vqf_path))) {
         if (vqf_load(w, vqf_path) != 0) {
             printf("[SERVE] VQF load failed: %s\n", vqf_path);
@@ -4248,8 +3283,8 @@ vqf_path:
             fprintf(stderr, "[M-A] VQF prewarm started (background)\n");
             fflush(stderr);
         }
-    } else {
-        /* VQF 单文件（--convert-vqf / --convert-gguf 产物）直接 mmap 挂载 */
+    } else if (vqf_is_file(m->model_dir)) {
+        /* VQF 单文件直接 mmap 挂载 */
         if (vqf_load(w, m->model_dir) != 0) {
             printf("[SERVE] VQF load failed: %s\n", m->model_dir);
             rc = 1; goto done;
@@ -4265,32 +3300,11 @@ vqf_path:
         fprintf(stderr, "[M-A] VQF loaded (file): %s (tok_dir=%s)\n",
                 m->model_dir, vqf_dirbuf[0] ? vqf_dirbuf : "(cwd)");
         fflush(stderr);
-    }
-    goto format_done;
-gguf_path:
-    if (gguf_load_model(m->model_dir, w) != 0) {
-        printf("[SERVE] GGUF load failed: %s\n", m->model_dir);
+    } else {
+        printf("[SERVE] 仅支持自研 VQF 模型：模型目录须含 model.vqf，"
+               "或 --model 指向 .vqf 单文件\n");
         rc = 1; goto done;
     }
-    cfg = &w->cfg;
-    cfg_is_vqf = 1;      /* cfg 指向 w->cfg，随 w 一起释放 */
-    model_is_gguf = 1;
-    fprintf(stderr, "[M-A] GGUF loaded: %s\n", m->model_dir); fflush(stderr);
-    goto format_done;
-safetensors_path:
-    cfg = (STModelConfig *)calloc(1, sizeof(STModelConfig));
-    if (!cfg) { rc = -1; goto done; }
-    if (st_parse_config(m->model_dir, cfg) != 0) {
-        printf("[SERVE] config parse failed\n");
-        rc = 1; goto done;
-    }
-    fprintf(stderr, "[M-A] config parsed\n"); fflush(stderr);
-    /* Cap the KV cache span for serving: config.max_position_embeddings
-     * (262144 for Qwen3) would otherwise be collapsed to 2048 inside
-     * st_qwen_inference_init and long prompts would overflow the cache. */
-    if (cfg->max_seq_len > 8192) cfg->max_seq_len = 8192;
-    if (load_quant_weights(cfg, w) != 0) { rc = 1; goto done; }
-format_done:
     printf("[SERVE] model=%s dim=%d layers=%d heads=%d ff=%d vocab=%d max_seq=%d\n",
            m->model_dir, cfg->dim, cfg->n_layers, cfg->n_heads, cfg->ffn_dim,
            cfg->vocab_size, cfg->max_seq_len);
@@ -4315,13 +3329,7 @@ format_done:
 
     tok = (QwenTokenizer *)calloc(1, sizeof(QwenTokenizer));
     if (!tok) { rc = -1; goto done; }
-    if (model_is_gguf) {
-        /* GGUF 单文件自包含 vocab（tokenizer.ggml.*） */
-        if (gguf_load_tokenizer(m->model_dir, tok) != 0) {
-            printf("[SERVE] GGUF tokenizer load failed\n");
-            rc = 1; goto done;
-        }
-    } else {
+    {
         /* 单文件 VQF 的词表来自其所在目录（vqf_dirbuf），否则用模型目录 */
         const char *tok_dir = (vqf_file_mode && vqf_dirbuf[0]) ? vqf_dirbuf
                                                               : m->model_dir;
@@ -4346,14 +3354,14 @@ format_done:
            ist->cfg.max_seq_len, ist->kv_bs);
     fflush(stdout);
 
-    /* Vision encoder (multimodal image/video support). */
+    /* Vision encoder (multimodal image/video support). 纯 VQF：vision 权重
+     * 已随 vqf_load mmap 挂载（Q8 大矩阵 + F32 小张量固化布局），零加载零
+     * 转换，直接值拷贝权重集合给推理状态；vis_w 指向 w->vision（alias
+     * vqf_map），由 st_weights_free 统一释放。 */
     if (cfg->has_vision) {
         vis = (STVisionState *)calloc(1, sizeof(STVisionState));
-        if (cfg_is_vqf && w->vision && w->vision->is_allocated) {
-            /* VQF：vision 权重已随 mmap 挂载（Q8 大矩阵 + F32 小张量固化布局），
-             * 零加载零转换，直接值拷贝权重集合给推理状态。vis_w 指向
-             * w->vision（alias vqf_map），由 st_weights_free 统一释放。 */
-            if (vis && st_vision_init(vis, cfg) == 0) {
+        if (vis && w->vision && w->vision->is_allocated) {
+            if (st_vision_init(vis, cfg) == 0) {
                 vis_w = w->vision;
                 vis->w = *vis_w;
                 has_vision = 1;
@@ -4361,24 +3369,9 @@ format_done:
                        cfg->vis_depth, cfg->vis_hidden);
             }
         } else {
-            vis_w = (STVisionWeights *)calloc(1, sizeof(STVisionWeights));
-            if (vis_w && vis) {
-                st_vision_weights_alloc(vis_w, cfg);
-                if (st_vision_load_weights(vis_w, cfg) == 0) {
-                    st_vision_init(vis, cfg);
-                    vis->w = *vis_w;
-                    /* Inference reads the Q8 copies only; drop the F32
-                     * duplicates (~1.65 GB) to stay under the OOM line. */
-                    st_vision_weights_free_f32(vis_w);
-                    has_vision = 1;
-                    printf("[SERVE] vision encoder ready (ViT %d layers, hidden=%d)\n",
-                           cfg->vis_depth, cfg->vis_hidden);
-                } else {
-                    fprintf(stderr, "[SERVE] WARNING: vision weight load failed -> text-only\n");
-                }
-                fflush(stdout);
-            }
+            fprintf(stderr, "[SERVE] WARNING: VQF 未含 vision 权重 -> text-only\n");
         }
+        fflush(stdout);
     }
 
 done:
@@ -4387,10 +3380,8 @@ done:
         if (w && w->is_allocated) { st_weights_free(w); }
         if (w) free(w);
         if (tok) { qwen_tokenizer_free(tok); free(tok); }
-        /* VQF 路径 cfg 指向 w->cfg（随 w 一起释放），不能单独 free */
-        if (cfg && !cfg_is_vqf) { st_config_free(cfg); free(cfg); }
-        /* VQF 下 vis_w 指向 w->vision（alias vqf_map），由 st_weights_free 释放 */
-        if (vis_w && !cfg_is_vqf) { st_vision_weights_free(vis_w); free(vis_w); }
+        /* VQF：cfg 指向 w->cfg、vis_w 指向 w->vision（alias vqf_map），
+         * 均随 st_weights_free 一并释放，此处无需单独 free。 */
         if (vis) { st_vision_free(vis); free(vis); }
         return rc;
     }
@@ -4506,7 +3497,7 @@ int vllm_serve_load_on_use(VLLMServerCtx *ctx) {
     return (ctx->load_state == 2) ? 0 : -1;
 }
 
-/* Unload the loaded model (VQF/GGUF/safetensors): free weights, tokenizer,
+/* Unload the loaded model (纯 VQF): free weights, tokenizer,
  * inference state (KV cache), vision state, batch scheduler and the in-RAM
  * prefix-KV context — the "上下文状态清零" of the load-on-use lifecycle, so
  * the next load starts from a clean slate. Called from the admin API
@@ -4555,7 +3546,6 @@ int vllm_serve_unload_model(VLLMServerCtx *ctx) {
     vhttp_mutex_lock(ctx->inf_lock);
 
     ServeModel *m = (ServeModel *)ctx->load_arg;
-    int cfg_embedded = (ctx->w && ctx->cfg == &ctx->w->cfg); /* VQF/GGUF cfg 内嵌于 w */
 
     fprintf(stderr, "[UNLOAD] step1 reset_session\n"); fflush(stderr);
     vllm_server_reset_session(ctx);        /* batch + prefix last_ids + dkv 索引 */
@@ -4567,19 +3557,13 @@ int vllm_serve_unload_model(VLLMServerCtx *ctx) {
     if (ctx->tok) { qwen_tokenizer_free(ctx->tok); free(ctx->tok); ctx->tok = NULL; }
     fprintf(stderr, "[UNLOAD] step5 free w\n"); fflush(stderr);
     if (ctx->w) {
-        /* VQF 下 vis_w 指向 w->vision（alias vqf_map），由 st_weights_free 统一
-         * 释放；仅普通 safetensors 路径需要独立 free。 */
-        if (m && m->vis_w && !m->cfg_is_vqf) {
-            st_vision_weights_free(m->vis_w);
-            free(m->vis_w);
-        }
+        /* VQF：vis_w 指向 w->vision（alias vqf_map），由 st_weights_free 统一释放 */
         if (ctx->w->is_allocated) st_weights_free(ctx->w);
         free(ctx->w);
         ctx->w = NULL;
         if (m) { m->w = NULL; m->vis_w = NULL; m->has_vision = 0; }
     }
-    if (ctx->cfg && !cfg_embedded) { st_config_free(ctx->cfg); free(ctx->cfg); }
-    ctx->cfg = NULL;
+    ctx->cfg = NULL;   /* VQF：cfg 即 &w->cfg，随 w 释放 */
     fprintf(stderr, "[UNLOAD] step6 done, state=%d->0\n", ctx->load_state); fflush(stderr);
     ctx->load_state = 0;
     ctx->load_error[0] = '\0';
@@ -4593,6 +3577,25 @@ int vllm_serve_unload_model(VLLMServerCtx *ctx) {
             ctx->unload_count, ctx->last_load_ms);
     fflush(stderr);
     return 0;
+}
+
+/* HTTP handler / policy handler 内卸载用的豁免包装：server_handler 在分发
+ * 前已把 inflight_handlers 计数 +1，unload 的忙检视会把"调用者自己"误判为
+ * 在途推理而永远返回 -3。此处临时扣除调用者自身的计数（卸载后恢复），让
+ * admin「卸载模型」/ 策略 L0「落盘+退出」在请求线程内可用；卸载期间其它
+ * 仍在途的 handler 会被照常等待。调用者卸载后不得再触碰 ctx->ist/cfg/w。 */
+int vllm_serve_unload_model_self(VLLMServerCtx *ctx) {
+    int dec = 0;
+    vhttp_mutex_lock(ctx->stat_lock);
+    if (ctx->inflight_handlers > 0) { ctx->inflight_handlers--; dec = 1; }
+    vhttp_mutex_unlock(ctx->stat_lock);
+    int rc = vllm_serve_unload_model(ctx);
+    if (dec) {
+        vhttp_mutex_lock(ctx->stat_lock);
+        ctx->inflight_handlers++;
+        vhttp_mutex_unlock(ctx->stat_lock);
+    }
+    return rc;
 }
 
 static void serve_on_start(int actual_port, void *ud) {
@@ -4650,9 +3653,7 @@ static int vllm_serve_main(int port, const char *model_dir_arg, int auto_load) {
     if (ctx.auto_unload_s > 0) ctx.auto_load = 1; /* 卸载后能自愈：下个请求重新加载 */
     ctx.load_format = g_serve_load_format; /* 加载格式优先级（--load-format，管理页可改） */
     snprintf(ctx.load_format_str, sizeof(ctx.load_format_str), "%s",
-             g_serve_load_format == 1 ? "vqf" :
-             g_serve_load_format == 2 ? "safetensors" :
-             g_serve_load_format == 3 ? "gguf" : "auto");
+             g_serve_load_format == 1 ? "vqf" : "auto");
     /* Admin/management metadata (reported by /admin; NULL paths use the
      * board defaults in vllm_admin.c). */
     ctx.model_dir = model_dir;
@@ -4662,11 +3663,21 @@ static int vllm_serve_main(int port, const char *model_dir_arg, int auto_load) {
     ctx.prefix_cache = g_prefix_cache;
     ctx.prefix_kv = g_prefix_kv;
     ctx.min_p = g_serve_min_p;
+    ctx.top_k = g_serve_top_k;
     ctx.disk_kv = g_disk_kv;
     if (g_disk_kv && g_disk_kv_dir[0])
         snprintf(ctx.kvdir, sizeof(ctx.kvdir), "%s", g_disk_kv_dir);
     ctx.spec = g_spec;
     ctx.spec_k = g_spec_k;
+    /* 内存驻留策略（档位阶梯）默认值 + CLI 覆盖（管理页运行期可再调） */
+    vllm_res_defaults(&ctx);
+    if (g_l3_evict) ctx.res.level = 3;   /* 启动已开 --l3-evict → 档位从 L3 起算 */
+    if (g_res_auto) ctx.res.auto_idle = 1;
+    for (int k = 0; k < 4; k++)
+        if (g_res_idle_s[k] > 0) ctx.res.idle_s[4 - k] = g_res_idle_s[k];
+    if (g_res_soft_mb > 0) ctx.res.mem_soft_mb = g_res_soft_mb;
+    if (g_res_low_lvl >= 0) ctx.res.mem_low_lvl = g_res_low_lvl;
+    if (g_res_w_keep > 0) ctx.res.w_keep = g_res_w_keep;
     ctx.started_s = (long)time(NULL);
     ctx.config_path = NULL;
     ctx.log_path = NULL;
@@ -4735,18 +3746,14 @@ static int vllm_serve_main(int port, const char *model_dir_arg, int auto_load) {
     }
     if (m.has_vision) {
         if (m.vis) st_vision_free(m.vis);
-        /* VQF 下 m.vis_w 指向 m.w->vision（alias vqf_map），由 st_weights_free
-         * 统一释放；仅普通 safetensors 路径需要独立 free。 */
-        if (m.vis_w && !m.cfg_is_vqf) st_vision_weights_free(m.vis_w);
+        /* VQF：m.vis_w 指向 m.w->vision（alias vqf_map），由 st_weights_free 统一释放 */
     }
     if (m.ist) st_qwen_inference_free(m.ist);
     if (m.tok) { qwen_tokenizer_free(m.tok); free(m.tok); }
-    /* VQF 路径 cfg 内嵌于 w（mmap 所有权随 w），不单独 free */
-    if (m.cfg && !m.cfg_is_vqf) { st_config_free(m.cfg); free(m.cfg); }
+    /* VQF：cfg 内嵌于 w（mmap 所有权随 w），不单独 free */
     if (m.w && m.w->is_allocated) st_weights_free(m.w);
     if (m.w) free(m.w);
     if (m.vis) free(m.vis);
-    if (m.vis_w && !m.cfg_is_vqf) free(m.vis_w);
     return rc;
 }
 
@@ -4757,6 +3764,14 @@ int main(int argc, char **argv) {
     /* RK3588/Linux: raise the main-thread stack to match the MSVC
      * /STACK:16777216 build (large local arrays: scores[4096] etc.). */
     st_raise_stack_limit(16u * 1024u * 1024u);
+
+#ifdef _WIN32
+    /* 源码内中文字符串为 UTF-8，而 Windows 控制台默认 GBK(cp936)，直接
+     * printf 会乱码（如交互提示"请输入服务端口号"）。切换代码页对齐源码；
+     * 仅影响交互终端显示，重定向/日志仍输出原始 UTF-8 字节。 */
+    SetConsoleOutputCP(65001);
+    SetConsoleCP(65001);
+#endif
 
     printf("  vLLM-Kestrel: Axiom-Guided Exact-Attention         \n");
     printf("  Large Language Model Inference Engine          \n");
@@ -4808,6 +3823,9 @@ int main(int argc, char **argv) {
             g_serve_min_p = atof(argv[++i]);
             if (g_serve_min_p < 0.0) g_serve_min_p = 0.0;
             if (g_serve_min_p > 1.0) g_serve_min_p = 1.0;
+        } else if (strcmp(argv[i], "--top-k") == 0 && i + 1 < argc) {
+            g_serve_top_k = atoi(argv[++i]);
+            if (g_serve_top_k < 0) g_serve_top_k = 0;
         } else if (strcmp(argv[i], "--q2mix-tail") == 0 && i + 1 < argc) {
             g_q2mix_tail = atoi(argv[++i]);
             if (g_q2mix_tail < 0) g_q2mix_tail = 0;
@@ -4829,12 +3847,11 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "--wmode: unknown mode '%s' (q4|q4i|q8|q2mix|dual|g256)\n", m);
                 return 1;
             }
-        } else if (strcmp(argv[i], "--bench-mixed") == 0) {
-            bench_mixed = 1;
         } else if (strcmp(argv[i], "--bench-users") == 0 && i + 1 < argc) {
             g_bench_users = atoi(argv[++i]);
             if (g_bench_users < 1) g_bench_users = 1;
             if (g_bench_users > MAX_PERF_USERS) g_bench_users = MAX_PERF_USERS;
+            g_bench_users_set = 1;   /* 显式指定 → 触发完整 Part A/B/C 基准 */
         } else if (strcmp(argv[i], "--perf-partA") == 0) {
             g_perf_part_a = 1;   /* single-user only, skip Part B/C */
         } else if (strcmp(argv[i], "--bench-seqlen") == 0 && i + 1 < argc) {
@@ -4912,12 +3929,6 @@ int main(int argc, char **argv) {
                 g_npu_backend = VLLM_NPU_BACKEND_RKNN;
         } else if (strcmp(argv[i], "--serve") == 0) {
             g_serve_port = 8080;   /* default; interactive prompt unless --port */
-        } else if (strcmp(argv[i], "--convert-vqf") == 0 && i + 1 < argc) {
-            g_convert_vqf = argv[++i];   /* safetensors -> VQF (offline) */
-        } else if (strcmp(argv[i], "--convert-gguf") == 0 && i + 1 < argc) {
-            g_convert_gguf = argv[++i];  /* GGUF -> VQF (offline) */
-        } else if (strcmp(argv[i], "--gguf-info") == 0 && i + 1 < argc) {
-            g_gguf_info = argv[++i];     /* dump GGUF structure and exit */
         } else if (strcmp(argv[i], "--port") == 0 && i + 1 < argc) {
             g_serve_port = atoi(argv[++i]);
             g_serve_port_explicit = 1;
@@ -4925,6 +3936,14 @@ int main(int argc, char **argv) {
             g_serve_model_dir = argv[++i];
         } else if (strcmp(argv[i], "--model-id") == 0 && i + 1 < argc) {
             g_serve_model_id = argv[++i];
+        } else if (strcmp(argv[i], "--stream-test") == 0) {
+            g_stream_test = 1;   /* AirLLM 型分层驻留验证（纯 VQF） */
+        } else if (strcmp(argv[i], "--stream-n") == 0 && i + 1 < argc) {
+            g_stream_n = atoi(argv[++i]);
+            if (g_stream_n < 1) g_stream_n = 1;
+            if (g_stream_n > 64) g_stream_n = 64;
+        } else if (strcmp(argv[i], "--moe-l0") == 0 && i + 1 < argc) {
+            g_moe_l0 = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--threads") == 0 && i + 1 < argc) {
             g_serve_threads = atoi(argv[++i]);
             if (g_serve_threads < 1) g_serve_threads = 1;
@@ -4947,12 +3966,33 @@ int main(int argc, char **argv) {
         } else if (strcmp(argv[i], "--auto-unload") == 0 && i + 1 < argc) {
             g_serve_auto_unload_s = atol(argv[++i]);
             if (g_serve_auto_unload_s < 0) g_serve_auto_unload_s = 0;
+        } else if (strcmp(argv[i], "--res-auto") == 0) {
+            g_res_auto = 1;   /* 空闲逐级自动降级（档位阶梯策略总开关） */
+        } else if (strcmp(argv[i], "--res-idle") == 0 && i + 1 < argc) {
+            /* "a,b,c,d"：L4→L3,L3→L2,L2→L1,L1→L0 各档空闲停留秒（0 = 停在该档） */
+            const char *s = argv[++i];
+            for (int k = 0; k < 4 && s && *s; k++) {
+                g_res_idle_s[k] = atol(s);
+                const char *c = strchr(s, ',');
+                if (!c) break;
+                s = c + 1;
+            }
+            for (int k = 0; k < 4; k++)
+                if (g_res_idle_s[k] < 0) g_res_idle_s[k] = 0;
+        } else if (strcmp(argv[i], "--res-soft-mb") == 0 && i + 1 < argc) {
+            g_res_soft_mb = atoi(argv[++i]);
+            if (g_res_soft_mb < 0) g_res_soft_mb = 0;
+        } else if (strcmp(argv[i], "--res-low") == 0 && i + 1 < argc) {
+            g_res_low_lvl = atoi(argv[++i]);
+            if (g_res_low_lvl < 0) g_res_low_lvl = 0;
+            if (g_res_low_lvl > 4) g_res_low_lvl = 4;
+        } else if (strcmp(argv[i], "--res-w-keep") == 0 && i + 1 < argc) {
+            g_res_w_keep = atoi(argv[++i]);
+            if (g_res_w_keep < 0) g_res_w_keep = 0;
         } else if (strcmp(argv[i], "--load-format") == 0 && i + 1 < argc) {
             const char *lf = argv[++i];
             if (strcmp(lf, "vqf") == 0)         g_serve_load_format = 1;
-            else if (strcmp(lf, "safetensors") == 0) g_serve_load_format = 2;
-            else if (strcmp(lf, "gguf") == 0)   g_serve_load_format = 3;
-            else                                g_serve_load_format = 0; /* auto */
+            else                                g_serve_load_format = 0; /* auto (VQF) */
         } else if (strcmp(argv[i], "--device") == 0 && i + 1 < argc) {
             g_dev_override = argv[++i]; /* override auto-detected device */
         }
@@ -5021,68 +4061,23 @@ int main(int argc, char **argv) {
         g_serve_port = 8080;
     }
 
-    if (g_convert_vqf) {
-        /* 离线转换：safetensors → VQF（需 --model 指向 safetensors 模型目录，
-         * wmode/VLLM_Q8_8X8 等须与目标运行环境一致）。 */
+    if (g_stream_test) {
+        /* AirLLM 型分层驻留验证：仅自研 VQF（--model 目录含 model.vqf）。
+         * VLLM_VQF_STREAM=N 控制驻留档位；0/缺省 = 全驻留 baseline。 */
         if (!g_serve_model_dir) {
-            printf("[VQF] --convert-vqf 需要 --model <safetensors 模型目录>\n");
+            printf("[STREAM] 需要 --model <含 model.vqf 的目录或 .vqf 文件>\n");
             return 1;
         }
-        return run_convert_vqf(g_serve_model_dir, g_convert_vqf);
+        return run_stream_test(g_serve_model_dir, g_stream_n);
     }
 
-    if (g_gguf_info) {
-        return (gguf_dump_info(g_gguf_info) == 0) ? 0 : 1;
-    }
-
-    if (g_convert_gguf) {
-        /* 离线转换：GGUF → VQF（--model 指向 .gguf 文件）。GGUF 已量化
-         * （Q4_0/Q8_0/k-quants），加载后按当前 wmode 生成引擎布局副本。 */
+    if (g_moe_l0 >= 0) {
+        /* M3 layer-0 单 token 对拍 dump（VLLM_MOE_DUMP=1） */
         if (!g_serve_model_dir) {
-            printf("[VQF] --convert-gguf 需要 --model <model.gguf>\n");
+            printf("[L0] 需要 --model <含 model.vqf 的目录>\n");
             return 1;
         }
-        STModelWeights w; memset(&w, 0, sizeof(w));
-        if (gguf_load_model(g_serve_model_dir, &w) != 0) {
-            printf("[VQF] GGUF load failed\n");
-            return 1;
-        }
-        uint32_t flags = 0;
-        if (w.q8_buf_q4) flags |= VQF_FLAG_Q8BUF_Q4;
-        if (w.has_x8)    flags |= VQF_FLAG_X8;
-        if (st_wmode_effective() == 4) flags |= VQF_FLAG_G256;
-        extern int g_st_q8_repack, g_st_q4_repack;
-        if (g_st_q8_repack) {
-            const char *e = getenv("VLLM_Q8_8X8");
-            if (!(e && e[0] == '0')) flags |= VQF_FLAG_Q8_8X8;
-        }
-        if (g_st_q4_repack) flags |= VQF_FLAG_Q4_4X4;
-        int rc = vqf_write(g_convert_gguf, &w, &w.cfg, flags);
-        printf("[VQF] vqf_write rc=%d\n", rc);
-        fflush(stdout);
-        if (rc == 0) {
-            printf("[VQF] self-check: loading %s ...\n", g_convert_gguf);
-            fflush(stdout);
-            STModelWeights w2; memset(&w2, 0, sizeof(w2));
-            if (vqf_load(&w2, g_convert_gguf) == 0) {
-                printf("[VQF] self-check PASS: %s reload OK (flags=0x%x)\n",
-                       g_convert_gguf, flags);
-                printf("[VQF] self-check: freeing w2\n");
-                fflush(stdout);
-                st_weights_free(&w2);
-                printf("[VQF] self-check: w2 freed OK\n");
-                fflush(stdout);
-            } else {
-                printf("[VQF] self-check FAIL: %s\n", g_convert_gguf);
-                rc = 1;
-            }
-        }
-        printf("[VQF] freeing main weights\n");
-        fflush(stdout);
-        st_weights_free(&w);
-        printf("[VQF] main weights freed, rc=%d\n", rc);
-        fflush(stdout);
-        return rc;
+        return run_moe_l0_test(g_serve_model_dir, g_moe_l0);
     }
 
     if (g_serve_port >= 0) {
@@ -5102,12 +4097,6 @@ int main(int argc, char **argv) {
         return vllm_serve_main(g_serve_port, g_serve_model_dir, g_serve_auto_load);
     }
 
-    if (bench_mixed == 1) {
-        /* Synthetic-weight mixed-precision kernel benchmark - no model load,
-         * completes in constrained environments. */
-        st_bench_mixed_precision();
-        return 0;
-    }
     if (bench_mixed == 2) {
         /* Isolated OTHER-bucket workload probe (MRoPE + KV-store + quantize)
          * at S=1024/2048/4096 - no model load. */
@@ -5125,6 +4114,22 @@ int main(int argc, char **argv) {
         return 0;
     }
 
+    /* ---- 性能基准入口（Part A/B/C）------------------------------------
+     * 回移来源：GitHupSRC/src/main.c:5200-5208（旧引擎在无参默认路径调用
+     * test_performance_benchmark）。为不改动当前引擎的默认行为，这里仅在
+     * 显式传入基准标志时才运行，并自行加载模型、跳过公理自测套件：
+     *   --perf-partA      只跑 Part A（单用户 TTFT/TPOT），打印汇总后返回
+     *   --bench-users N   跑完整 Part A/B/C（含多用户并发）
+     * 与 --perf-only（仅跳过自测）相互独立，避免静默改变其语义。 */
+    if (g_perf_part_a || g_bench_users_set) {
+        test_performance_benchmark();
+        /* Release the transparent NPU backend (no-op when never created). */
+        st_npu_set(NULL);
+        vllm_npu_destroy(g_npu);
+        printf("\n[ALL TESTS COMPLETE]\n");
+        return 0;
+    }
+
     if (!perf_only) {
         test_superposition_axioms();
         test_ntt_transform();
@@ -5132,16 +4137,6 @@ int main(int argc, char **argv) {
         test_inference_pipeline();
         test_real_inference();
         vmm_self_test();
-    }
-
-    if (run_multimodal || n_images > 0 || vid_dir) {
-        /* --perf-only: run text benchmark first, then multimodal */
-        if (perf_only) {
-            test_performance_benchmark();
-        }
-        test_multimodal_analysis(img_paths, n_images, vid_dir);
-    } else {
-        test_performance_benchmark();
     }
 
     if (!perf_only) {

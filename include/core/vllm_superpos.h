@@ -461,6 +461,12 @@ int sample_token(const float *logits, int vocab_size,
 int sample_token_p(const float *logits, int vocab_size,
                    float temperature, float top_p, float min_p);
 
+/** Same as sample_token_p plus top-k truncation (top_k > 0 keeps only the
+ * top-k highest-probability tokens; top_k <= 0 or >= vocab_size = off).
+ * Applied before min-p / top-p. Qwen3 thinking mode recommends top_k=20. */
+int sample_token_pk(const float *logits, int vocab_size,
+                    float temperature, float top_p, float min_p, int top_k);
+
 /* ---- Weight Initialization ---- */
 
 /** Initialize model weights with deterministic but meaningful values */
@@ -473,13 +479,9 @@ int weights_save(const ModelWeights *weights, const char *filename);
 int weights_load(ModelWeights *weights, const char *filename);
 
 /* ---- Tokenizer ---- */
-/* Forward declaration: GGUFModelConfig used by tokenizer_init_from_gguf */
-typedef struct GGUFModelConfig_s GGUFModelConfig;
 
 /** Initialize tokenizer with built-in 913-token vocabulary */
 void tokenizer_init(Tokenizer *tok);
-/** Initialize tokenizer from GGUF model config (e.g. SmolLM2 49K vocab) */
-void tokenizer_init_from_gguf(Tokenizer *tok, const GGUFModelConfig *cfg);
 /** Free tokenizer resources */
 void tokenizer_free(Tokenizer *tok);
 
@@ -504,186 +506,5 @@ char* inference_generate(InferenceState *st, Tokenizer *tok,
 
 /** Free inference state */
 void inference_free(InferenceState *st);
-
-/* ================================================================
- * GGUF Model Loading API
- * ================================================================ */
-
-/** GGUF tensor type constants */
-enum {
-    GGML_TYPE_F32  = 0,
-    GGML_TYPE_F16  = 1,
-    GGML_TYPE_Q4_0 = 2,
-    GGML_TYPE_Q4_1 = 3,
-    GGML_TYPE_Q5_0 = 6,
-    GGML_TYPE_Q5_1 = 7,
-    GGML_TYPE_Q8_0 = 8,
-    GGML_TYPE_Q8_1 = 9,
-};
-
-/**
- * Dynamic model configuration - populated from GGUF metadata.
- * Allows loading models of any size, not just the tiny defaults.
- */
-typedef struct GGUFModelConfig_s {
-    int dim;           /* hidden dimension */
-    int hidden_dim;
-    int n_layers;
-    int n_heads;
-    int head_dim;
-    int n_kv_heads;    /* GQA: number of KV heads */
-    int ffn_dim;       /* SwiGLU intermediate dim */
-    int vocab_size;
-    int max_seq_len;
-    float rope_theta;
-    float norm_eps;
-    int   arch_type;   /* 0=llama, 1=qwen, etc. */
-    /* Tokenizer data (parsed from GGUF metadata) */
-    int    tok_count;      /* number of tokens in vocabulary */
-    char **tok_strings;    /* [tok_count] token strings (owned, free on cleanup) */
-    int    bos_id;
-    int    eos_id;
-} GGUFModelConfig;
-
-/**
- * Dynamically allocated model weights (for GGUF loading).
- * Unlike the fixed-size ModelWeights, this supports arbitrary dimensions.
- */
-typedef struct {
-    GGUFModelConfig cfg;
-    /* Token embedding: [vocab_size][dim] */
-    float *token_embed;
-    /* Final RMS norm: [dim] */
-    float *final_norm;
-    /* LM head: [dim][vocab_size] */
-    float *lm_head;
-    /* Per-layer weights: pointer to array of LayerWeightsGGUF */
-    float *attn_norm;     /* [n_layers][dim] */
-    float *ffn_norm;      /* [n_layers][dim] */
-    float *q_weight;      /* [n_layers][dim * n_heads * head_dim] */
-    float *k_weight;      /* [n_layers][dim * n_kv_heads * head_dim] */
-    float *v_weight;      /* [n_layers][dim * n_kv_heads * head_dim] */
-    float *o_weight;      /* [n_layers][dim * n_heads * head_dim] */
-    float *gate_weight;   /* [n_layers][ffn_dim * dim] */
-    float *up_weight;     /* [n_layers][ffn_dim * dim] */
-    float *down_weight;   /* [n_layers][dim * ffn_dim] */
-    int   is_allocated;
-
-    /* Q8_0 compact storage: raw GGUF type-8 tensor data (34 bytes/32 elements).
-     * When present, dyn_matvec_q8() is used instead of dyn_matvec() for 3.7x
-     * memory bandwidth reduction. NULL if tensor was F32/F16. */
-    uint8_t *q8_token_embed;  /* [vocab_size * dim / 32 * 34] */
-    uint8_t *q8_lm_head;      /* same as token_embed if tied */
-    uint8_t *q8_q_weight;     /* [n_layers][dim * nh * hd / 32 * 34] */
-    uint8_t *q8_k_weight;
-    uint8_t *q8_v_weight;
-    uint8_t *q8_o_weight;
-    uint8_t *q8_gate_weight;
-    uint8_t *q8_up_weight;
-    uint8_t *q8_down_weight;
-    int     has_q8;           /* 1 if Q8_0 compact weights are populated */
-} GGUFWeights;
-
-/**
- * Dynamic inference state for GGUF-loaded models.
- */
-typedef struct {
-    GGUFWeights        weights;
-    GGUFModelConfig    cfg;
-    /* Per-layer hidden states and KV caches (dynamically allocated) */
-    float *hidden;         /* [n_layers][dim] */
-    float **k_cache;       /* [n_layers] pointer to per-layer cache */
-    float **v_cache;       /* [n_layers] pointer to per-layer cache */
-    int   *cache_len;      /* [n_layers] */
-    float *logits;         /* [vocab_size] */
-    float *q_buf;          /* temp: [n_heads * head_dim] */
-    float *k_buf;          /* temp: [n_kv_heads * head_dim] */
-    float *v_buf;          /* temp: [n_kv_heads * head_dim] */
-    float *attn_buf;       /* temp: [n_heads * head_dim] */
-    float *ffn_buf;        /* temp: [ffn_dim] */
-    float *ffn_out_buf;    /* temp: [dim] */
-    float *scores_buf;     /* temp: [max_seq_len] shared across heads, avoids stack alloc */
-    float *rope_freq;      /* precomputed: [head_dim/2] inv freqs, avoids powf per token */
-    int    seq_len;
-    int    is_allocated;
-} GGUFInferenceState;
-
-/**
- * Parse a GGUF file and extract model configuration from metadata.
- * Returns 0 on success, -1 on error.
- * Populates cfg with detected architecture parameters.
- */
-int gguf_parse_config(const char *filename, GGUFModelConfig *cfg);
-
-/**
- * Allocate and initialize GGUFWeights with synthetic random weights.
- * Designed for algorithm validation.
- *
- * @param w      Output: allocated and initialized weights
- * @param dim     Hidden dimension
- * @param heads   Attention heads
- * @param layers  Number of transformer layers
- * @param ffn     FFN intermediate dimension (SwiGLU)
- * @param hd      Head dimension per attention head
- * @param kv_heads  KV heads (GQA, use heads for MHA)
- * @param vocab   Vocabulary size
- * @param max_seq  Maximum sequence length for KV cache
- * @return 0 on success, -1 on allocation failure
- */
-int gguf_weights_init_synthetic(GGUFWeights *w,
-    int dim, int heads, int layers, int ffn, int hd, int kv_heads,
-    int vocab, int max_seq);
-
-/**
- * Load all tensor weights from a GGUF file into dynamically allocated
- * GGUFWeights structure. The caller must call gguf_weights_free() to release.
- * Returns 0 on success, -1 on error.
- */
-int gguf_load_weights(const char *filename, GGUFWeights *weights);
-
-/**
- * Save current weights to a GGUF file with proper metadata.
- * Returns 0 on success, -1 on error.
- */
-int gguf_save_weights(const char *filename, const GGUFWeights *weights);
-
-/**
- * Export fixed-size ModelWeights to a GGUF file.
- */
-int gguf_export_tiny(const ModelWeights *w, const char *filename,
-                      int dim, int n_layers, int n_heads, int ffn_dim,
-                      int vocab_size);
-
-/**
- * Free dynamically allocated GGUF weights.
- */
-void gguf_weights_free(GGUFWeights *weights);
-
-/**
- * Initialize inference state from GGUF-loaded weights.
- * Dynamically allocates all buffers and KV caches.
- * Returns 0 on success, -1 on error.
- */
-int gguf_inference_init(GGUFInferenceState *st, const GGUFWeights *weights);
-
-/**
- * Run one forward pass through the dynamic model.
- * token_id: input token to process
- * Returns: logits are stored in st->logits
- */
-void gguf_model_forward(GGUFInferenceState *st, int token_id);
-
-/**
- * Generate text from a prompt using GGUF-loaded model.
- * Returns heap-allocated string (caller frees).
- */
-char* gguf_inference_generate(GGUFInferenceState *st, Tokenizer *tok,
-                               const char *prompt, int max_new_tokens,
-                               float temperature, float top_p);
-
-/**
- * Free GGUF inference state.
- */
-void gguf_inference_free(GGUFInferenceState *st);
 
 #endif /* VLLM_SUPERPOS_H */

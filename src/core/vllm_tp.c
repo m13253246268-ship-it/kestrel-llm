@@ -23,10 +23,12 @@
  * inference step never pay a wake.
  */
 #include "vllm_tp.h"
+#include "vllm_platform.h"   /* st_num_cpus() / st_bind_cpu()（x86 感知） */
 
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <stdio.h>
 
 #include <pthread.h>
 #include <sched.h>
@@ -78,6 +80,7 @@ typedef struct vllm_tp_worker {
     struct vllm_tp *g;
     int slot;    /* 0..nworkers-1 */
     volatile long asleep;   /* 1 while parked on the event (hot-path hint) */
+    long last_gen;          /* 最后已执行过的 job_gen（代际不变量防护） */
 } vllm_tp_worker;
 
 typedef struct vllm_tp {
@@ -115,13 +118,10 @@ static int tp_bind_disabled(void) {
 static void tp_bind_worker(int slot, int nthreads) {
     (void)nthreads;
     if (tp_bind_disabled()) return;
-    long n_cpus = sysconf(_SC_NPROCESSORS_ONLN);
+    long n_cpus = st_num_cpus();
     if (n_cpus <= 0) n_cpus = 8;
     int core = (n_cpus > 4) ? (4 + (slot % 4)) : (slot % n_cpus); /* A76 cluster */
-    cpu_set_t cs;
-    CPU_ZERO(&cs);
-    CPU_SET(core, &cs);
-    sched_setaffinity(0, sizeof(cs), &cs);
+    st_bind_cpu(core);
 }
 
 /* The caller must not share a logical CPU with a spinning worker: a pool of
@@ -131,20 +131,21 @@ static void tp_bind_worker(int slot, int nthreads) {
 static void tp_bind_caller(void) {
     if (tp_bind_disabled()) return;
     if (tp_caller_cpu < 0) {
-        long n = sysconf(_SC_NPROCESSORS_ONLN);
+        long n = st_num_cpus();
         tp_caller_cpu = (n > 1) ? (int)(n - 1) : 0;
     }
-    cpu_set_t cs;
-    CPU_ZERO(&cs);
-    CPU_SET(tp_caller_cpu, &cs);
-    sched_setaffinity(0, sizeof(cs), &cs);
+    st_bind_cpu(tp_caller_cpu);
 }
 static void tp_unbind_caller(void) {
     if (tp_bind_disabled()) return;
+#ifdef _WIN32
+    return;   /* no-op: st_bind_cpu is per-CPU and unused on Windows */
+#else
     cpu_set_t cs;
     CPU_ZERO(&cs);
     for (int i = 0; i < tp_caller_cpu + 1; i++) CPU_SET(i, &cs);
     sched_setaffinity(0, sizeof(cs), &cs);
+#endif
 }
 
 /* ---- worker main ----------------------------------------------------- */
@@ -197,6 +198,19 @@ static void *tp_worker_main(void *arg)
         long gen = g->job_gen;
         tp_barrier();                 /* acquire: job descriptor visible */
         int k = g->kind;
+        if (gen <= w->last_gen) {
+            /* 失醒/自愈边缘防护（M1：down 并行化浮出的确定性坏吸引子排查）：
+             * 本 worker 已执行过该代 —— 调用方早已完成 join（done==nw 由首次执行
+             * 满足）并离开，现在不得再执行（否则 body 把输出重复累加一次 → 确定
+             * 性结果污染）。只对齐代际记账并跳过；done 不再 +1。 */
+            fprintf(stderr, "[TP] slot=%d repeat-gen %ld (last=%ld) SKIPPED\n",
+                    w->slot, gen, w->last_gen);
+            fflush(stderr);
+            w->last_gen = gen;
+            last = gen;
+            continue;
+        }
+        w->last_gen = gen;            /* 先记账后执行：一次 job 只执行一次 */
         if (k == 1) {
             int lo = g->chunk_lo[w->slot], hi = g->chunk_hi[w->slot];
             for (int i = lo; i < hi; i++) g->body(g->ctx, i);
@@ -286,7 +300,7 @@ int vllm_tp_init(int nthreads) {
             if (v > 0) nthreads = v;
         }
         if (nthreads <= 0) {
-            long nc = sysconf(_SC_NPROCESSORS_ONLN);
+            long nc = st_num_cpus();
             nthreads = (nc > 4) ? 4 : (int)nc;   /* RK3588 A76-only default */
             if (nthreads <= 0) nthreads = 4;
         }

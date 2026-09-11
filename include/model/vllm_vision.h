@@ -138,35 +138,6 @@ typedef struct {
  * ================================================================ */
 
 /**
- * Allocate vision encoder weights. Call after config is parsed.
- * weights: output, uninitialized
- * cfg: must have has_vision=1
- * Returns 0 on success, -1 on error.
- */
-int st_vision_weights_alloc(STVisionWeights *w, const STModelConfig *cfg);
-
-/**
- * Free vision encoder weights.
- */
-void st_vision_weights_free(STVisionWeights *w);
-
-/**
- * Free the F32 duplicates of the Q8-quantized ViT weight matrices
- * (attn_qkv/attn_proj/mlp_fc1/mlp_fc2) after Q8 quantization. Inference
- * reads the Q8 copies only, so on memory-constrained boards (RK3588, 16 GB)
- * the ~1.65 GB of F32 duplicates can be released right after load.
- */
-void st_vision_weights_free_f32(STVisionWeights *w);
-
-/**
- * Load vision encoder weights from safetensors files.
- * vis: output, must have weights pre-allocated
- * cfg: model config with tensor metadata
- * Returns 0 on success, -1 on error.
- */
-int st_vision_load_weights(STVisionWeights *w, const STModelConfig *cfg);
-
-/**
  * Initialize vision encoder runtime state.
  * vis: output, uninitialized
  * cfg: model config

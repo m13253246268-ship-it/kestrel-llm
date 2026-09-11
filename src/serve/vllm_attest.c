@@ -31,7 +31,7 @@
 static const uint8_t VATT_ID[] = "VLLM-ATTEST-1";
 #define VATT_ID_LEN (sizeof(VATT_ID) - 1)
 
-static const char VATT_MAGIC[] = "VLLM-AT-2";
+static const char VATT_MAGIC[] = "VLLM-AT-3";
 
 /* 出证互斥：vatt_digest/vatt_sign 使用静态缓冲，连续批处理（--batch-max≥2）
  * 下多个 HTTP worker 会在各自线程同时出证，必须串行化。 */
@@ -245,10 +245,13 @@ static int vatt_keyload(void) {
 }
 
 /* ---------------- 摘要与签名 ---------------- */
-/* 采样参数字符串（摘要帧与 JSON 字段共用同一格式）。 */
+/* 采样参数字符串（摘要帧与 JSON 字段共用同一格式）。
+ * k=top_k 截断（0=关闭）、th=enable_thinking；二者可能来自 serve 级默认
+ * （--top-k / VLLM_ENABLE_THINKING），请求原文里看不到，必须进摘要。 */
 static void vatt_params_str(const VAttestReq *r, char *out, size_t cap) {
-    snprintf(out, cap, "t=%.4g,p=%.4g,m=%.4g,mt=%d",
-             r->temperature, r->top_p, r->min_p, r->max_tokens);
+    snprintf(out, cap, "t=%.4g,p=%.4g,m=%.4g,k=%d,mt=%d,th=%d",
+             r->temperature, r->top_p, r->min_p, r->top_k, r->max_tokens,
+             r->thinking ? 1 : 0);
 }
 
 void vatt_body_digest(const void *body, size_t n, char hex[65]) {
@@ -301,7 +304,7 @@ static const char *vatt_digest(const VAttestReq *r) {
     const char *fin = r->finish ? r->finish : "stop";
     DFLEN(fin, strlen(fin));
     DFLEN(ts, strlen(ts));
-    /* 请求原文绑定：body_sha = SM3(客户端原始请求体) 的 64-hex（schema=2）。
+    /* 请求原文绑定：body_sha = SM3(客户端原始请求体) 的 64-hex（schema=3）。
      * 验证方用自己保存的请求原文复算 SM3 即可比对，无需 tokenizer/模板。 */
     const char *bs = r->body_sha ? r->body_sha : "";
     DFLEN(bs, strlen(bs));
@@ -398,7 +401,7 @@ char *vatt_seal_json(const VAttestReq *r) {
         return NULL;
     }
     int n = snprintf(out, 4096,
-        "{\"schema\":2,\"algo\":\"SM2-SM3\",\"ts\":%ld,"
+        "{\"schema\":3,\"algo\":\"SM2-SM3\",\"ts\":%ld,"
         "\"model\":\"%s\",\"model_fp\":\"%s\",\"device\":\"%s\",\"user\":\"%s\","
         "\"params\":\"%s\",\"prompt_tokens\":%d,\"n_tokens\":%d,\"finish\":\"%s\","
         "\"body_sha\":\"%s\",\"digest\":\"%s\",\"signature\":\"%s\"}",
@@ -450,6 +453,12 @@ int vatt_selftest(void) {
     r.n_prompt_tokens = 5;
     r.n_gen_tokens = 1;
     r.finish = "stop";
+    r.temperature = 0.6;
+    r.top_p = 0.95;
+    r.min_p = 0.0;
+    r.top_k = 20;
+    r.thinking = 1;
+    r.max_tokens = 128;
     r.ts = 1700000000L;
     char d1[65], d2[65], d3[65];
     strcpy(d1, vatt_digest(&r));
@@ -480,6 +489,22 @@ int vatt_selftest(void) {
         fprintf(stderr, "[ATTEST] tamper-detect   : PASS\n");
     } else {
         fprintf(stderr, "[ATTEST] tamper-detect   : FAIL\n");
+        pass = 0;
+    }
+    /* 4) schema=3 新增绑定：只改 top_k 或 thinking 也必须改摘要
+     * （否则"实际采样档位"就没被真正绑住）。 */
+    VAttestReq r3 = r;
+    r3.top_k = 21;
+    char d4[65];
+    strcpy(d4, vatt_digest(&r3));
+    VAttestReq r4 = r;
+    r4.thinking = 0;
+    char d5[65];
+    strcpy(d5, vatt_digest(&r4));
+    if (strcmp(d1, d4) != 0 && strcmp(d1, d5) != 0 && strcmp(d4, d5) != 0) {
+        fprintf(stderr, "[ATTEST] bind-k/think   : PASS\n");
+    } else {
+        fprintf(stderr, "[ATTEST] bind-k/think   : FAIL\n");
         pass = 0;
     }
     return pass;

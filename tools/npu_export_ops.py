@@ -13,7 +13,7 @@ Run on an x86_64 Linux host with rknn-toolkit2 installed:
     pip install rknn-toolkit2 numpy onnx
 
     python tools/npu_export_ops.py \
-        --config Modl/千问3_VL_8B_Instruct/config.json \
+        --config <model-config-dir>/config.json \
         --out npu_ops --mode fp32 --m-list 1,16
 
 Output (mode fp32, one generic MatMul per shape; A and B are RUNTIME inputs

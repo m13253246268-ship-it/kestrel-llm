@@ -4,7 +4,8 @@
  * See vllm_l3.h for the format and the honest-scope design notes.
  * Determinism red line (axiom_arith_gumbel_argmax_001): quantization, the
  * dot kernel and the eviction ranking are all deterministic for identical
- * inputs (fixed rounding, fixed tie-break, fixed file offsets).
+ * inputs (fixed rounding, fixed tie-break, cursor-allocated offsets in
+ * deterministic eviction order).
  */
 
 #include "vllm_l3.h"
@@ -14,6 +15,9 @@
 #include <string.h>
 #include <math.h>
 #include <unistd.h>   /* fileno / lseek / read / fseeko on Linux/RK3588 */
+#ifdef __linux__
+#include <sys/mman.h> /* madvise(MADV_DONTNEED)：归还镜像的驻留页 */
+#endif
 
 /* 单平台（RK3588/aarch64）：Q4 点积内核走 NEON，不再保留 AVX2 分支。 */
 
@@ -219,13 +223,29 @@ static int write_header(STL3State *s) {
     return fwrite(hdr, 1, L3_HEADER_SIZE, s->fp) == L3_HEADER_SIZE ? 0 : -1;
 }
 
-int l3_state_init(STL3State *s, const char *path, int nl, int nkv, int hd,
-                  int bs, int max_blocks) {
-    memset(s, 0, sizeof(*s));
+/* 公共实现：逐字段显式初始化（不再 memset 整个结构），以便把调用方交回的
+ * 跨轮镜像挂上去（P1）。mirror = NULL / cap = 0 即全新状态，与旧 memset
+ * 语义等价；任何失败路径都把 mirror 归还给堆，调用方失败后不再持有它。 */
+static int l3_state_init_common(STL3State *s, const char *path, int nl, int nkv,
+                                int hd, int bs, int max_blocks,
+                                uint8_t *mirror, size_t mirror_cap) {
+    if (!s) return -1;
     s->fp = NULL;
+    s->nl = 0; s->nkv = 0; s->hd = 0; s->bs = 0; s->max_blocks = 0;
+    s->block_bytes = 0;
     s->blocks = NULL;
-    if (!path || nl < 1 || nkv < 1 || hd < 64 || (hd % 64) != 0 || bs < 1 || max_blocks < 1)
+    s->evicted = 0;
+    s->wcursor = 0;
+    s->mem = mirror;
+    s->mem_cap = mirror_cap;
+    s->mem_size = 0;   /* 本轮尚未写入：load 之前镜像读一律被边界挡掉 */
+    s->path[0] = '\0';
+
+    if (!path || nl < 1 || nkv < 1 || hd < 64 || (hd % 64) != 0 || bs < 1 || max_blocks < 1) {
+        free(mirror);
+        s->mem = NULL; s->mem_cap = 0;
         return -1;
+    }
 
     int n_payloads = hd / 64;
     size_t payloads_per_head = (size_t)bs * (size_t)n_payloads;
@@ -233,20 +253,30 @@ int l3_state_init(STL3State *s, const char *path, int nl, int nkv, int hd,
     s->block_bytes = 2 * k_area;
 
     s->fp = fopen(path, "wb+");
-    if (!s->fp) return -1;
+    if (!s->fp) { free(mirror); s->mem = NULL; s->mem_cap = 0; return -1; }
     s->nl = nl; s->nkv = nkv; s->hd = hd; s->bs = bs; s->max_blocks = max_blocks;
-    s->path[0] = '\0';
-    if (path) {
-        strncpy(s->path, path, sizeof(s->path) - 1);
-        s->path[sizeof(s->path) - 1] = '\0';
-    }
+    strncpy(s->path, path, sizeof(s->path) - 1);
+    s->path[sizeof(s->path) - 1] = '\0';
+    s->wcursor = L3_HEADER_SIZE;   /* compact layout: pack evicted blocks contiguously */
 
     s->blocks = calloc((size_t)nl * (size_t)max_blocks, sizeof(STL3Block));
-    if (!s->blocks) { fclose(s->fp); s->fp = NULL; return -1; }
+    if (!s->blocks) { l3_state_free(s); return -1; }
 
     if (write_header(s) != 0) { l3_state_free(s); return -1; }
     fflush(s->fp);
     return 0;
+}
+
+int l3_state_init(STL3State *s, const char *path, int nl, int nkv, int hd,
+                  int bs, int max_blocks) {
+    return l3_state_init_common(s, path, nl, nkv, hd, bs, max_blocks, NULL, 0);
+}
+
+int l3_state_init_reuse(STL3State *s, const char *path, int nl, int nkv, int hd,
+                        int bs, int max_blocks,
+                        uint8_t *reuse_mem, size_t reuse_cap) {
+    return l3_state_init_common(s, path, nl, nkv, hd, bs, max_blocks,
+                                reuse_mem, reuse_cap);
 }
 
 void l3_state_free(STL3State *s) {
@@ -255,9 +285,56 @@ void l3_state_free(STL3State *s) {
     free(s->mem);
     s->mem = NULL;
     s->mem_size = 0;
+    s->mem_cap = 0;
     free(s->blocks);
     s->blocks = NULL;
     s->evicted = 0;
+}
+
+/* P1：保留镜像的重置。与 l3_state_free 的差别只在于 mirror 的归属——这里把
+ * 它摘出来交给调用方，供下一轮 l3_state_init_reuse 覆盖写复用，省掉每轮
+ * free+malloc+memset 以及随之而来的全量触页（D1 的 +51.7MB/轮 残余）。 */
+void l3_state_rewind(STL3State *s, uint8_t **mirror_out, size_t *cap_out) {
+    if (mirror_out) *mirror_out = NULL;
+    if (cap_out) *cap_out = 0;
+    if (!s) return;
+    if (s->fp) { fclose(s->fp); s->fp = NULL; }
+    free(s->blocks);
+    s->blocks = NULL;
+    s->evicted = 0;
+    if (mirror_out) *mirror_out = s->mem;
+    if (cap_out) *cap_out = s->mem_cap;
+    s->mem = NULL;
+    s->mem_size = 0;
+    s->mem_cap = 0;
+}
+
+/* P3 增量：见 vllm_l3.h。要求 mem 已就绪 —— 镜像没建起来就退回每轮重建。 */
+int l3_state_matches(const STL3State *s, const char *path, int nl, int nkv,
+                     int hd, int bs, int max_blocks) {
+    if (!s || !s->fp || !s->blocks || !s->mem) return 0;
+    if (s->nl != nl || s->nkv != nkv || s->hd != hd || s->bs != bs ||
+        s->max_blocks != max_blocks) return 0;
+    if (!path || !path[0] || !s->path[0]) return 0;
+    if (strcmp(s->path, path) != 0) return 0;
+    return 1;
+}
+
+/* 把 [off, off+len) 覆盖到的完整页归还内核（Linux MADV_DONTNEED）。匿名私有
+ * 映射被丢弃后再读回零页，与"未写区域读作 0"的既有语义一致；非 Linux 平台
+ * 空实现（主力目标端是 RK3588/Linux，Windows 仅编译与冒烟）。 */
+static void l3_mirror_discard(STL3State *s, size_t off, size_t len) {
+#ifdef __linux__
+    if (!s || !s->mem || len == 0) return;
+    long pg = sysconf(_SC_PAGESIZE);
+    if (pg <= 0) return;
+    uintptr_t a = (uintptr_t)s->mem + off;
+    uintptr_t lo = (a + (uintptr_t)pg - 1) & ~((uintptr_t)pg - 1); /* 起点上对齐到页 */
+    uintptr_t hi = (a + len) & ~((uintptr_t)pg - 1);               /* 终点下对齐到页 */
+    if (hi > lo) madvise((void *)lo, (size_t)(hi - lo), MADV_DONTNEED);
+#else
+    (void)s; (void)off; (void)len;
+#endif
 }
 
 /* Mirror the whole logical payload region into RAM so decode-time reads never
@@ -268,25 +345,64 @@ void l3_state_free(STL3State *s) {
  * The read itself goes through the raw fd (_lseeki64/_read) instead of the
  * CRT stream: mixing fwrite with fseek/fread on the same buffered FILE* is
  * exactly the shared-fp churn that corrupted the heap. Pending fwrite output
- * is flushed first so the raw fd observes the complete file. */
+ * is flushed first so the raw fd observes the complete file.
+ *
+ * P1 跨轮复用：容量足够时不再 free+malloc+memset，而是复用调用方交回的同一
+ * 缓冲覆盖写 [0, extent)，并把 [extent, mem_cap) 的驻留页归还内核——这两处
+ * 正是"每轮映射重建 + write-touch"残余（+51.7MB/轮）的来源。可读范围仍由
+ * mem_size = extent 界定，本轮 extent 内全部被覆盖读，故复用不改变可见内容。 */
 int l3_load_to_mem(STL3State *s) {
-    if (!s || !s->fp || s->mem) return 0;
-    size_t total = (size_t)L3_HEADER_SIZE
-                 + (size_t)s->nl * (size_t)s->max_blocks * s->block_bytes;
-    uint8_t *m = (uint8_t *)malloc(total ? total : 1);
-    if (!m) return -1;
-    memset(m, 0, total);
-    if (fflush(s->fp) != 0) { free(m); return -1; }
+    if (!s || !s->fp) return 0;
+    /* Mirror only the actual written extent (the highest evicted block's end
+     * offset), not the full logical capacity nl*max_blocks*block_bytes.
+     * Full-capacity sizing malloc+memset'd every page of the whole KV window
+     * on EVERY eviction round (~280 MiB at 8192 max_seq) and the per-round
+     * re-init never freed the previous mirror, so serve RSS ratcheted
+     * ~+309 MB per round (diag 2026-09-07, doc §5.1). All evicted blocks are
+     * marked on_disk before this runs, so scanning the metadata yields the
+     * exact byte range decode can ever read (hole/sparse regions and any
+     * short-file tail stay zero-filled below). */
+    size_t extent = 0;
+    int n_meta = s->nl * s->max_blocks;
+    for (int i = 0; i < n_meta; i++) {
+        if (s->blocks[i].on_disk) {
+            size_t end = (size_t)s->blocks[i].disk_off + s->block_bytes;
+            if (end > extent) extent = end;
+        }
+    }
+    /* 本轮无驱逐：镜像不再承载可读数据。归还全部驻留页但保留缓冲，
+     * 供下轮继续复用（旧实现此处直接返回，把重建成本留给了下一轮）。 */
+    if (extent == 0) {
+        l3_mirror_discard(s, 0, s->mem_cap);
+        s->mem_size = 0;
+        return 0;
+    }
+    /* 只在容量不足时重新分配，并留出余量：长上下文逐轮递增时避免每轮
+     * 都因差一个块而重建。未触页的余量不占物理内存。 */
+    if (!s->mem || s->mem_cap < extent) {
+        size_t need = extent + extent / 4 + (size_t)4 * s->block_bytes;
+        if (need < extent) need = extent;   /* 溢出兜底 */
+        free(s->mem);
+        s->mem = (uint8_t *)malloc(need);
+        if (!s->mem) { s->mem_cap = 0; return -1; }
+        s->mem_cap = need;
+    }
+    /* 本轮读不到的尾部：把上轮遗留的驻留页交还内核，避免跨轮累积 */
+    l3_mirror_discard(s, extent, s->mem_cap - extent);
+
+    if (fflush(s->fp) != 0) { s->mem_size = 0; return -1; }
     int fd = L3_FILENO(s->fp);
-    if (L3_SEEK64(fd, 0) < 0) { free(m); return -1; }
+    if (L3_SEEK64(fd, 0) < 0) { s->mem_size = 0; return -1; }
     size_t got = 0;
-    while (got < total) {
-        long long n = L3_READ(fd, m + got, total - got);
-        if (n <= 0) break;   /* partial/EOF: tail stays zero-filled */
+    while (got < extent) {
+        long long n = L3_READ(fd, s->mem + got, extent - got);
+        if (n <= 0) break;   /* partial/EOF: tail must be zero-filled below */
         got += (size_t)n;
     }
-    s->mem = m;
-    s->mem_size = total;
+    /* 短读（文件短于 extent）必须显式清零：复用缓冲时残留的是上一轮数据，
+     * 不能漏给下游（未写 payload 的既有语义是全零）。 */
+    if (got < extent) memset(s->mem + got, 0, extent - got);
+    s->mem_size = extent;
     return 0;
 }
 
@@ -302,8 +418,21 @@ int l3_evict_block(STL3State *s, int layer, int block,
     size_t payloads_per_head = (size_t)bs * (size_t)n_payloads;
     size_t k_area = (size_t)nkv * payloads_per_head * L3_Q4_PAYLOAD64;
 
-    size_t base = (size_t)L3_HEADER_SIZE +
-                  ((size_t)layer * (size_t)s->max_blocks + (size_t)block) * s->block_bytes;
+    /* Compact layout: (layer, block) maps to its metadata slot by index, but
+     * the disk offset is cursor-allocated in eviction order so the file and
+     * the RAM mirror track the ACTUAL evicted payload (~ratio of max_seq)
+     * instead of the full KV window (see l3_state_init wcursor).
+     * P3 增量：块已有 slot（on_disk）时**原地覆盖**、游标不前进 —— 否则每轮
+     * 重打包都新占一段，文件与镜像无界膨胀。 */
+    STL3Block *bm = &s->blocks[(size_t)layer * (size_t)s->max_blocks + (size_t)block];
+    size_t base;
+    if (bm->on_disk) {
+        base = (size_t)bm->disk_off;
+    } else {
+        base = s->wcursor;
+        if (s->wcursor > (size_t)-1 - s->block_bytes) return -1;
+        s->wcursor += s->block_bytes;
+    }
     const float *kbase = k_cache[block];   /* [bs * kv_dim] */
     const float *vbase = v_cache[block];
     uint8_t tmp[L3_Q4_PAYLOAD64];
@@ -327,14 +456,16 @@ int l3_evict_block(STL3State *s, int layer, int block,
     }
     fflush(s->fp);
 
-    STL3Block *bm = &s->blocks[(size_t)layer * (size_t)s->max_blocks + (size_t)block];
     bm->on_disk = 1;
+    bm->stale = 0;            /* 刚按当前内容重打包：载荷重新有效 */
     bm->disk_off = (uint64_t)base;
     s->evicted++;
     return 0;
 }
 
-/* Eviction ranking: importance mass desc, block index asc (deterministic). */
+/* Eviction ranking: importance mass desc, block index asc (deterministic).
+ * Fills keep[b]=1 for the blocks that STAY in RAM (top (1-ratio) by mass,
+ * plus the most recent block). n_blocks must be > 1 (last block kept). */
 typedef struct { float mass; int idx; } Rank;
 static int rank_cmp(const void *a, const void *b) {
     const Rank *ra = (const Rank *)a, *rb = (const Rank *)b;
@@ -342,19 +473,11 @@ static int rank_cmp(const void *a, const void *b) {
     if (ra->mass < rb->mass) return 1;
     return ra->idx - rb->idx;
 }
-
-int l3_evict_layer(STL3State *s, int layer,
-                   const float *const *k_cache, const float *const *v_cache,
-                   int kv_dim, int seq_len, const float *importance,
-                   float ratio, int bs) {
-    if (!s->fp || seq_len <= 0 || !k_cache || !v_cache) return 0;
-    int n_blocks = (seq_len + bs - 1) / bs;
-    if (n_blocks <= 1) return 0;
-
+static void l3_pick_evict_blocks(int n_blocks, int seq_len,
+                                 const float *importance, float ratio,
+                                 int bs, uint8_t *keep) {
     Rank *r = (Rank *)malloc((size_t)n_blocks * sizeof(Rank));
-    uint8_t *keep = (uint8_t *)calloc((size_t)n_blocks, 1);
-    if (!r || !keep) { free(r); free(keep); return 0; }
-
+    if (!r) { memset(keep, 1, (size_t)n_blocks); return; }   /* OOM: keep all */
     for (int b = 0; b < n_blocks; b++) {
         float m = 0.0f;
         int p0 = b * bs, p1 = p0 + bs;
@@ -370,15 +493,130 @@ int l3_evict_layer(STL3State *s, int layer,
     if (keep_n >= n_blocks) keep_n = n_blocks;
     for (int i = 0; i < keep_n; i++) keep[r[i].idx] = 1;
     keep[n_blocks - 1] = 1;   /* recency insurance: last block stays in RAM */
+    free(r);
+}
+
+int l3_evict_layer(STL3State *s, int layer,
+                   const float *const *k_cache, const float *const *v_cache,
+                   int kv_dim, int seq_len, const float *importance,
+                   float ratio, int bs) {
+    if (!s->fp || seq_len <= 0 || !k_cache || !v_cache) return 0;
+    int n_blocks = (seq_len + bs - 1) / bs;
+    if (n_blocks <= 1) return 0;
+
+    uint8_t *keep = (uint8_t *)calloc((size_t)n_blocks, 1);
+    if (!keep) return 0;
+    l3_pick_evict_blocks(n_blocks, seq_len, importance, ratio, bs, keep);
 
     int evicted = 0;
-    for (int b = 0; b < n_blocks - 1; b++) {   /* never evict the last block */
-        if (!keep[b]) {
-            if (l3_evict_block(s, layer, b, k_cache, v_cache, kv_dim, bs) == 0)
-                evicted++;
+    for (int b = 0; b < n_blocks; b++) {
+        STL3Block *bm = &s->blocks[(size_t)layer * (size_t)s->max_blocks + (size_t)b];
+        bm->evict = 0;
+        if (b >= n_blocks - 1 || keep[b]) continue;   /* never evict the last block */
+        bm->evict = 1;
+        /* P3 增量：载荷仍有效（该块未被改写）→ 不重打包，只按 evict 释放 RAM。
+         * 这一分支就是消掉 R1「每轮 Q4→反量化→Q4」重复量化的关键。 */
+        if (bm->on_disk && !bm->stale) continue;
+        if (l3_evict_block(s, layer, b, k_cache, v_cache, kv_dim, bs) == 0)
+            evicted++;
+    }
+    free(keep);
+    return evicted;
+}
+
+/* P2 (nof32): q8-source eviction. No f32 canonical rows exist, so the Q4
+ * mirrors are packed from the dequantized q8 values (q*(scale/127), same
+ * formula as kv_dequant_roundtrip) — the mirror then matches what q8 sparse
+ * decode would read from RAM, and is identical to the f32-world mirror when
+ * the f32 rows carry the q8 dequant (P0 ON 档). */
+int l3_evict_block_q8(STL3State *s, int layer, int block,
+                      const int8_t *const *k_q8, const int8_t *const *v_q8,
+                      const float *kscale, const float *vscale,
+                      int kv_dim, int bs, int nkv) {
+    if (!s->fp) return -1;
+    if (layer < 0 || block < 0 || layer >= s->nl || block >= s->max_blocks) return -1;
+    if (!k_q8 || !k_q8[block] || !v_q8 || !v_q8[block]) return -1;  /* already evicted */
+
+    int hd = s->hd;
+    int n_payloads = hd / 64;
+    size_t payloads_per_head = (size_t)bs * (size_t)n_payloads;
+    size_t k_area = (size_t)nkv * payloads_per_head * L3_Q4_PAYLOAD64;
+
+    /* Compact layout (same cursor scheme as l3_evict_block): disk offsets are
+     * allocated in eviction order so file + mirror track the evicted payload
+     * rather than the full KV window. P3 增量：已有 slot 的块原地覆盖。 */
+    STL3Block *bm = &s->blocks[(size_t)layer * (size_t)s->max_blocks + (size_t)block];
+    size_t base;
+    if (bm->on_disk) {
+        base = (size_t)bm->disk_off;
+    } else {
+        base = s->wcursor;
+        if (s->wcursor > (size_t)-1 - s->block_bytes) return -1;
+        s->wcursor += s->block_bytes;
+    }
+    const int8_t *kbase = k_q8[block];   /* [bs * kv_dim] */
+    const int8_t *vbase = v_q8[block];
+    uint8_t tmp[L3_Q4_PAYLOAD64];
+    float  row64[64];
+    /* Per-token per-head q8 scale (token-major, contiguous [max_seq*nkv]). */
+    const float *ksc = kscale + (size_t)block * bs * (size_t)nkv;
+    const float *vsc = vscale + (size_t)block * bs * (size_t)nkv;
+
+    /* K area then V area: [head][token][hd/64 payloads] */
+    for (int area = 0; area < 2; area++) {
+        const int8_t *src = area == 0 ? kbase : vbase;
+        const float *sc  = area == 0 ? ksc : vsc;
+        for (int h = 0; h < nkv; h++) {
+            for (int t = 0; t < bs; t++) {
+                const int8_t *row = src + (size_t)t * (size_t)kv_dim + (size_t)h * (size_t)hd;
+                float srow = sc[(size_t)t * (size_t)nkv + (size_t)h] * (1.0f / 127.0f);
+                for (int g = 0; g < n_payloads; g++) {
+                    const int8_t *p64 = row + (size_t)g * 64;
+                    for (int i = 0; i < 64; i++) row64[i] = (float)p64[i] * srow;
+                    l3_q4_pack64(tmp, row64);
+                    size_t foff = base + (size_t)area * k_area
+                                  + (size_t)h * payloads_per_head * L3_Q4_PAYLOAD64
+                                  + ((size_t)t * (size_t)n_payloads + (size_t)g) * L3_Q4_PAYLOAD64;
+                    if (L3_FSEEK(s->fp, (long long)foff, SEEK_SET) != 0) return -1;
+                    if (fwrite(tmp, 1, L3_Q4_PAYLOAD64, s->fp) != L3_Q4_PAYLOAD64) return -1;
+                }
+            }
         }
     }
-    free(r);
+    fflush(s->fp);
+
+    bm->on_disk = 1;
+    bm->stale = 0;            /* 刚按当前内容重打包：载荷重新有效 */
+    bm->disk_off = (uint64_t)base;
+    s->evicted++;
+    return 0;
+}
+
+int l3_evict_layer_q8(STL3State *s, int layer,
+                      const int8_t *const *k_q8, const int8_t *const *v_q8,
+                      const float *kscale, const float *vscale,
+                      int kv_dim, int seq_len, const float *importance,
+                      float ratio, int bs, int nkv) {
+    if (!s->fp || seq_len <= 0 || !k_q8 || !v_q8 || !kscale || !vscale) return 0;
+    int n_blocks = (seq_len + bs - 1) / bs;
+    if (n_blocks <= 1) return 0;
+
+    uint8_t *keep = (uint8_t *)calloc((size_t)n_blocks, 1);
+    if (!keep) return 0;
+    l3_pick_evict_blocks(n_blocks, seq_len, importance, ratio, bs, keep);
+
+    int evicted = 0;
+    for (int b = 0; b < n_blocks; b++) {
+        STL3Block *bm = &s->blocks[(size_t)layer * (size_t)s->max_blocks + (size_t)b];
+        bm->evict = 0;
+        if (b >= n_blocks - 1 || keep[b]) continue;   /* never evict the last block */
+        bm->evict = 1;
+        /* P3 增量：载荷仍有效 → 不重打包（消 R1）。 */
+        if (bm->on_disk && !bm->stale) continue;
+        if (l3_evict_block_q8(s, layer, b, k_q8, v_q8,
+                              kscale, vscale, kv_dim, bs, nkv) == 0)
+            evicted++;
+    }
     free(keep);
     return evicted;
 }
@@ -490,6 +728,75 @@ int l3_fetch_block_area(const STL3State *s, const STL3Block *bm,
         if (n <= 0) return -1;
         got += (size_t)n;
     }
+    return 0;
+}
+
+/* P3: 见 vllm_l3.h。把 on_disk 块的内容反量化回调用方已分配好的 K/V 行。
+ * 纯解压路径：无 GEMM、无注意力、按 (head, token) 顺序逐 64 元素载荷展开。 */
+int l3_fill_block_from_disk(const STL3State *s, const STL3Block *bm, int block,
+                            float **kf, float **vf, int8_t **k8, int8_t **v8,
+                            const float *kscale, const float *vscale,
+                            int kv_dim, int bs, int hd) {
+    if (!s || !bm || !bm->on_disk) return -1;
+    if (block < 0 || block >= s->max_blocks) return -1;
+    if (bs <= 0 || hd <= 0 || hd % 64 != 0) return -1;
+    if (s->nkv <= 0 || kv_dim != s->nkv * hd) return -1;
+    int has_f = (kf != NULL) && (vf != NULL);
+    int has_i = (k8 != NULL) && (v8 != NULL);
+    if (!has_f && !has_i) return -1;
+    if (has_f && (!kf[block] || !vf[block])) return -1;   /* 目标未分配 */
+    if (has_i && (!k8[block] || !v8[block])) return -1;
+    if (has_i && (!kscale || !vscale)) return -1;
+
+    int n_payloads = hd / 64;
+    size_t area_bytes = (size_t)bs * (size_t)n_payloads * L3_Q4_PAYLOAD64;
+    uint8_t *chunk = (uint8_t *)malloc(area_bytes);
+    if (!chunk) return -1;
+
+    /* 两个世界都从同一份 Q4 载荷派生，保证 f32 与 q8 的一致性（见头注释）。 */
+    for (int area = 0; area < 2; area++) {
+        float       *frow_base = has_f ? (area ? vf[block] : kf[block]) : NULL;
+        int8_t      *irow_base = has_i ? (area ? v8[block] : k8[block]) : NULL;
+        const float *sc        = has_i ? (area ? vscale : kscale) : NULL;
+        for (int h = 0; h < s->nkv; h++) {
+            if (l3_fetch_block_area(s, bm, h, area, chunk, hd, bs, kv_dim) != 0) {
+                free(chunk);
+                return -1;
+            }
+            for (int t = 0; t < bs; t++) {
+                float  *fdst = frow_base ? frow_base
+                               + (size_t)t * (size_t)kv_dim + (size_t)h * (size_t)hd
+                               : NULL;
+                int8_t *idst = irow_base ? irow_base
+                               + (size_t)t * (size_t)kv_dim + (size_t)h * (size_t)hd
+                               : NULL;
+                float maxk = 0.0f;
+                if (sc) {
+                    maxk = sc[(size_t)t * (size_t)s->nkv + (size_t)h];
+                    if (!(maxk > 1e-6f)) maxk = 1.0f;  /* 与 kv_quantize_per_head 同口径 */
+                }
+                float ik = L3_Q8_INV_SCALE / maxk;
+                float sk = maxk * (1.0f / L3_Q8_INV_SCALE);
+                const uint8_t *cp = chunk
+                    + (size_t)t * (size_t)n_payloads * L3_Q4_PAYLOAD64;
+                for (int g = 0; g < n_payloads; g++) {
+                    float row64[64];
+                    l3_q4_dequant64(row64, cp + (size_t)g * L3_Q4_PAYLOAD64);
+                    if (!idst) {   /* 纯 f32 世界：直接落 Q4 反量化值 */
+                        memcpy(fdst + (size_t)g * 64, row64, 64 * sizeof(float));
+                        continue;
+                    }
+                    for (int i = 0; i < 64; i++) {
+                        int q = (int)floorf(row64[i] * ik + 0.5f);
+                        if (q > 127) q = 127; else if (q < -128) q = -128;
+                        idst[(size_t)g * 64 + (size_t)i] = (int8_t)q;
+                        if (fdst) fdst[(size_t)g * 64 + (size_t)i] = (float)q * sk;
+                    }
+                }
+            }
+        }
+    }
+    free(chunk);
     return 0;
 }
 
@@ -749,6 +1056,245 @@ int l3_self_test(void) {
                 if (!batched_ok) fail++;
             }
             l3_state_free(&s1);
+        }
+        /* ---- (10) P1 跨轮镜像复用：复用缓冲读出的内容必须与每轮全新缓冲
+         * 逐字节一致。三轮覆盖三条路径：容量足够（直接复用）→ extent 变大
+         * （复用后扩容）→ extent 变小（复用且尾部页被归还）。每轮都用旧路径
+         * （state_free + init + load，缓冲每轮重建）做对照，比较 [0, mem_size)；
+         * 若复用残留了上一轮数据，memcmp 必然不同。 */
+        {
+            const float ratios[3] = { 0.30f, 0.85f, 0.60f };
+            STL3State R, N;
+            memset(&R, 0, sizeof(R));
+            memset(&N, 0, sizeof(N));
+            uint8_t *pm = NULL;
+            size_t pc = 0;
+            int reuse_ok = 1;
+            for (int round = 0; round < 3 && reuse_ok; round++) {
+                /* 对照 N：每轮重建缓冲 */
+                l3_state_free(&N);
+                if (l3_state_init(&N, path, nl, nkv, hd, bs, max_blocks) != 0) { reuse_ok = 0; break; }
+                l3_evict_layer(&N, 0, k1b, v1b, kv_dim, seq_len, imp, ratios[round], bs);
+                if (l3_load_to_mem(&N) != 0) { reuse_ok = 0; break; }
+                /* 被测 R：首轮全新，其后 rewind 摘出镜像交回 init_reuse */
+                if (round == 0) {
+                    if (l3_state_init(&R, path, nl, nkv, hd, bs, max_blocks) != 0) { reuse_ok = 0; break; }
+                } else {
+                    l3_state_rewind(&R, &pm, &pc);
+                    if (l3_state_init_reuse(&R, path, nl, nkv, hd, bs, max_blocks,
+                                            pm, pc) != 0) { pm = NULL; reuse_ok = 0; break; }
+                    pm = NULL; pc = 0;
+                }
+                l3_evict_layer(&R, 0, k1b, v1b, kv_dim, seq_len, imp, ratios[round], bs);
+                if (l3_load_to_mem(&R) != 0) { reuse_ok = 0; break; }
+                if (R.mem_size != N.mem_size || R.evicted != N.evicted ||
+                    R.mem_cap < R.mem_size || memcmp(R.mem, N.mem, R.mem_size) != 0)
+                    reuse_ok = 0;
+            }
+            free(pm);   /* 中途失败时镜像尚在手上 */
+            l3_state_free(&R);
+            l3_state_free(&N);
+            printf("  [%s] P1 cross-round mirror reuse == per-round rebuild (bytewise)\n",
+                   reuse_ok ? "PASS" : "FAIL");
+            if (!reuse_ok) fail++;
+        }
+        /* ---- (11) P3 前缀重建：l3_fill_block_from_disk 把某块从 Q4 载荷
+         * 反量化回**调用方已分配**的行。三条要求：
+         *   ① 值确实来自该块（误差在 Q4 半格 + q8 半步内）；
+         *   ② 重复填充逐位一致（确定性）；
+         *   ③ 同时给 f32 与 q8 时 f32 == (float)q8 * (scale/127) 位级成立
+         *      （与 kv_dequant_roundtrip 同一表达式，禁止另起口径）。 */
+        {
+            int bound_ok = 1, det_ok = 1, bit_ok = 1, ran_ok = 1;
+            float *imp2 = (float *)malloc((size_t)seq_len * sizeof(float));
+            if (imp2) {
+                for (int t = 0; t < seq_len; t++) imp2[t] = (t < bs) ? 0.0f : 1.0f;
+            } else {
+                ran_ok = 0;
+            }
+            float *kf = NULL, *vf = NULL, *kf2 = NULL, *vf2 = NULL;
+            int8_t *k8 = NULL, *v8 = NULL;
+            float *ksc = NULL, *vsc = NULL;
+            size_t nrow = (size_t)bs * (size_t)kv_dim;
+            if (!imp2) { ran_ok = 0; }
+            if (ran_ok) {
+                kf  = (float *)calloc(nrow, sizeof(float));
+                vf  = (float *)calloc(nrow, sizeof(float));
+                kf2 = (float *)calloc(nrow, sizeof(float));
+                vf2 = (float *)calloc(nrow, sizeof(float));
+                k8  = (int8_t *)calloc(nrow, 1);
+                v8  = (int8_t *)calloc(nrow, 1);
+                ksc = (float *)calloc((size_t)bs * nkv, sizeof(float));
+                vsc = (float *)calloc((size_t)bs * nkv, sizeof(float));
+                if (!kf || !vf || !kf2 || !vf2 || !k8 || !v8 || !ksc || !vsc) ran_ok = 0;
+            }
+            if (!ran_ok) {
+                printf("  [FAIL] P3 restore OOM\n");
+                fail++;
+            } else if (l3_state_init(&s1, path, nl, nkv, hd, bs, max_blocks) != 0 ||
+                       l3_evict_layer(&s1, 0, k1b, v1b, kv_dim, seq_len, imp2,
+                                      0.75f, bs) <= 0 ||
+                       l3_load_to_mem(&s1) != 0 ||
+                       !s1.blocks[0].on_disk) {
+                printf("  [FAIL] P3 restore fixture (block 0 未被驱逐)\n");
+                fail++;
+                l3_state_free(&s1);
+            } else {
+                /* q8 scale 按 kv_quantize_per_head 口径取该 (token, head) 行 amax */
+                for (int t = 0; t < bs; t++)
+                    for (int h = 0; h < nkv; h++) {
+                        float mk = 0.0f, mv = 0.0f;
+                        for (int i = 0; i < hd; i++) {
+                            float ak = fabsf(k1b[0][(size_t)t * kv_dim + (size_t)h * hd + i]);
+                            float av = fabsf(v1b[0][(size_t)t * kv_dim + (size_t)h * hd + i]);
+                            if (ak > mk) mk = ak;
+                            if (av > mv) mv = av;
+                        }
+                        ksc[t * nkv + h] = mk;
+                        vsc[t * nkv + h] = mv;
+                    }
+                float *kfp[1] = { kf };  float *vfp[1] = { vf };
+                int8_t *k8p[1] = { k8 }; int8_t *v8p[1] = { v8 };
+                float *kfp2[1] = { kf2 }; float *vfp2[1] = { vf2 };
+                int8_t *k8p2[1] = { k8 }; int8_t *v8p2[1] = { v8 };
+                if (l3_fill_block_from_disk(&s1, &s1.blocks[0], 0,
+                                            kfp, vfp, k8p, v8p, ksc, vsc,
+                                            kv_dim, bs, hd) != 0 ||
+                    l3_fill_block_from_disk(&s1, &s1.blocks[0], 0,
+                                            kfp2, vfp2, k8p2, v8p2, ksc, vsc,
+                                            kv_dim, bs, hd) != 0) {
+                    printf("  [FAIL] P3 restore call\n");
+                    fail++;
+                } else {
+                    /* ① 误差界：Q4 半格(max/7/2) + q8 半步(max/127/2) */
+                    for (int t = 0; t < bs; t++)
+                        for (int h = 0; h < nkv; h++) {
+                            float mx = 0.0f;
+                            for (int i = 0; i < hd; i++) {
+                                float a = fabsf(k1b[0][(size_t)t * kv_dim + (size_t)h * hd + i]);
+                                if (a > mx) mx = a;
+                            }
+                            float bound = mx * (0.5f / 7.0f + 0.5f / L3_Q8_INV_SCALE) * 1.01f
+                                        + 1e-5f;
+                            for (int i = 0; i < hd; i++) {
+                                size_t off = (size_t)t * kv_dim + (size_t)h * hd + i;
+                                if (fabsf(kf[off] - k1b[0][off]) > bound) bound_ok = 0;
+                                if (fabsf(vf[off] - v1b[0][off]) > bound) bound_ok = 0;
+                            }
+                        }
+                    /* ② 确定性：两次填充逐位一致 */
+                    det_ok = (memcmp(kf, kf2, nrow * sizeof(float)) == 0 &&
+                              memcmp(vf, vf2, nrow * sizeof(float)) == 0);
+                    /* ③ f32 == (float)q8 * (scale/127)（同一表达式，位级） */
+                    for (int t = 0; t < bs && bit_ok; t++)
+                        for (int h = 0; h < nkv && bit_ok; h++) {
+                            float sk = ksc[t * nkv + h] * (1.0f / L3_Q8_INV_SCALE);
+                            float sv = vsc[t * nkv + h] * (1.0f / L3_Q8_INV_SCALE);
+                            for (int i = 0; i < hd; i++) {
+                                size_t off = (size_t)t * kv_dim + (size_t)h * hd + i;
+                                float ek = (float)k8[off] * sk;
+                                float ev = (float)v8[off] * sv;
+                                if (memcmp(&ek, &kf[off], sizeof(float)) != 0 ||
+                                    memcmp(&ev, &vf[off], sizeof(float)) != 0) { bit_ok = 0; break; }
+                            }
+                        }
+                    printf("  [%s] P3 restore error bound (Q4 half-cell + q8 half-step)\n",
+                           bound_ok ? "PASS" : "FAIL");
+                    if (!bound_ok) fail++;
+                    printf("  [%s] P3 restore deterministic (bitwise)\n", det_ok ? "PASS" : "FAIL");
+                    if (!det_ok) fail++;
+                    printf("  [%s] P3 restore f32 == q8*(scale/127) (bitwise)\n", bit_ok ? "PASS" : "FAIL");
+                    if (!bit_ok) fail++;
+                }
+                l3_state_free(&s1);
+            }
+            free(imp2); free(kf); free(vf); free(kf2); free(vf2);
+            free(k8); free(v8); free(ksc); free(vsc);
+        }
+        /* ---- (12) P3 增量驱逐：① 载荷有效则不重打包（消 R1）；
+         * ② stale 才重打包，且**原地覆盖**（wcursor 不前进 → 文件不膨胀）；
+         * ③ 重打包后的载荷确实是新内容（读回比对）。 */
+        {
+            float *imp3 = (float *)malloc((size_t)seq_len * sizeof(float));
+            STL3State S;
+            memset(&S, 0, sizeof(S));
+            if (!imp3) {
+                printf("  [FAIL] P3 incremental OOM\n");
+                fail++;
+            } else {
+                for (int t = 0; t < seq_len; t++) imp3[t] = (t < bs) ? 0.0f : 1.0f;
+                if (l3_state_init(&S, path, nl, nkv, hd, bs, max_blocks) != 0) {
+                    printf("  [FAIL] P3 incremental init\n");
+                    fail++;
+                } else {
+                    int e1 = l3_evict_layer(&S, 0, k1b, v1b, kv_dim, seq_len,
+                                            imp3, 0.75f, bs);
+                    int ev1 = S.evicted;
+                    size_t cur1 = S.wcursor;
+                    /* 第二次驱逐：block 0 的内容没变（模拟"重建回 RAM 后 RAM
+                     * 指针又非空"），载荷仍有效 → 不该有任何新打包。 */
+                    int e2 = l3_evict_layer(&S, 0, k1b, v1b, kv_dim, seq_len,
+                                            imp3, 0.75f, bs);
+                    int skip_ok = (e1 > 0 && e2 == 0 && S.evicted == ev1 &&
+                                   S.wcursor == cur1 && S.blocks[0].evict == 1);
+                    printf("  [%s] P3 incremental: valid payload not re-packed "
+                           "(e1=%d e2=%d)\n", skip_ok ? "PASS" : "FAIL", e1, e2);
+                    if (!skip_ok) fail++;
+
+                    /* 改写 block 0 的内容 → stale → 必须重打包，且原地覆盖 */
+                    for (int i = 0; i < bs * kv_dim; i++) k1b[0][i] += 0.5f;
+                    S.blocks[0].stale = 1;
+                    int e3 = l3_evict_layer(&S, 0, k1b, v1b, kv_dim, seq_len,
+                                            imp3, 0.75f, bs);
+                    int slot_ok = (e3 > 0 && S.evicted == ev1 + e3 &&
+                                   S.wcursor == cur1 && S.blocks[0].stale == 0);
+                    printf("  [%s] P3 incremental: stale re-packed in place "
+                           "(e3=%d, cursor %s)\n", slot_ok ? "PASS" : "FAIL", e3,
+                           S.wcursor == cur1 ? "unchanged" : "MOVED");
+                    if (!slot_ok) fail++;
+
+                    /* 读回：载荷必须是改写后的内容（不是旧载荷） */
+                    if (l3_load_to_mem(&S) == 0) {
+                        int n_payloads = hd / 64;
+                        size_t nb = (size_t)bs * (size_t)n_payloads * L3_Q4_PAYLOAD64;
+                        uint8_t *dst = (uint8_t *)malloc(nb);
+                        float r64[64];
+                        int cont_ok = 1;
+                        if (!dst) cont_ok = 0;
+                        if (cont_ok &&
+                            l3_fetch_block_area(&S, &S.blocks[0], 0, 0, dst, hd, bs,
+                                                kv_dim) != 0) cont_ok = 0;
+                        if (cont_ok) {
+                            float mx = 0.0f;
+                            for (int i = 0; i < bs * kv_dim; i++) {
+                                float a = fabsf(k1b[0][i]);
+                                if (a > mx) mx = a;
+                            }
+                            float bound = mx * (0.5f / 7.0f) * 1.02f + 1e-5f;
+                            for (int t = 0; t < bs && cont_ok; t++)
+                                for (int g = 0; g < n_payloads && cont_ok; g++) {
+                                    l3_q4_dequant64(r64,
+                                        dst + ((size_t)t * n_payloads + g)
+                                              * L3_Q4_PAYLOAD64);
+                                    for (int i = 0; i < 64; i++) {
+                                        float src = k1b[0][(size_t)t * kv_dim
+                                                          + (size_t)g * 64 + i];
+                                        if (fabsf(r64[i] - src) > bound) { cont_ok = 0; break; }
+                                    }
+                                }
+                        }
+                        printf("  [%s] P3 incremental: re-packed payload == new content\n",
+                               cont_ok ? "PASS" : "FAIL");
+                        if (!cont_ok) fail++;
+                        free(dst);
+                    } else {
+                        printf("  [FAIL] P3 incremental: load_to_mem\n");
+                        fail++;
+                    }
+                    l3_state_free(&S);
+                }
+                free(imp3);
+            }
         }
         remove(path);
         free(k1); free(v1); free(imp); free(k2); free(v2);

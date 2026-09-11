@@ -160,295 +160,6 @@ static inline float hsum8_ps(const float v[8]) {
 }
 
 /* ================================================================
- * Weight Management
- * ================================================================ */
-
-int st_vision_weights_alloc(STVisionWeights *w, const STModelConfig *cfg) {
-    if (!cfg->has_vision) return -1;
-    memset(w, 0, sizeof(*w));
-
-    int vh  = cfg->vis_hidden;   /* 1152 */
-    int vd  = cfg->vis_depth;    /* 27 */
-    int vf  = cfg->vis_ffn;      /* 4304 */
-    int vp  = cfg->vis_patch;    /* 16 */
-    int vt  = cfg->vis_temporal;  /* 2 */
-    int vo  = cfg->vis_out_dim;  /* 4096 */
-    int vm  = cfg->vis_merge;    /* 2 */
-    int ds  = cfg->vis_ds_count; /* 3 */
-
-    /* Patch embedding: Conv3d */
-    w->patch_embed_weight = calloc((size_t)vh * 3 * vt * vp * vp, sizeof(float));
-    w->patch_embed_bias   = calloc(vh, sizeof(float));
-
-    /* Position embedding */
-    w->pos_embed = calloc((size_t)cfg->vis_max_pos * vh, sizeof(float));
-
-    /* ViT block weights */
-    w->attn_qkv_weight  = calloc((size_t)vd * vh * 3 * vh, sizeof(float));
-    w->attn_qkv_bias    = calloc((size_t)vd * 3 * vh, sizeof(float));
-    w->attn_proj_weight = calloc((size_t)vd * vh * vh, sizeof(float));
-    w->attn_proj_bias   = calloc((size_t)vd * vh, sizeof(float));
-    w->norm1_weight     = calloc((size_t)vd * vh, sizeof(float));
-    w->norm1_bias       = calloc((size_t)vd * vh, sizeof(float));
-    w->norm2_weight     = calloc((size_t)vd * vh, sizeof(float));
-    w->norm2_bias       = calloc((size_t)vd * vh, sizeof(float));
-    w->mlp_fc1_weight   = calloc((size_t)vd * vf * vh, sizeof(float));
-    w->mlp_fc1_bias     = calloc((size_t)vd * vf, sizeof(float));
-    /* fc2: down projection, standard GELU (no gating) */
-    w->mlp_fc2_weight   = calloc((size_t)vd * vh * vf, sizeof(float));
-    w->mlp_fc2_bias     = calloc((size_t)vd * vh, sizeof(float));
-
-    /* Q8_0 ViT weights (weight-only; f32 allocs above are kept for A/B).
-     * fc2 col dim padded to a multiple of 32 (4304 → 4320). */
-    int vf_pad = VF_PAD(vf);
-    w->q8_attn_qkv_weight  = malloc((size_t)vd * VQ8_BYTES((size_t)vh * 3 * vh));
-    w->q8_attn_proj_weight = malloc((size_t)vd * VQ8_BYTES((size_t)vh * vh));
-    w->q8_mlp_fc1_weight   = malloc((size_t)vd * VQ8_BYTES((size_t)vf * vh));
-    w->q8_mlp_fc2_weight   = malloc((size_t)vd * VQ8_BYTES((size_t)vh * vf_pad));
-    if (!w->q8_attn_qkv_weight || !w->q8_attn_proj_weight ||
-        !w->q8_mlp_fc1_weight || !w->q8_mlp_fc2_weight) {
-        fprintf(stderr, "[VIS] Q8 weight allocation failed\n");
-        return -1;
-    }
-
-    /* Main merger: after spatial merge, input_dim = vh * vm * vm = vh * 4 */
-    int merge_in  = vh * vm * vm;
-    int merge_mid = merge_in;   /* Qwen3-VL uses same dim for fc1 */
-    w->merger_norm_weight = calloc(merge_in, sizeof(float));
-    w->merger_norm_bias   = calloc(merge_in, sizeof(float));
-    w->merger_fc1_weight  = calloc((size_t)merge_in * merge_mid, sizeof(float));
-    w->merger_fc1_bias    = calloc(merge_mid, sizeof(float));
-    w->merger_fc2_weight  = calloc((size_t)merge_mid * vo, sizeof(float));
-    w->merger_fc2_bias    = calloc(vo, sizeof(float));
-
-    /* DeepStack mergers (input = merged features, dim = vh * 4 = 4608) */
-    int ds_mid = merge_in;  /* deepstack intermediate dim (= merge_in) */
-    w->ds_norm_weight  = calloc((size_t)ds * merge_in, sizeof(float));
-    w->ds_norm_bias    = calloc((size_t)ds * merge_in, sizeof(float));
-    w->ds_fc1_weight   = calloc((size_t)ds * merge_in * ds_mid, sizeof(float));
-    w->ds_fc1_bias     = calloc((size_t)ds * ds_mid, sizeof(float));
-    w->ds_fc2_weight   = calloc((size_t)ds * ds_mid * vo, sizeof(float));
-    w->ds_fc2_bias     = calloc((size_t)ds * vo, sizeof(float));
-
-    w->is_allocated = 1;
-    return 0;
-}
-
-void st_vision_weights_free(STVisionWeights *w) {
-    free(w->patch_embed_weight); free(w->patch_embed_bias);
-    free(w->pos_embed);
-    free(w->attn_qkv_weight); free(w->attn_qkv_bias);
-    free(w->attn_proj_weight); free(w->attn_proj_bias);
-    free(w->norm1_weight); free(w->norm1_bias);
-    free(w->norm2_weight); free(w->norm2_bias);
-    free(w->mlp_fc1_weight); free(w->mlp_fc1_bias);
-    free(w->mlp_fc2_weight); free(w->mlp_fc2_bias);
-    free(w->q8_attn_qkv_weight); free(w->q8_attn_proj_weight);
-    free(w->q8_mlp_fc1_weight);  free(w->q8_mlp_fc2_weight);
-    free(w->merger_norm_weight); free(w->merger_norm_bias);
-    free(w->merger_fc1_weight); free(w->merger_fc1_bias);
-    free(w->merger_fc2_weight); free(w->merger_fc2_bias);
-    free(w->ds_norm_weight); free(w->ds_norm_bias);
-    free(w->ds_fc1_weight); free(w->ds_fc1_bias);
-    free(w->ds_fc2_weight); free(w->ds_fc2_bias);
-    memset(w, 0, sizeof(*w));
-}
-
-/* Free only the F32 duplicates of the Q8-quantized ViT matrices (inference
- * reads the Q8 copies). The F32-only small tensors (patch embed, pos embed,
- * norms, biases, merger, deepstack) stay. */
-void st_vision_weights_free_f32(STVisionWeights *w) {
-    if (!w) return;
-    free(w->attn_qkv_weight);  w->attn_qkv_weight  = NULL;
-    free(w->attn_proj_weight); w->attn_proj_weight = NULL;
-    free(w->mlp_fc1_weight);   w->mlp_fc1_weight   = NULL;
-    free(w->mlp_fc2_weight);   w->mlp_fc2_weight   = NULL;
-}
-
-/* Quantize ViT weights F32 → Q8_0 (weight-only). See definition below. */
-static void st_vision_quantize_q8(STVisionWeights *w, const STModelConfig *cfg);
-
-int st_vision_load_weights(STVisionWeights *w, const STModelConfig *cfg) {
-    /* This function loads weights from safetensors.
-     * We use the generic st_load_tensor to load named tensors.
-     * The visual tensors are named like:
-     *   model.visual.patch_embed.proj.weight
-     *   model.visual.patch_embed.proj.bias
-     *   model.visual.pos_embed.weight (or just pos_embed)
-     *   model.visual.blocks.{N}.attn.qkv.weight
-     *   model.visual.blocks.{N}.attn.qkv.bias
-     *   model.visual.blocks.{N}.attn.proj.weight
-     *   model.visual.blocks.{N}.attn.proj.bias
-     *   model.visual.blocks.{N}.norm1.weight
-     *   model.visual.blocks.{N}.norm1.bias
-     *   model.visual.blocks.{N}.norm2.weight
-     *   model.visual.blocks.{N}.norm2.bias
-     *   model.visual.blocks.{N}.mlp.linear_fc1.weight
-     *   model.visual.blocks.{N}.mlp.linear_fc1.bias
-     *   model.visual.blocks.{N}.mlp.linear_fc2.weight
-     *   model.visual.blocks.{N}.mlp.linear_fc2.bias
-     *   model.visual.merger.norm.weight
-     *   model.visual.merger.norm.bias
-     *   model.visual.merger.linear_fc1.weight
-     *   model.visual.merger.linear_fc1.bias
-     *   model.visual.merger.linear_fc2.weight
-     *   model.visual.merger.linear_fc2.bias
-     *   model.visual.deepstack_merger_list.{M}.*
-     */
-    int vh = cfg->vis_hidden;
-    int vd = cfg->vis_depth;
-    int vf = cfg->vis_ffn;
-    char name[256];
-    int expected;
-
-    /* --- Patch embedding --- */
-    /* Transposed: Conv weight [out, in, kt, kh, kw] → need to load correctly */
-    /* For now, load into flat buffer; the actual conv operation handles layout */
-    expected = (int)((size_t)vh * 3 * cfg->vis_temporal * cfg->vis_patch * cfg->vis_patch);
-    snprintf(name, sizeof(name), "model.visual.patch_embed.proj.weight");
-    if (st_load_tensor(cfg, name, w->patch_embed_weight, expected) != 0) {
-        fprintf(stderr, "[VIS] Failed to load %s\n", name);
-        return -1;
-    }
-    snprintf(name, sizeof(name), "model.visual.patch_embed.proj.bias");
-    if (st_load_tensor(cfg, name, w->patch_embed_bias, vh) != 0) {
-        fprintf(stderr, "[VIS] Warning: no patch_embed bias\n");
-    }
-
-    /* --- Position embedding (try both names) --- */
-    expected = cfg->vis_max_pos * vh;
-    snprintf(name, sizeof(name), "model.visual.pos_embed.weight");
-    if (st_load_tensor(cfg, name, w->pos_embed, expected) != 0) {
-        /* Try alternate name */
-        snprintf(name, sizeof(name), "model.visual.position_embedding.weight");
-        if (st_load_tensor(cfg, name, w->pos_embed, expected) != 0) {
-            fprintf(stderr, "[VIS] Warning: no position embedding found\n");
-        }
-    }
-
-    /* --- ViT blocks --- */
-    for (int l = 0; l < vd; l++) {
-        /* norm1 */
-        snprintf(name, sizeof(name), "model.visual.blocks.%d.norm1.weight", l);
-        st_load_tensor(cfg, name, w->norm1_weight + (size_t)l * vh, vh);
-        snprintf(name, sizeof(name), "model.visual.blocks.%d.norm1.bias", l);
-        st_load_tensor(cfg, name, w->norm1_bias + (size_t)l * vh, vh);
-
-        /* norm2 */
-        snprintf(name, sizeof(name), "model.visual.blocks.%d.norm2.weight", l);
-        st_load_tensor(cfg, name, w->norm2_weight + (size_t)l * vh, vh);
-        snprintf(name, sizeof(name), "model.visual.blocks.%d.norm2.bias", l);
-        st_load_tensor(cfg, name, w->norm2_bias + (size_t)l * vh, vh);
-
-        /* attn.qkv */
-        expected = (int)((size_t)vh * 3 * vh);
-        snprintf(name, sizeof(name), "model.visual.blocks.%d.attn.qkv.weight", l);
-        st_load_tensor(cfg, name, w->attn_qkv_weight + (size_t)l * vh * 3 * vh, expected);
-
-        snprintf(name, sizeof(name), "model.visual.blocks.%d.attn.qkv.bias", l);
-        st_load_tensor(cfg, name, w->attn_qkv_bias + (size_t)l * 3 * vh, 3 * vh);
-
-        /* attn.proj */
-        expected = vh * vh;
-        snprintf(name, sizeof(name), "model.visual.blocks.%d.attn.proj.weight", l);
-        st_load_tensor(cfg, name, w->attn_proj_weight + (size_t)l * vh * vh, expected);
-        snprintf(name, sizeof(name), "model.visual.blocks.%d.attn.proj.bias", l);
-        st_load_tensor(cfg, name, w->attn_proj_bias + (size_t)l * vh, vh);
-
-        /* mlp linear_fc1 (gate+up fused for SwiGLU-style, but ViT uses GELU) */
-        expected = (int)((size_t)vf * vh);
-        snprintf(name, sizeof(name), "model.visual.blocks.%d.mlp.linear_fc1.weight", l);
-        st_load_tensor(cfg, name, w->mlp_fc1_weight + (size_t)l * vf * vh, expected);
-        snprintf(name, sizeof(name), "model.visual.blocks.%d.mlp.linear_fc1.bias", l);
-        st_load_tensor(cfg, name, w->mlp_fc1_bias + (size_t)l * vf, vf);
-
-        /* mlp linear_fc2 (standard GELU, fc2: vf → vh) */
-        expected = (int)((size_t)vh * vf);
-        snprintf(name, sizeof(name), "model.visual.blocks.%d.mlp.linear_fc2.weight", l);
-        st_load_tensor(cfg, name, w->mlp_fc2_weight + (size_t)l * vh * vf, expected);
-        snprintf(name, sizeof(name), "model.visual.blocks.%d.mlp.linear_fc2.bias", l);
-        st_load_tensor(cfg, name, w->mlp_fc2_bias + (size_t)l * vh, vh);
-    }
-
-    /* --- Main merger --- */
-    int merge_in = vh * cfg->vis_merge * cfg->vis_merge;
-    int merge_mid = merge_in;
-    /* Per-chunk LayerNorm: weight/bias size is vh (applied per-patch, not to concat) */
-    snprintf(name, sizeof(name), "model.visual.merger.norm.weight");
-    st_load_tensor(cfg, name, w->merger_norm_weight, vh);
-    snprintf(name, sizeof(name), "model.visual.merger.norm.bias");
-    st_load_tensor(cfg, name, w->merger_norm_bias, vh);
-    snprintf(name, sizeof(name), "model.visual.merger.linear_fc1.weight");
-    st_load_tensor(cfg, name, w->merger_fc1_weight, merge_in * merge_mid);
-    snprintf(name, sizeof(name), "model.visual.merger.linear_fc1.bias");
-    st_load_tensor(cfg, name, w->merger_fc1_bias, merge_mid);
-    snprintf(name, sizeof(name), "model.visual.merger.linear_fc2.weight");
-    st_load_tensor(cfg, name, w->merger_fc2_weight, merge_mid * cfg->vis_out_dim);
-    snprintf(name, sizeof(name), "model.visual.merger.linear_fc2.bias");
-    st_load_tensor(cfg, name, w->merger_fc2_bias, cfg->vis_out_dim);
-
-    /* --- DeepStack mergers (input = merged features, dim = merge_in = 4608) --- */
-    int ds_mid = merge_in;  /* deepstack intermediate dim */
-    for (int m = 0; m < cfg->vis_ds_count; m++) {
-        snprintf(name, sizeof(name), "model.visual.deepstack_merger_list.%d.norm.weight", m);
-        st_load_tensor(cfg, name, w->ds_norm_weight + (size_t)m * merge_in, merge_in);
-        snprintf(name, sizeof(name), "model.visual.deepstack_merger_list.%d.norm.bias", m);
-        st_load_tensor(cfg, name, w->ds_norm_bias + (size_t)m * merge_in, merge_in);
-        snprintf(name, sizeof(name), "model.visual.deepstack_merger_list.%d.linear_fc1.weight", m);
-        st_load_tensor(cfg, name, w->ds_fc1_weight + (size_t)m * merge_in * ds_mid, merge_in * ds_mid);
-        snprintf(name, sizeof(name), "model.visual.deepstack_merger_list.%d.linear_fc1.bias", m);
-        st_load_tensor(cfg, name, w->ds_fc1_bias + (size_t)m * ds_mid, ds_mid);
-        snprintf(name, sizeof(name), "model.visual.deepstack_merger_list.%d.linear_fc2.weight", m);
-        st_load_tensor(cfg, name, w->ds_fc2_weight + (size_t)m * ds_mid * cfg->vis_out_dim,
-                       ds_mid * cfg->vis_out_dim);
-        snprintf(name, sizeof(name), "model.visual.deepstack_merger_list.%d.linear_fc2.bias", m);
-        st_load_tensor(cfg, name, w->ds_fc2_bias + (size_t)m * cfg->vis_out_dim, cfg->vis_out_dim);
-    }
-
-    printf("[VIS] Vision weights loaded successfully.\n");
-    st_vision_quantize_q8(w, cfg);
-    return 0;
-}
-
-/* Quantize the ViT weight matrices F32 → Q8_0 (weight-only, axiom:
- * blas_precision_efficiency_tradeoff). Call after st_vision_load_weights.
- * fc2's col dim (vis_ffn=4304) is not a multiple of 32, so each row is
- * padded with zeros to vf_pad before quantization (scale unaffected). */
-static void st_vision_quantize_q8(STVisionWeights *w, const STModelConfig *cfg) {
-    int vh = cfg->vis_hidden;
-    int vd = cfg->vis_depth;
-    int vf = cfg->vis_ffn;
-    int vf_pad = VF_PAD(vf);
-
-    for (int l = 0; l < vd; l++) {
-        /* QKV [3*vh, vh] — cols 32-aligned */
-        f32_to_q8_0(w->q8_attn_qkv_weight + (size_t)l * VQ8_BYTES((size_t)vh * 3 * vh),
-                    w->attn_qkv_weight + (size_t)l * vh * 3 * vh,
-                    vh * 3 * vh);
-        /* proj [vh, vh] */
-        f32_to_q8_0(w->q8_attn_proj_weight + (size_t)l * VQ8_BYTES((size_t)vh * vh),
-                    w->attn_proj_weight + (size_t)l * vh * vh,
-                    vh * vh);
-        /* fc1 [vf, vh] — cols 32-aligned */
-        f32_to_q8_0(w->q8_mlp_fc1_weight + (size_t)l * VQ8_BYTES((size_t)vf * vh),
-                    w->mlp_fc1_weight + (size_t)l * vf * vh,
-                    vf * vh);
-        /* fc2 [vh, vf] — pad each row to vf_pad */
-        for (int r = 0; r < vh; r++) {
-            float tmp[4352];  /* vf_pad=4320 max for vis_ffn <= 4352 */
-            memcpy(tmp, w->mlp_fc2_weight + (size_t)l * vh * vf + (size_t)r * vf,
-                   (size_t)vf * sizeof(float));
-            memset(tmp + vf, 0, (size_t)(vf_pad - vf) * sizeof(float));
-            f32_to_q8_0(w->q8_mlp_fc2_weight + (size_t)l * VQ8_BYTES((size_t)vh * vf_pad)
-                            + (size_t)r * VQ8_BYTES(vf_pad),
-                        tmp, vf_pad);
-        }
-    }
-    fprintf(stderr, "[VIS] ViT weights quantized to Q8_0 (fc2 pad %d → %d)\n",
-            vf, vf_pad);
-}
-
-/* ================================================================
  * Runtime State
  * ================================================================ */
 
@@ -584,6 +295,12 @@ static void vvis_vit_rope(void *ctx_, int p) {
  * 8.6 GB/PB per layer. scores[] = per-thread [PB * n_patches] scratch. */
 #define VVIS_ATTN_PB 32
 
+/* acc/accv 是 [v4n] 个 float32x4 的向量累加器；v4n = vis_head_dim/4。
+ * 历史代码按 2B 的 vis head_dim=64 写死 16 个向量；Qwen3-VL 8B/32B 的
+ * vis head_dim=72 → v4n=18 > 16 会越界写栈（实测 stack smashing，
+ * 2026-09-07）。容量放宽到 32 个向量（head_dim<=128 全覆盖）。 */
+#define VVIS_ATTN_ACC 32
+
 static void vvis_vit_attn_block(void *ctx_, int pb) {
     vvis_vit_ctx *c = (vvis_vit_ctx *)ctx_;
     int tid = vllm_tp_worker_id();
@@ -604,7 +321,8 @@ static void vvis_vit_attn_block(void *ctx_, int pb) {
             const float *k_s = k_h + (size_t)s * hd;
             for (int q = 0; q < pb_n; q++) {
                 const float *q_h = q_h0 + (size_t)(p0 + q) * hd;
-                float32x4_t acc[16];
+#if ST_HAVE_NEON
+                float32x4_t acc[VVIS_ATTN_ACC];
                 for (int i = 0; i < v4n; i++)
                     acc[i] = vmulq_f32(vld1q_f32(q_h + i * 4), vld1q_f32(k_s + i * 4));
                 for (int w = v4n / 2; w >= 1; w >>= 1)
@@ -615,6 +333,11 @@ static void vvis_vit_attn_block(void *ctx_, int pb) {
                 scores[(size_t)q * n_patches + s] =
                     (vget_lane_f32(lo, 0) + vget_lane_f32(lo, 1) +
                      vget_lane_f32(hi, 0) + vget_lane_f32(hi, 1)) * c->scale;
+#else
+                float dot = 0.0f;
+                for (int i = 0; i < hd; i++) dot += q_h[i] * k_s[i];
+                scores[(size_t)q * n_patches + s] = dot * c->scale;
+#endif
             }
         }
         for (int q = 0; q < pb_n; q++)
@@ -623,7 +346,8 @@ static void vvis_vit_attn_block(void *ctx_, int pb) {
         /* attn@V: stream values once (contiguous), accumulate all PB queries. */
         const float *v_h = c->qkv_buf + ((size_t)(2 * nh + h)) * slab;  /* seg 2 */
         for (int q = 0; q < pb_n; q++) {
-            float32x4_t accv[16];
+#if ST_HAVE_NEON
+            float32x4_t accv[VVIS_ATTN_ACC];
             for (int i = 0; i < v4n; i++) accv[i] = vdupq_n_f32(0.0f);
             const float *sq = scores + (size_t)q * n_patches;
             for (int s = 0; s < n_patches; s++) {
@@ -634,6 +358,16 @@ static void vvis_vit_attn_block(void *ctx_, int pb) {
             }
             float *out_h = c->attn_buf + (size_t)(p0 + q) * vh + h * hd;
             for (int i = 0; i < v4n; i++) vst1q_f32(out_h + i * 4, accv[i]);
+#else
+            const float *sq = scores + (size_t)q * n_patches;
+            float *out_h = c->attn_buf + (size_t)(p0 + q) * vh + h * hd;
+            for (int i = 0; i < hd; i++) {
+                float a = 0.0f;
+                for (int s = 0; s < n_patches; s++)
+                    a += sq[s] * v_h[(size_t)s * hd + i];
+                out_h[i] = a;
+            }
+#endif
         }
     }
 }

@@ -18,6 +18,23 @@ header h1{font-size:16px;margin:0;font-weight:600}
 .badge.stop{color:#7a8ba0;border-color:var(--bd)}
 .badge.warn{color:var(--warn);border-color:var(--warn)}
 .badge.bad{color:var(--bad);border-color:var(--bad)}
+/* 平台适用性标签：RAM=省内存场景有效 / x86=已在本地 x86 复现 / x86no=x86 上无效或负收益 */
+.ptag{display:inline-block;padding:0 6px;border-radius:8px;font-size:10.5px;line-height:16px;
+      border:1px solid var(--bd);color:var(--tx2);margin-left:5px;vertical-align:1px;white-space:nowrap}
+.ptag.ram{color:var(--warn);border-color:var(--warn)}
+.ptag.x86{color:var(--acc);border-color:var(--acc)}
+.ptag.x86no{color:var(--bad);border-color:var(--bad)}
+/* 有效优化组合表 */
+table.combos{width:100%;border-collapse:collapse;font-size:12px;margin-top:4px}
+table.combos th,table.combos td{border-bottom:1px solid var(--bd);padding:6px 8px;text-align:left;vertical-align:top}
+table.combos th{color:var(--tx2);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.4px}
+table.combos tr:last-child td{border-bottom:none}
+table.combos tr:hover td{background:var(--panel2)}
+table.combos td.ev{color:var(--ok);white-space:nowrap}
+table.combos td.act{white-space:nowrap;text-align:right}
+table.combos button{padding:3px 10px;font-size:12px}
+table.combos .name{font-weight:600}
+table.combos .why{color:var(--tx2)}
 main{display:grid;grid-template-columns:1fr 1fr;gap:14px;padding:14px 20px;max-width:1400px;margin:0 auto}
 @media(max-width:980px){main{grid-template-columns:1fr}}
 .card{background:var(--panel);border:1px solid var(--bd);border-radius:10px;padding:14px;display:flex;flex-direction:column;gap:4px}
@@ -81,7 +98,6 @@ a{color:var(--acc)}
   <span id="cfgBadge" class="badge">配置: -</span>
   <span style="flex:1"></span>
   <a class="navlink" href="/chat" target="_blank">对话页 /chat</a>
-  <a class="navlink" href="/convert/" target="_blank">转换工具 /convert/</a>
   <span id="clock" style="color:var(--tx2);font-size:12px"></span>
 </header>
 <main>
@@ -117,14 +133,12 @@ a{color:var(--acc)}
         <option value="q8">q8  (Q8_0, 9.8GB)</option>
         <option value="g256">g256 (NPU K-block 256, 离线基准)</option>
       </select></label>
-    <label class="fld"><span class="t">加载格式 (优先候选)</span>
+    <label class="fld"><span class="t">加载格式</span>
       <select id="f_format_prio">
-        <option value="auto">自动 (VQF &gt; GGUF &gt; safetensors)</option>
-        <option value="vqf">VQF 优先 (自研格式，mmap 秒级加载)</option>
-        <option value="safetensors">safetensors 优先 (原始 HF 权重)</option>
-        <option value="gguf">GGUF 优先 (llama.cpp 生态)</option>
+        <option value="auto">自动 (VQF，自动定位 model.vqf)</option>
+        <option value="vqf">VQF (自研单文件，mmap 秒级加载)</option>
       </select></label>
-    <div style="font-size:11px;color:var(--tx2)">自动模式按目录内 model.vqf / .gguf 文件自动检测；选定格式不存在时回退到自动顺序。</div>
+    <div style="font-size:11px;color:var(--tx2)">引擎为纯 VQF 运行时：模型目录内须放置自研 VQF 单文件 (model.vqf)，加载由 mmap 完成。</div>
     <div style="margin-top:4px;padding:0 10px;border-left:3px solid var(--bd)">
       <div class="sec">加载 / 卸载策略</div>
       <div class="chkrow"><input type="checkbox" id="f_auto_load"><label for="f_auto_load">用时加载 (--load-on-use)：模型未加载时收到请求自动加载</label></div>
@@ -132,6 +146,12 @@ a{color:var(--acc)}
       <div style="font-size:11px;color:var(--tx2)">自动卸载开启后隐含启用用时加载：加载 → 使用 → 空闲 N 秒自动卸载（释放权重+KV 内存）→ 下个请求自动重载。</div>
       <label class="fld"><span class="t">最小空闲内存 MB (--min-free-mb，低于则拒绝新请求)</span><input type="number" id="f_min_free_mb" min="0" value="512"></label>
       <div class="chkrow"><input type="checkbox" id="f_vqf_prewarm"><label for="f_vqf_prewarm">VQF 加载后预热 (VLLM_VQF_PREWARM)：后台把 mmap 权重页拉进 RAM，降低首次推理延迟</label></div>
+      <div class="chkrow" style="flex-wrap:wrap">
+        <input type="checkbox" id="f_vqf_stream"><label for="f_vqf_stream">VQF 分层驻留 (VLLM_VQF_STREAM)：AirLLM 型逐层驱逐/预读，RSS 大幅下降</label>
+        <span style="font-size:11px;color:var(--tx2);margin-left:2px">常驻层窗口</span>
+        <input type="number" id="f_vqf_stream_keep" min="1" max="32" value="1" style="width:56px" title="N：允许常驻的落后层数，1=只留当前层">
+      </div>
+      <div style="font-size:11px;color:var(--tx2)">仅明文 VQF 生效（加密模型自动拒绝）；embed/final_norm/lm_head/vision 恒常驻，只驱逐整层权重段，推理位级一致。模型不超过内存预算时逐出反而自伤，需按需开启。</div>
       <label class="fld"><span class="t">VQF 加密口令 (VLLM_VQF_KEY，留空=明文)</span>
         <input type="password" id="f_vqf_key" placeholder="加载加密 VQF 时填写" autocomplete="off"></label>
     </div>
@@ -154,15 +174,16 @@ a{color:var(--acc)}
       <span id="devWmodeHint" style="font-size:11px;color:var(--tx2);align-self:center"></span>
     </div>
     <div class="sec">量化与缓存</div>
-    <div class="chkrow"><input type="checkbox" id="f_kv_q4"><label for="f_kv_q4">KV 量化 Q4 (--kv-q4, 内存 1.65x 压缩, decode +28%)</label></div>
+    <div class="chkrow"><input type="checkbox" id="f_kv_q4"><label for="f_kv_q4">KV 量化 Q4 (--kv-q4, 内存 1.65x 压缩, decode +28%)<span class="ptag ram">省 RAM</span></label></div>
+    <div class="chkrow"><input type="checkbox" id="f_prefix_kv"><label for="f_prefix_kv">KV 前缀复用 (默认开，关=--no-prefix-kv)：连续请求共享上一段 KV 前缀，P4 多模态/文本前缀跳过 prefill<span class="ptag x86">x86 复核 −97%</span></label></div>
     <div class="chkrow"><input type="checkbox" id="f_prefix_cache"><label for="f_prefix_cache">前缀缓存 (--prefix-cache)</label></div>
     <div class="chkrow"><input type="checkbox" id="f_prefill_q8"><label for="f_prefill_q8">Prefill Q8 (--prefill-q8)</label></div>
-    <div class="chkrow"><input type="checkbox" id="f_sparse_attn"><label for="f_sparse_attn">稀疏注意力 (--sparse-attn)</label></div>
-    <label class="fld"><span class="t">sparse-k</span><input type="number" id="f_sparse_k" min="1" value="32"></label>
-    <div class="chkrow"><input type="checkbox" id="f_disk_kv"><label for="f_disk_kv">磁盘 KV 持久化 (--disk-kv，重启后跨进程复用对话前缀 KV)</label></div>
+    <div class="chkrow"><input type="checkbox" id="f_sparse_attn"><label for="f_sparse_attn">稀疏注意力 (--sparse-attn)<span class="ptag">长上下文</span><span class="ptag x86no">x86 总 prefill 仅 −6.7%</span></label></div>
+    <label class="fld"><span class="t">sparse-k（须 &lt; 上下文块数才生效，块大小 32）</span><input type="number" id="f_sparse_k" min="1" value="32"></label>
+    <div class="chkrow"><input type="checkbox" id="f_disk_kv"><label for="f_disk_kv">磁盘 KV 持久化 (--disk-kv，重启后跨进程复用对话前缀 KV)<span class="ptag ram">KV 落盘</span><span class="ptag x86">x86 复核 −97%</span></label></div>
     <label class="fld"><span class="t">KV checkpoint 目录</span><input type="text" id="f_disk_kv_dir" placeholder="kv_disk（引擎工作目录）"></label>
     <div class="sec">采样与推测解码</div>
-    <div class="chkrow"><input type="checkbox" id="f_spec"><label for="f_spec">推测解码 (--spec，n-gram 草稿 + 批量验证，仅贪婪模式)</label></div>
+    <div class="chkrow"><input type="checkbox" id="f_spec"><label for="f_spec">推测解码 (--spec，n-gram 草稿 + 批量验证，仅贪婪模式)<span class="ptag">须客户端传 top_p=1.0</span><span class="ptag x86no">x86 反慢 2.4×</span></label></div>
     <label class="fld"><span class="t">草稿长度 (--spec-k)</span><input type="number" id="f_spec_k" min="1" max="16" value="4"></label>
     <label class="fld"><span class="t">min-p 采样 (--min-p，0=关闭)</span><input type="number" id="f_min_p" min="0" max="1" step="0.01" value="0"></label>
   </div>
@@ -189,6 +210,19 @@ a{color:var(--acc)}
     <div class="chkrow"><input type="checkbox" id="f_tp_bind"><label for="f_tp_bind">线程亲和绑定 <b>(VLLM_TP_BIND)</b> — 默认关（实测关闭更快）</label></div>
     <label class="fld"><span class="t">线程池自旋预算 (VLLM_TP_SPIN，空 = 默认)</span><input type="text" id="f_tp_spin" placeholder="默认"></label>
     <label class="fld"><span class="t">Q4 decode 行分片 (VLLM_ROW_SLICE，空 = 自动全矩阵分片)</span><input type="text" id="f_row_slice" placeholder="auto"></label>
+  </div>
+
+  <!-- MoE 优化 (Qwen3-30B-A3B 稀疏专家) -->
+  <div class="card">
+    <h2>MoE 优化（稀疏专家）</h2>
+    <div class="sec">批式 prefill（跨 token 融合）</div>
+    <div class="chkrow"><input type="checkbox" id="f_moe_batch"><label for="f_moe_batch">MoE 跨 token 批式 <b>(VLLM_MOE_BATCH)</b> — 默认开：GATEUP 2.60×(t4) / 3.95×(t8)，与逐 token 路径位级一致；decode 不受影响</label></div>
+    <div class="sec">int8-dot 近似轨</div>
+    <div class="chkrow"><input type="checkbox" id="f_actq"><label for="f_actq">q4 专家 int8-dot 近似轨 <b>(VLLM_ACTQ)</b> — 默认关：<b>近似计算</b>（与精确轨非位级一致）；<b>批式生效的硬前提</b></label></div>
+    <div class="sec">并行与 SIMD</div>
+    <div class="chkrow"><input type="checkbox" id="f_moe_par"><label for="f_moe_par">专家并行 <b>(VLLM_MOE_PAR)</b> — 默认开；关闭回退串行专家循环</label></div>
+    <div class="chkrow"><input type="checkbox" id="f_moe_q4simd"><label for="f_moe_q4simd">q4 MoE 行组 SIMD <b>(VLLM_MOE_Q4SIMD)</b> — 默认开；关闭回退标量</label></div>
+    <div style="font-size:12px;color:var(--tx2);margin-top:6px">仅对 <b>q4 专家</b>生效（非 q4 自动回落逐 token）；标记「保存」后需重启引擎生效。参数口径见《核心性能参数配置注意事项.md》。</div>
   </div>
 
   <!-- NPU -->
@@ -222,20 +256,80 @@ a{color:var(--acc)}
   <!-- 长上下文淘汰 (L3) -->
   <div class="card">
     <h2>长上下文淘汰 (L3)</h2>
-    <div class="chkrow"><input type="checkbox" id="f_l3_evict"><label for="f_l3_evict">启用 L3 冷块淘汰 (--l3-evict，需配合稀疏注意力)</label></div>
+    <div class="chkrow"><input type="checkbox" id="f_l3_evict"><label for="f_l3_evict">启用 L3 冷块淘汰 (--l3-evict，需配合稀疏注意力)<span class="ptag ram">省 RAM</span></label></div>
+    <div class="chkrow"><input type="checkbox" id="f_l3_prefix_reuse"><label for="f_l3_prefix_reuse"><b>L3 前缀复用门 (VLLM_L3_PREFIX_REUSE)</b> — 让 L3 驱逐与 KV 前缀复用共存<span class="ptag x86">x86 复核 −96.9%</span><span class="ptag ram">省 RAM</span></label></div>
+    <div class="chkrow" id="p3warn" style="display:none;color:var(--warn);font-size:12px;line-height:1.6">
+      ⚠ 已开 <code>--l3-evict</code> 但未开 P3 门：<code>--prefix-kv</code> 会被静默打掉，多轮追问将全量重算 prefill。建议开启上面这项。
+    </div>
     <label class="fld"><span class="t">淘汰比例 (--l3-ratio)</span><input type="number" id="f_l3_ratio" min="0" max="0.99" step="0.05" value="0.75"></label>
-    <label class="fld"><span class="t">触发时机: 最小上下文长度 (--l3-min-seq)</span><input type="number" id="f_l3_min_seq" min="0" value="0"></label>
+    <label class="fld"><span class="t">触发时机: 最小上下文长度 (--l3-min-seq)</span><input type="number" id="f_l3_min_seq" min="0" value="128"></label>
     <label class="fld"><span class="t">淘汰缓存保存路径 (--l3-path)</span><input type="text" id="f_l3_path" placeholder="默认 kv_l3.bin（引擎工作目录）"></label>
     <label class="fld"><span class="t">最大保存大小 MB (--l3-max-size)</span><input type="number" id="f_l3_max_size" min="0" value="0"></label>
     <label class="fld"><span class="t">用户淘汰文件闲置 TTL 分钟 (--l3-user-ttl)</span><input type="number" id="f_l3_user_ttl" min="0" value="30"></label>
     <div style="font-size:11px;color:var(--tx2);line-height:1.7">
-      0 = prefill 后总是淘汰；N&gt;0 = 上下文达到 N tokens 才启动淘汰。<br>
-      路径可填任意磁盘挂载点（如 &lt;kv-dir&gt;/kv_l3.bin）；最大大小 0 = 不限制。<br>
-      每用户独立缓存文件，闲置超 TTL 分钟自动删除（0 = 不清理）。
+      0 = prefill 后总是淘汰；N&gt;0 = 上下文达到 N tokens 才启动淘汰（实测口径 128，越小越白付驱逐开销）。<br>
+      路径可填 eMMC 挂载点（如 /mnt/emmc/kv_l3.bin）；最大大小 0 = 不限制。<br>
+      每用户独立缓存文件，闲置超 TTL 分钟自动删除（0 = 不清理）。<br>
+      <b style="color:var(--warn)">开 --l3-evict 时务必同时开上面那项 P3 门，否则 KV 前缀复用会被静默打掉。</b>
     </div>
     <div class="row" style="margin-top:10px">
       <button id="btn_l3clear" class="danger">清空用户缓存</button>
       <div class="msg" id="l3msg"></div>
+    </div>
+  </div>
+
+  <!-- 有效优化组合（实测台账） -->
+  <div class="card" style="grid-column:1/-1">
+    <h2>有效优化组合（实测台账）<span class="sub">点「套用」把该组合填进表单；全部为同一二进制单开关 A/B 实测</span></h2>
+    <table class="combos">
+      <thead><tr>
+        <th style="width:15%">组合</th><th style="width:15%">适用场景</th>
+        <th style="width:33%">关键开关</th><th style="width:22%">实测收益</th>
+        <th style="width:9%">平台</th><th></th>
+      </tr></thead>
+      <tbody id="comboBody"></tbody>
+    </table>
+    <div style="font-size:11px;color:var(--tx2);line-height:1.9;margin-top:10px">
+      <b>平台标签</b>：
+      <span class="ptag ram">省 RAM</span> 内存受限场景有效 ·
+      <span class="ptag x86">x86 已复现</span> 已在本地 x86 独立复现 ·
+      <span class="ptag x86no">x86 无效</span> x86 上无收益/负收益（<b>板端 ARM 数据仍以板端为准</b>）<br>
+      <b>三条铁律</b>：① 开 <code>--l3-evict</code> 必须同时开 <code>VLLM_L3_PREFIX_REUSE=1</code>；
+      ② <code>--sparse-k</code> 不得低于 32；③ 加密 VQF 只能全层驻留（不可用逐层 <code>VLLM_VQF_STREAM</code>）。<br>
+      <b>互斥</b>：<code>--kv-q4</code> × <code>--sparse-attn</code>；<code>--spec</code> × {<code>--sparse-attn</code>, <code>--l3-evict</code>, <code>--batch-max</code>}。
+    </div>
+    <div class="msg" id="combomsg"></div>
+  </div>
+
+  <!-- 内存驻留策略（档位阶梯 · 运行时动态） -->
+  <div class="card">
+    <h2>内存驻留策略（档位阶梯 · 运行时动态）</h2>
+    <div class="sec">当前档位</div>
+    <div style="font-size:12px;line-height:1.8" id="resStatus">-</div>
+    <div class="sec">空闲自动降级（模型级全局空闲 → 逐级降档）</div>
+    <div class="chkrow"><input type="checkbox" id="f_res_auto"><label for="f_res_auto">启用空闲逐级自动降级（客户多久没交互：全层驻留 → KV逐层淘汰 → 权重窗口 → 初始层 → KV落盘退出）</label></div>
+    <label class="fld"><span class="t">L4→L3 KV 逐层淘汰：空闲等待秒 (0=停在 L4)</span><input type="number" id="f_res_idle4" min="0" value="300"></label>
+    <label class="fld"><span class="t">L3→L2 权重窗口：空闲等待秒 (0=停在 L3)</span><input type="number" id="f_res_idle3" min="0" value="900"></label>
+    <label class="fld"><span class="t">L2→L1 初始层：空闲等待秒 (0=停在 L2)</span><input type="number" id="f_res_idle2" min="0" value="1800"></label>
+    <label class="fld"><span class="t">L1→L0 KV落盘+卸载：空闲等待秒 (0=停在 L1)</span><input type="number" id="f_res_idle1" min="0" value="3600"></label>
+    <label class="fld"><span class="t">L2 权重窗口保留层数 w_keep（保留层 0..N）</span><input type="number" id="f_res_wkeep" min="0" value="8"></label>
+    <div class="sec">内存紧张主动降级（软水位，低于自动降一档）</div>
+    <label class="fld"><span class="t">软水位 MB（0=关闭；与"核心配置-最低可用内存"硬 503 配合）</span><input type="number" id="f_res_soft" min="0" value="0"></label>
+    <label class="fld"><span class="t">允许自动降到的档位（0=可卸载 · 3=仅KV淘汰 · 4=不自动降）</span><input type="number" id="f_res_lowlvl" min="0" max="4" value="0"></label>
+    <div class="row" style="margin-top:10px">
+      <button id="btn_res_cfg" class="primary">应用策略参数</button>
+      <button id="btn_res_l4" title="KV 全驻留 + 权重不主动释放">L4 全层驻留</button>
+      <button id="btn_res_l3" title="prefill 后按重要性逐层淘汰冷块到磁盘 (需 --sparse-attn 配合自动开)">L3 KV淘汰</button>
+      <button id="btn_res_l2" title="释放 layer&gt;w_keep 权重物理页 (需明文 VQF + VLLM_VQF_STREAM)">L2 权重窗口</button>
+      <button id="btn_res_l1" title="从高向低释放到只剩初始层">L1 初始层</button>
+      <button id="btn_res_l0" class="danger" title="KV 落盘(磁盘KV开时)后整模卸载">L0 落盘+退出</button>
+    </div>
+    <div class="msg" id="resmsg"></div>
+    <div style="font-size:11px;color:var(--tx2);line-height:1.7">
+      档位说明：<b>L4</b> 全程全层驻留（默认，最快）；<b>L3</b> KV 逐层淘汰（前缀复用随
+      L3 开启而关闭）；<b>L2</b> 权重窗口（madvise 释放物理页，缺页自动回驻，数值零影响，仅明文 VQF +
+      启动 VLLM_VQF_STREAM 分层模式可用）；<b>L1</b> 权重只剩初始层；<b>L0</b> 整模卸载（下次请求/加载自动回 L4）。
+      权重档（L2/L1）不可用时自动跳过直达 L0；升降档即时生效；升档只加内存不丢上下文，L3→L4 关 L3 会重置当前上下文（磁盘 KV 开时可恢复）。
     </div>
   </div>
 
@@ -252,7 +346,7 @@ a{color:var(--acc)}
         <option value="acc">最高精度: 全 Q8（8x8）</option>
         <option value="mem">低内存: 全 Q4 + KV Q4</option>
         <option value="npu">NPU 卸载: dual + NPU load=1</option>
-        <option value="long">长上下文 (≥4K): 稀疏注意力 + L3 冷块淘汰，decode 快 3 倍</option>
+        <option value="long">长上下文 + 多轮: 稀疏注意力 + L3 冷块淘汰 + P3 前缀复用门（必备，decode 快 3 倍）</option>
       </select></label>
     <div class="row">
       <button id="btn_preset">应用预设</button>
@@ -262,11 +356,6 @@ a{color:var(--acc)}
     <div class="row">
       <button id="btn_loadcfg">载入当前配置</button>
       <button id="btn_savecfg" class="primary">保存配置</button>
-    </div>
-    <div class="sec">工具</div>
-    <div style="font-size:13px;line-height:1.8">
-      <a href="/convert/" target="_blank" style="font-weight:600">打开模型转换工具 /convert/</a>
-      <div style="font-size:11px;color:var(--tx2)">safetensors 目录 / GGUF 文件 → 引擎原生 VQF 单文件（独立子进程执行）</div>
     </div>
     <div class="msg" id="cfgmsg"></div>
   </div>
@@ -364,6 +453,75 @@ function updateButtons(s){
   $("btn_stop").disabled = !up;
   $("btn_restart").disabled = !up;
 }
+function vqfStreamText(s){
+  const v = s.vqf_stream;
+  if (!v) return "关闭";
+  if (!v.on) return "关闭";
+  return "启用 · 常驻窗口 keep=" + v.keep + " · " + v.n_layers + " 层 × " +
+         v.n_segments + " 段 · 每层可驱逐 " +
+         (v.per_layer_mb ? v.per_layer_mb.toFixed(1) : "?") + " MB" +
+         (v.cold ? " · 冷驱逐(含页缓存)" : "");
+}
+/* ---------- 内存驻留策略（档位阶梯）UI ---------- */
+const RES_LVL_CN = ["L0 已卸载(落盘善后)", "L1 初始层(只剩初始层权重)",
+                    "L2 权重窗口(w_keep)", "L3 KV逐层淘汰", "L4 全程全层驻留"];
+function resRender(r){
+  if (!r) return;
+  const wc = r.w_capable ? "权重分层可用" : "权重分层未启用（L2/L1 自动跳到 L0）";
+  $("resStatus").innerHTML =
+    "当前档位：<b>" + RES_LVL_CN[r.cur_level] + "</b>" +
+    " <span style='color:var(--tx2)'>(cfg L" + r.cfg_level + " · L3 " +
+    (r.l3_evict ? "开" : "关") + " · 自动降级 " + r.steps + " 次)</span><br>" +
+    "空闲等待：L4→L3 " + r.idle_s[0] + "s · L3→L2 " + r.idle_s[1] + "s · " +
+    "L2→L1 " + r.idle_s[2] + "s · L1→L0 " + r.idle_s[3] + "s" +
+    " · 自动空闲降级 " + (r.auto_idle ? "开" : "关") + "<br>" +
+    "软水位 " + r.mem_soft_mb + " MB · 最低允许档 L" + r.mem_low_lvl +
+    " · " + wc;
+  $("f_res_auto").checked = !!r.auto_idle;
+  $("f_res_idle4").value = r.idle_s[0];
+  $("f_res_idle3").value = r.idle_s[1];
+  $("f_res_idle2").value = r.idle_s[2];
+  $("f_res_idle1").value = r.idle_s[3];
+  $("f_res_wkeep").value = r.w_keep;
+  $("f_res_soft").value = r.mem_soft_mb;
+  $("f_res_lowlvl").value = r.mem_low_lvl;
+}
+async function opResCfg(){
+  const body = {
+    auto_idle: $("f_res_auto").checked,
+    idle_s: [+$("f_res_idle4").value||0, +$("f_res_idle3").value||0,
+             +$("f_res_idle2").value||0, +$("f_res_idle1").value||0],
+    w_keep: +$("f_res_wkeep").value || 0,
+    mem_soft_mb: +$("f_res_soft").value || 0,
+    mem_low_lvl: +$("f_res_lowlvl").value || 0
+  };
+  const m = $("resmsg");
+  try {
+    const r = await eng("/admin/api/policy/config",
+      {method:"POST", headers:{"Content-Type":"application/json"},
+       body: JSON.stringify(body)});
+    m.textContent = (r && r.error) ? ("失败: " + r.error)
+                                   : ((r && r.note) || "策略参数已应用");
+    m.style.color = (r && r.error) ? "var(--bad,#d44)" : "";
+    loadStatus();
+  } catch (e) { m.textContent = "请求失败: " + e; }
+}
+async function opResSet(level){
+  const m = $("resmsg");
+  try {
+    const r = await eng("/admin/api/policy/set",
+      {method:"POST", headers:{"Content-Type":"application/json"},
+       body: JSON.stringify({level: level})});
+    if (r && r.ok){
+      m.textContent = "已切换至 " + (r.level_name || ("L" + level));
+      m.style.color = "";
+    } else {
+      m.textContent = "切换失败: " + (r && r.error ? r.error : "未知错误");
+      m.style.color = "var(--bad,#d44)";
+    }
+    loadStatus();
+  } catch (e) { m.textContent = "请求失败: " + e; }
+}
 async function loadStatus(){
   let ok = false;
   let s = null;
@@ -382,6 +540,9 @@ async function loadStatus(){
       ["模型类型", s.model_name || (s.load_state === 2 ? (s.model_id || "-") : "未加载"), ""],
       ["模型目录", s.model_dir || "-", "small"],
       ["量化模式", s.wmode || "-", ""],
+      ["VQF 分层驻留", vqfStreamText(s), ""],
+      ["驻留策略档位", s.res ? (["L0 卸载","L1 初始层","L2 权重窗口","L3 KV淘汰","L4 全层驻留"][s.res.cur_level] + (s.res.auto_idle ? " · 自动降级" : "")) : "-", ""],
+      ["KV 前缀复用", s.prefix_kv ? "开（多模态/文本共用）" : "关 (--no-prefix-kv)", ""],
       ["上次启动耗时", s.last_load_ms ? (s.last_load_ms + " ms") : "-", ""],
       ["卸载次数", (s.unload_count||0) + (s.auto_unload_count ? ("（自动 " + s.auto_unload_count + "）") : ""), ""],
       ["按需加载/卸载", (s.auto_load ? "用时加载 开" : "用时加载 关") + " / " + (s.auto_unload_s > 0 ? ("空闲 " + s.auto_unload_s + "s 卸载") : "不用时卸载 关"), ""],
@@ -407,6 +568,7 @@ async function loadStatus(){
       g.appendChild(d);
     }
     $("cfgPath").textContent = s.config_path || "-";
+    resRender(s.res);   /* 内存驻留策略：状态 + 表单回填 */
     renderLoadBar(s);
     const mi = $("modelInfo");
     if (s.load_state === 2) mi.textContent = "✓ " + (s.model_name || s.model_id || "已加载");
@@ -440,6 +602,7 @@ function fillForm(c){
   $("f_wmode").value = c.wmode || "dual";
   $("f_kv_q4").checked = !!c.kv_q4;
   $("f_prefix_cache").checked = !!c.prefix_cache;
+  $("f_prefix_kv").checked = c.prefix_kv !== false;
   $("f_prefill_q8").checked = !!c.prefill_q8;
   $("f_sparse_attn").checked = !!c.sparse_attn;
   $("f_sparse_k").value = c.sparse_k || 32;
@@ -449,8 +612,9 @@ function fillForm(c){
   $("f_spec_k").value = c.spec_k || 4;
   $("f_min_p").value = c.min_p == null ? 0 : c.min_p;
   $("f_l3_evict").checked = !!c.l3_evict;
+  $("f_l3_prefix_reuse").checked = ev.VLLM_L3_PREFIX_REUSE === "1";
   $("f_l3_ratio").value = c.l3_ratio == null ? 0.75 : c.l3_ratio;
-  $("f_l3_min_seq").value = c.l3_min_seq || 0;
+  $("f_l3_min_seq").value = c.l3_min_seq == null ? 128 : c.l3_min_seq;
   $("f_l3_path").value = c.l3_path || "";
   $("f_l3_max_size").value = c.l3_max_size || 0;
   $("f_l3_user_ttl").value = c.l3_user_ttl == null ? 30 : c.l3_user_ttl;
@@ -468,6 +632,9 @@ function fillForm(c){
   $("f_omp").value = (c.env && c.env.OMP_NUM_THREADS) ? c.env.OMP_NUM_THREADS : "4";
   const ev = c.env || {};
   $("f_vqf_prewarm").checked = ev.VLLM_VQF_PREWARM === "1";
+  const vqs = parseInt(ev.VLLM_VQF_STREAM || "0", 10);
+  $("f_vqf_stream").checked = vqs > 0;
+  $("f_vqf_stream_keep").value = vqs > 0 ? String(vqs) : "1";
   $("f_vqf_key").value = ev.VLLM_VQF_KEY || "";
   $("f_q8_8x8").checked = ev.VLLM_Q8_8X8 !== "0";
   $("f_q8_repack").checked = ev.VLLM_DISABLE_Q8_REPACK !== "1";
@@ -477,7 +644,13 @@ function fillForm(c){
   $("f_tp_bind").checked = ev.VLLM_TP_BIND === "1";
   $("f_tp_spin").value = ev.VLLM_TP_SPIN || "";
   $("f_row_slice").value = ev.VLLM_ROW_SLICE || "";
+  /* MoE 优化：默认开项用「!== "0"」，默认关项用「=== "1"」 */
+  $("f_moe_batch").checked = ev.VLLM_MOE_BATCH !== "0";
+  $("f_actq").checked = ev.VLLM_ACTQ === "1";
+  $("f_moe_par").checked = ev.VLLM_MOE_PAR !== "0";
+  $("f_moe_q4simd").checked = ev.VLLM_MOE_Q4SIMD !== "0";
   $("f_auto_start").checked = !!c.auto_start;
+  updateP3Warn();
   badge($("cfgBadge"), "配置: 已载入", "ok");
 }
 function collectForm(){
@@ -486,6 +659,7 @@ function collectForm(){
     wmode: $("f_wmode").value,
     kv_q4: bool("f_kv_q4"),
     prefix_cache: bool("f_prefix_cache"),
+    prefix_kv: bool("f_prefix_kv"),
     prefill_q8: bool("f_prefill_q8"),
     sparse_attn: bool("f_sparse_attn"),
     sparse_k: num("f_sparse_k"),
@@ -528,7 +702,18 @@ function collectEnv(){
   if (sp) ev.VLLM_TP_SPIN = sp;
   const rs = $("f_row_slice").value.trim();
   if (rs && rs !== "auto") ev.VLLM_ROW_SLICE = rs;
+  /* MoE 优化：只写非默认值，保持 config.json 精简（缺省即引擎默认） */
+  if (!$("f_moe_batch").checked) ev.VLLM_MOE_BATCH = "0";
+  if ($("f_actq").checked) ev.VLLM_ACTQ = "1";
+  if (!$("f_moe_par").checked) ev.VLLM_MOE_PAR = "0";
+  if (!$("f_moe_q4simd").checked) ev.VLLM_MOE_Q4SIMD = "0";
   if ($("f_vqf_prewarm").checked) ev.VLLM_VQF_PREWARM = "1";
+  /* P3 门：让 --l3-evict 与 --prefix-kv 共存（缺它就等于关掉前缀复用） */
+  if ($("f_l3_prefix_reuse").checked) ev.VLLM_L3_PREFIX_REUSE = "1";
+  if ($("f_vqf_stream").checked) {
+    const kk = parseInt($("f_vqf_stream_keep").value, 10);
+    ev.VLLM_VQF_STREAM = String(Math.max(1, Math.min(32, kk || 1)));
+  }
   const vk = $("f_vqf_key").value.trim();
   if (vk) ev.VLLM_VQF_KEY = vk;
   return ev;
@@ -551,39 +736,153 @@ const PRESETS = {
   npu:  { wmode: "dual", prefill_q8: true, q8_8x8: true, q8_repack: true, q4_repack: true,
           q4_8x8l: false, pb_heap: true, tp_bind: false, tp_spin: "", row_slice: "",
           kv_q4: false, npu: true, npu_load: 1 },
-  /* 长上下文优化 (≥4K 建议)：稀疏注意力 top-k=32 + L3 冷块淘汰。板端 5.2K 实测
-   * prefill 41 tok/s、decode TPOT 99.7ms（llama.cpp exact 需 300ms，快 3 倍），
-   * KV 内存释放 ~1GB（3416 块淘汰到磁盘）。注意：不可与 KV Q4 同开（decode 会退化
-   * 为 exact 全量扫描导致长上下文卡死/断连）。 */
+  /* 长上下文优化 (≥4K 建议)：稀疏注意力 top-k=32 + L3 冷块淘汰 + P3 前缀复用门。
+   * 板端 5.2K 实测 prefill 41 tok/s、decode TPOT 99.7ms（llama.cpp exact 需 300ms，
+   * 快 3 倍），KV 内存释放 ~1GB（3416 块淘汰到磁盘）。注意：不可与 KV Q4 同开（decode
+   * 会退化为 exact 全量扫描导致长上下文卡死/断连）；P3 门必须开，否则 --prefix-kv
+   * 被 L3 静默打掉、多轮追问全量重算（x86 复核 −96.9% 即来自这一项）。 */
   long: { wmode: "dual", prefill_q8: true,  q8_8x8: true, q8_repack: true, q4_repack: true,
           q4_8x8l: false, pb_heap: true, tp_bind: false, tp_spin: "", row_slice: "",
           kv_q4: false, npu: false,
-          sparse_attn: true, sparse_k: 32, l3_evict: true, l3_ratio: 0.75,
-          desc: "长上下文优化（≥4K）：稀疏注意力 + L3 冷块淘汰。5.2K 下 decode 比 llama.cpp 快 3 倍，KV 内存省 ~1GB。勿再开 KV Q4。" },
+          sparse_attn: true, sparse_k: 32, l3_evict: true, l3_ratio: 0.75, l3_min_seq: 128,
+          l3_prefix_reuse: true, prefix_kv: true,
+          desc: "长上下文 + 多轮优化：稀疏注意力 + L3 冷块淘汰 + P3 前缀复用门（这三项要一起开）。5.2K 下 decode 比 llama.cpp 快 3 倍，KV 省 ~1GB，追问轮 prefill 降 93~97%。勿再开 KV Q4。" },
 };
+function applyFields(o){
+  /* 只写显式给出的键（undefined 一律不触碰），让预设与「组合套用」共用同一语义。 */
+  if (o.wmode != null)           $("f_wmode").value = o.wmode;
+  if (o.prefill_q8 != null)      $("f_prefill_q8").checked = !!o.prefill_q8;
+  if (o.q8_8x8 != null)          $("f_q8_8x8").checked = !!o.q8_8x8;
+  if (o.q8_repack != null)       $("f_q8_repack").checked = !!o.q8_repack;
+  if (o.q4_repack != null)       $("f_q4_repack").checked = !!o.q4_repack;
+  if (o.q4_8x8l != null)         $("f_q4_8x8l").checked = !!o.q4_8x8l;
+  if (o.pb_heap != null)         $("f_pb_heap").checked = !!o.pb_heap;
+  if (o.tp_bind != null)         $("f_tp_bind").checked = !!o.tp_bind;
+  if (o.tp_spin != null)         $("f_tp_spin").value = o.tp_spin;
+  if (o.row_slice != null)       $("f_row_slice").value = o.row_slice;
+  if (o.kv_q4 != null)           $("f_kv_q4").checked = !!o.kv_q4;
+  if (o.prefix_kv != null)       $("f_prefix_kv").checked = !!o.prefix_kv;
+  if (o.sparse_attn != null)     $("f_sparse_attn").checked = !!o.sparse_attn;
+  if (o.sparse_k != null)        $("f_sparse_k").value = String(o.sparse_k);
+  if (o.l3_evict != null)        $("f_l3_evict").checked = !!o.l3_evict;
+  if (o.l3_ratio != null)        $("f_l3_ratio").value = String(o.l3_ratio);
+  if (o.l3_min_seq != null)      $("f_l3_min_seq").value = String(o.l3_min_seq);
+  if (o.l3_prefix_reuse != null) $("f_l3_prefix_reuse").checked = !!o.l3_prefix_reuse;
+  if (o.disk_kv != null)         $("f_disk_kv").checked = !!o.disk_kv;
+  if (o.spec != null)            $("f_spec").checked = !!o.spec;
+  if (o.spec_k != null)          $("f_spec_k").value = String(o.spec_k);
+  if (o.moe_batch != null)       $("f_moe_batch").checked = !!o.moe_batch;
+  if (o.actq != null)            $("f_actq").checked = !!o.actq;
+  if (o.vqf_stream != null)      $("f_vqf_stream").checked = !!o.vqf_stream;
+  if (o.npu != null)             $("f_npu").checked = !!o.npu;
+  if (o.npu_load != null)        $("f_npu_load").value = String(o.npu_load);
+  updateP3Warn();
+}
 function applyPreset(){
   const p = PRESETS[$("f_preset").value];
   if (!p){ msg($("presetmsg"), "请先选择预设", false); return; }
-  $("f_wmode").value = p.wmode;
-  $("f_prefill_q8").checked = !!p.prefill_q8;
-  $("f_q8_8x8").checked = !!p.q8_8x8;
-  $("f_q8_repack").checked = !!p.q8_repack;
-  $("f_q4_repack").checked = !!p.q4_repack;
-  $("f_q4_8x8l").checked = !!p.q4_8x8l;
-  $("f_pb_heap").checked = !!p.pb_heap;
-  $("f_tp_bind").checked = !!p.tp_bind;
-  $("f_tp_spin").value = p.tp_spin || "";
-  $("f_row_slice").value = p.row_slice || "";
-  $("f_kv_q4").checked = !!p.kv_q4;
-  $("f_npu").checked = !!p.npu;
-  if (p.npu_load != null) $("f_npu_load").value = String(p.npu_load);
-  /* 长上下文预设携带稀疏/L3 字段；其它预设不触碰这些开关 */
-  if (p.sparse_attn != null) $("f_sparse_attn").checked = !!p.sparse_attn;
-  if (p.sparse_k != null) $("f_sparse_k").value = String(p.sparse_k);
-  if (p.l3_evict != null) $("f_l3_evict").checked = !!p.l3_evict;
-  if (p.l3_ratio != null) $("f_l3_ratio").value = String(p.l3_ratio);
+  applyFields(p);
   badge($("cfgBadge"), "配置: 已载入预设", "ok");
   msg($("presetmsg"), p.desc ? p.desc : "预设已填充，可微调后保存配置", true);
+}
+
+/* ---- 有效优化组合台账 ----
+ * 每行给出「适用场景 / 关键开关 / 实测收益 / 平台适用性」，点「套用」直接填表。
+ * 数据来源：资料/模型优化开关组合-稠密与MoE.md（板端 ARM 实测 + 2026-09-11 本地
+ * x86 逐开关复核 §7.2）。plat: ram=省内存场景有效 / x86=x86 复现 / x86no=x86 无效。 */
+const COMBO_ROWS = [
+  { name: "① 多轮长上下文服务", scene: "对话 / 问答，多轮追问",
+    sw: "--sparse-attn --sparse-k 32 --l3-evict --l3-min-seq 128 + env VLLM_L3_PREFIX_REUSE=1 + --prefix-kv",
+    ev: "追问轮 prefill <b>−93% ~ −97%</b>（2B/8B/30B × 全层/逐层 四象限）",
+    note: "本仓库收益最大的组合；缺 P3 门则 --prefix-kv 被静默打掉",
+    plat: ["x86"],
+    set: { prefix_kv: true, sparse_attn: true, sparse_k: 32, l3_evict: true,
+           l3_ratio: 0.75, l3_min_seq: 128, l3_prefix_reuse: true, kv_q4: false } },
+
+  { name: "② 内存受限（逐层驻留）", scene: "权重放不下整份 RAM",
+    sw: "env VLLM_VQF_STREAM=1（逐层）+ 叠 ① 的 L3 + P3",
+    ev: "权重 RSS 省 <b>4.6× ~ 21.8×</b>（2B 0.40GB / 8B 0.47GB / 30B 0.50GB）",
+    note: "代价 prefill +11~25% / decode +121~259%；仅明文 VQF",
+    plat: ["ram"],
+    set: { vqf_stream: true, prefix_kv: true, sparse_attn: true, sparse_k: 32,
+           l3_evict: true, l3_min_seq: 128, l3_prefix_reuse: true } },
+
+  { name: "③ 重启后复用会话", scene: "升级 / 重启引擎后接着聊",
+    sw: "--disk-kv &lt;目录&gt; + --prefix-kv",
+    ev: "重启后第 2/3 轮 prefill <b>−97.3%</b>（38.3s → 1.05s）",
+    note: "KV 落盘，对 RAM 也友好",
+    plat: ["x86", "ram"],
+    set: { disk_kv: true, prefix_kv: true } },
+
+  { name: "④ KV 内存吃紧", scene: "长上下文 + RAM 紧",
+    sw: "--kv-q4 + --l3-evict --l3-min-seq 128 + P3 门",
+    ev: "KV <b>1.65×</b> 压缩、decode +28%；L3 再释放 ~1GB（5.2K）",
+    note: "⚠ --kv-q4 与 --sparse-attn 互斥：L3 侧会自动开稀疏，二者不可同开",
+    plat: ["ram"],
+    set: { kv_q4: true, prefix_kv: true, l3_evict: true, l3_min_seq: 128,
+           l3_prefix_reuse: true, sparse_attn: false } },
+
+  { name: "⑤ MoE 模型服务", scene: "30B-A3B 等稀疏专家",
+    sw: "env VLLM_ACTQ=1 VLLM_MOE_BATCH=1 + --wmode q4（+ 逐层 / P3）",
+    ev: "prefill <b>10.78×</b>（37.5s → 3.48s）/ decode <b>3.20×</b>（30B 逐层 t4）",
+    note: "ACTQ 是近似轨（与精确轨非位级一致），且是 MOE_BATCH 生效硬前提",
+    plat: [],
+    set: { wmode: "q4", actq: true, moe_batch: true } },
+
+  { name: "⑥ 并发多用户", scene: "多人同时用同一引擎",
+    sw: "--batch-max 8（上限 32）+ --max-queued 16",
+    ev: "板端 ~1.7×；<b>x86 实测仅 +4.5%</b>（GEMM 算力瓶颈，批处理摊不掉算力）",
+    plat: ["x86no"],
+    set: {} },
+
+  { name: "⑦ 精确重复文本", scene: "模板 / 列表 / 代码复读",
+    sw: "--spec --spec-k 4（须与 sparse / l3 / batch 互斥）",
+    ev: "板端 1.30× 文本 / 1.64× 多模态；<b>x86 实测反慢 2.4×</b>",
+    note: "⚠ 必须由客户端传 top_p=1.0，否则 spec 静默不生效；仅字面重复有效",
+    plat: ["x86no"],
+    set: { spec: true, spec_k: 4, prefix_kv: true } },
+
+  { name: "⑧ 最小回退 / 排障", scene: "怀疑优化引入问题时复现基线",
+    sw: "--no-prefix-kv，且不设任何 VLLM_* 优化 env",
+    ev: "基线档，用于对照",
+    plat: [],
+    set: { prefix_kv: false, sparse_attn: false, l3_evict: false, l3_prefix_reuse: false,
+           kv_q4: false, spec: false, disk_kv: false, vqf_stream: false } },
+];
+const PTAG_TEXT = { ram: ["ram", "省 RAM"], x86: ["x86", "x86 已复现"], x86no: ["x86no", "x86 无效"] };
+function renderCombos(){
+  const tb = $("comboBody");
+  if (!tb) return;
+  tb.innerHTML = COMBO_ROWS.map((r, i) => {
+    const tags = (r.plat || []).map(p =>
+      `<span class="ptag ${PTAG_TEXT[p][0]}">${PTAG_TEXT[p][1]}</span>`).join("");
+    return `<tr>
+      <td class="name">${r.name}</td>
+      <td>${r.scene}</td>
+      <td><code>${r.sw}</code></td>
+      <td class="ev">${r.ev}${r.note ? `<br><span class="why">${r.note}</span>` : ""}</td>
+      <td>${tags}</td>
+      <td class="act"><button data-combo="${i}">套用</button></td>
+    </tr>`;
+  }).join("");
+  tb.querySelectorAll("button[data-combo]").forEach(b => {
+    b.onclick = () => comboApply(parseInt(b.dataset.combo, 10));
+  });
+}
+function comboApply(i){
+  const r = COMBO_ROWS[i];
+  if (!r) return;
+  applyFields(r.set || {});
+  badge($("cfgBadge"), "配置: 已载入组合", "ok");
+  msg($("combomsg"),
+      `已套用「${r.name}」。可微调后点「保存配置」，再重启引擎生效。`, true);
+}
+/* 开 --l3-evict 却没开 P3 门 → 显式告警（这是最容易踩的坑） */
+function updateP3Warn(){
+  const el = $("p3warn");
+  if (!el) return;
+  el.style.display = ($("f_l3_evict").checked && !$("f_l3_prefix_reuse").checked)
+                     ? "block" : "none";
 }
 
 /* ---- device profile helpers ---- */
@@ -827,6 +1126,10 @@ async function pollLog(){
 $("btn_loadcfg").onclick = loadConfig;
 $("btn_savecfg").onclick = saveConfig;
 $("btn_preset").onclick = applyPreset;
+/* L3 卡片的联动告警 + 有效组合台账渲染 */
+$("f_l3_evict").onchange = updateP3Warn;
+$("f_l3_prefix_reuse").onchange = updateP3Warn;
+renderCombos();
 $("btn_applydev").onclick = applyDevRecommend;
 $("f_device").onchange = async () => {
   const id = $("f_device").value;
@@ -842,6 +1145,12 @@ $("btn_unload").onclick = opUnload;
 $("btn_restart").onclick = opRestart;
 $("btn_stop").onclick = opStop;
 $("btn_l3clear").onclick = opL3Clear;
+$("btn_res_cfg").onclick = opResCfg;
+$("btn_res_l4").onclick = () => opResSet(4);
+$("btn_res_l3").onclick = () => opResSet(3);
+$("btn_res_l2").onclick = () => opResSet(2);
+$("btn_res_l1").onclick = () => opResSet(1);
+$("btn_res_l0").onclick = () => opResSet(0);
 $("btn_selftest").onclick = opSelftest;
 $("btn_npudrv_check").onclick = npuDrvCheck;
 $("btn_npudrv_install").onclick = npuDrvInstall;

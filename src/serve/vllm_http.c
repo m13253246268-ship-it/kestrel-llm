@@ -15,15 +15,26 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <signal.h>
+#include <errno.h>
 
+/* POSIX vs winsock2: VHttpConn 用 SOCKET(fd) 的双平台布局，winsock 下 select
+ * 第一参数被忽略、setsockopt 取 (const char*)、recv/send 长度收窄为 int。 */
+#ifdef _WIN32
+#include <process.h>   /* _beginthreadex */
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#ifndef strncasecmp
+#define strncasecmp _strnicmp
+#endif
+#else
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
-#include <signal.h>
 #include <netdb.h>
 #include <unistd.h>
-#include <errno.h>
 #include <fcntl.h>
+#endif
 
 /* Graceful-stop flag: vhttp_stop() sets it and the accept loop polls it
  * through a select() with a short timeout, so a route handler (e.g. the
@@ -482,7 +493,11 @@ size_t vjson_serialize(const VJson *v, char *buf, size_t cap) {
 #define VHTTP_MAX_BODY (64u << 20)
 
 struct VHttpConn {
+#ifdef _WIN32
+    SOCKET fd;
+#else
     int fd;
+#endif
     char rbuf[1 << 16];     /* 64 KiB request-header buffer */
     char *body;             /* dynamic request body (NULL = none) */
     size_t body_len;
@@ -493,15 +508,27 @@ struct VHttpConn {
 };
 
 static int vnet_recv(VHttpConn *c, char *buf, size_t len) {
+#ifdef _WIN32
+    return recv(c->fd, buf, (int)len, 0);
+#else
     return (int)recv(c->fd, buf, len, 0);
+#endif
 }
 static int vnet_send(VHttpConn *c, const char *buf, size_t len) {
     if (len == 0) return 0;
+#ifdef _WIN32
+    return send(c->fd, buf, (int)len, 0);
+#else
     int r = (int)send(c->fd, buf, len, 0);
     return r;
+#endif
 }
 static void vnet_close(VHttpConn *c) {
+#ifdef _WIN32
+    closesocket(c->fd);
+#else
     close(c->fd);
+#endif
     if (g_vhttp_conns > 0) g_vhttp_conns--;
     free(c->body);
     free(c);
@@ -509,9 +536,14 @@ static void vnet_close(VHttpConn *c) {
 
 /* Set a receive timeout so a stalled client cannot pin a worker forever. */
 static void vnet_set_recv_timeout(VHttpConn *c, int seconds) {
+#ifdef _WIN32
+    DWORD t = (DWORD)seconds * 1000;
+    setsockopt(c->fd, SOL_SOCKET, SO_RCVTIMEO, (const char *)&t, sizeof(t));
+#else
     struct timeval tv;
     tv.tv_sec = seconds; tv.tv_usec = 0;
     setsockopt(c->fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+#endif
 }
 
 /* Case-insensitive header lookup over the raw request. Writes the value
@@ -702,6 +734,17 @@ static void default_handler(const VHttpRequest *req, VHttpResponse *resp,
 
 /* ---------------- worker pool ---------------- */
 
+#ifdef _WIN32
+typedef SRWLOCK VLock;
+typedef CONDITION_VARIABLE VCond;
+#define V_LOCK_INIT(l)   InitializeSRWLock(l)
+#define V_LOCK(l)        AcquireSRWLockExclusive(l)
+#define V_UNLOCK(l)      ReleaseSRWLockExclusive(l)
+#define V_COND_INIT(c)   InitializeConditionVariable(c)
+#define V_COND_WAIT(c,l) SleepConditionVariableSRW(c,l,INFINITE,0)
+#define V_COND_SIGNAL(c)    WakeConditionVariable(c)
+#define V_COND_BROADCAST(c) WakeAllConditionVariable(c)
+#else
 #include <pthread.h>
 typedef pthread_mutex_t VLock;
 typedef pthread_cond_t VCond;
@@ -712,6 +755,7 @@ typedef pthread_cond_t VCond;
 #define V_COND_WAIT(c,l) pthread_cond_wait(c, l)
 #define V_COND_SIGNAL(c)    pthread_cond_signal(c)
 #define V_COND_BROADCAST(c) pthread_cond_broadcast(c)
+#endif
 
 typedef struct {
     VHttpConn **items;
@@ -788,6 +832,15 @@ static void serve_conn(WorkerCtx *ctx, VHttpConn *conn) {
     free(resp.body_owned);   /* per-request heap body, if any */
 }
 
+#ifdef _WIN32
+static unsigned __stdcall worker_main(void *arg) {
+    WorkerCtx *ctx = (WorkerCtx *)arg;
+    for (;;) {
+        VHttpConn *conn = queue_pop(ctx->q);
+        serve_conn(ctx, conn);
+    }
+}
+#else
 static void *worker_main(void *arg) {
     WorkerCtx *ctx = (WorkerCtx *)arg;
     for (;;) {
@@ -795,25 +848,46 @@ static void *worker_main(void *arg) {
         serve_conn(ctx, conn);
     }
 }
+#endif
 
 static void spawn_worker(WorkerCtx *arg) {
+#ifdef _WIN32
+    uintptr_t th = _beginthreadex(NULL, 0, worker_main, arg, 0, NULL);
+    if (th) CloseHandle((HANDLE)th);
+#else
     pthread_t t;
     pthread_create(&t, NULL, worker_main, arg);
+#endif
 }
 
 int vhttp_serve_ex(int port, VHttpHandler handler, void *userdata,
                    void (*on_start)(int actual_port, void *ud), int n_threads) {
     /* A client that disconnects mid-stream (e.g. curl | head -c N) makes the
      * next write() fail with EPIPE; without this ignore the default SIGPIPE
-     * action would terminate the whole server process. */
+     * action would terminate the whole server process. Windows has no SIGPIPE
+     * (winsock send failures surface as SOCKET_ERROR). */
+#ifndef _WIN32
     signal(SIGPIPE, SIG_IGN);
+#else
+    WSADATA wsa;
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return -1;
+#endif
     VHttpConn listener;
     memset(&listener, 0, sizeof(listener));
     listener.fd = socket(AF_INET, SOCK_STREAM, 0);
+#ifdef _WIN32
+    if (listener.fd == INVALID_SOCKET) return -1;
+#else
     if (listener.fd < 0) return -1;
+#endif
     {
         int one = 1;
+#ifdef _WIN32
+        setsockopt(listener.fd, SOL_SOCKET, SO_REUSEADDR,
+                   (const char *)&one, sizeof(one));
+#else
         setsockopt(listener.fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+#endif
     }
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
@@ -864,15 +938,28 @@ int vhttp_serve_ex(int port, VHttpHandler handler, void *userdata,
         }
         if (sr == 0) continue;   /* timeout: re-check stop flag */
         struct sockaddr_in ca;
+#ifdef _WIN32
+        int calen = (int)sizeof(ca);
+        SOCKET cf = accept(listener.fd, (struct sockaddr *)&ca, &calen);
+        if (cf == INVALID_SOCKET) {
+            if (g_vhttp_stop) break;
+            continue;
+        }
+#else
         socklen_t calen = sizeof(ca);
         int cf = accept(listener.fd, (struct sockaddr *)&ca, &calen);
         if (cf < 0) {
             if (g_vhttp_stop) break;
             continue;
         }
+#endif
         VHttpConn *conn = (VHttpConn *)calloc(1, sizeof(VHttpConn));
         if (!conn) {
+#ifdef _WIN32
+            closesocket(cf);
+#else
             close(cf);
+#endif
             continue;
         }
         conn->fd = cf;

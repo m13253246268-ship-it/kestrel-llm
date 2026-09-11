@@ -2,6 +2,10 @@
 
 **纯 C11、零第三方运行时依赖的 ARM（aarch64）CPU LLM 推理引擎。**
 
+> **版本：v1.0（测试版 / test release）**。相对上一个公开版本（v0）的主要变化见文末
+> 「v1.0 变更摘要」。文中性能/体积数字为**板端实测口径**（测点版本已就近标注）；
+> 换板或换版本复现请以 `./build_rk3588.sh --run-tests` 的当前自检与产物为准。
+
 > 平台口径：引擎本质是**面向 ARM 架构 CPU 的推理**（ARMv8.2-A + NEON dotprod/fp16，
 > 不依赖 GPU/NPU 与特定开发板）；**RK3588** 是当前开发、优化与基准测试平台，
 > 并非唯一可运行设备——同类 aarch64 Linux 设备可尝试编译运行（跨设备验证状态见「构建」节平台约束）。
@@ -109,17 +113,20 @@
 ├── build_rk3588.sh            # RK3588 构建 + 自检入口
 ├── cmake/toolchain-aarch64-rk3588.cmake   # x86 主机交叉编译工具链
 ├── include/  src/             # C11 源码（common/core/media/model/npu/serve）
-│   ├── core/                  # 推理内核（NTT/FHE/CKKS/tp/matmul/attention…）
-│   ├── model/                 # 权重加载（VQF/GGUF/safetensors）、视觉、分词
+│   ├── core/                  # 推理内核（NTT/FHE/CKKS/tp/matmul/attention/l3…）
+│   ├── model/                 # 权重加载（纯 VQF v2 mmap）、视觉、分词
 │   ├── serve/                 # HTTP/管理页/批处理/可验证推理(attest)
 │   └── media/                 # H.264/MP4 解码（独立模块，默认构建不启用）
 ├── tools/                     # 自研工具
-│   ├── gen_embedded_web.py    # HTML → 内嵌字节数组生成器
+│   ├── gen_embedded_web.py    # HTML → 内嵌字节数组生成器（改页面后须重跑）
 │   ├── build_vocab_bin.py     # tokenizer.json → vocab.bin（字节解码修复版）
 │   ├── extract_llama_asm.py   # 从 llama.cpp 提取 4x4 asm GEMM（MIT，见文件头）
 │   ├── verify_attest.py       # 可验证推理凭证离线验签（零依赖）
 │   ├── vllm_vqf_sign.c        # VQF SM2 供应链签名 / 密钥管理工具
-│   └── vllm_mgr.py            # 引擎进程守护（start/stop/restart/状态页）
+│   ├── vllm_mgr.py            # 引擎进程守护（start/stop/restart/状态页）
+│   ├── build_x64.ps1          # x86_64(MinGW) 原生构建脚本（非基准，仅一致性自检）
+│   └── check_x64.ps1          # x86 构建 + 自检一条命令（退出码 0/1）
+├── vqf_convert/               # 独立权重转换工具（safetensors/GGUF → VQF v2）
 └── docs/                      # 技术文档 / 基准报告 / 安全方案（中文）
 ```
 
@@ -138,26 +145,45 @@ cmake -B build-rk3588 && cmake --build build-rk3588 -j8
 ./build_rk3588.sh --cross
 ```
 
+### x86_64 原生构建（Windows / MinGW，用于功能与一致性自检）
+
+引擎的**一级目标平台是 aarch64**；x86-64 分支（`vllm_platform.h`）仅用于**功能自检与
+位级一致性对照**，**不作为性能基准**——x86 上跑的绝对吞吐/加速比不能外推到板端。
+
+```powershell
+# Windows / MinGW-w64（gcc 需在 PATH，或用 -Gcc 显式指定）
+powershell -ExecutionPolicy Bypass -File tools\check_x64.ps1
+#   → 编译 + 跑 --test-l3 / --test-sparse 自检，退出码 0/1
+powershell -ExecutionPolicy Bypass -File tools\build_x64.ps1 -Gcc D:\tools\mingw64\bin\gcc.exe
+#   → 仅构建，产物 build-x64\vllm_kestrel_x64.exe
+```
+
+环境变量口径：`VLLM_GCC`（gcc 路径）、`VLLM_X64_OUTDIR`（输出目录）可替代命令行参数。
+
 > 平台约束与说明：引擎本质是 **ARM（aarch64，ARMv8.2-A + dotprod/fp16）CPU 推理引擎**，
-> **RK3588（4×A76 + 4×A55）是开发与基准测试平台**，并非唯一可运行设备。`vllm_platform.h`
-> 在非 aarch64 架构（如 x86 主机直编）会编译报错退出（x86 仅用于位级一致性的研究对照）。
-> 同类 aarch64 Linux 设备可尝试编译运行，但设备画像（如 A76 集群线程绑定、核心数）与
-> 性能档按 RK3588 验证——**换板运行请先跑 `--test-l3` / `--bench-mixed` 自检**并以自检
-> 结果为准。运行建议 `export OMP_NUM_THREADS=8`（RK3588：4×A76 + 4×A55）。
+> **RK3588（4×A76 + 4×A55）是开发与基准测试平台**，并非唯一可运行设备。同类 aarch64
+> Linux 设备可尝试编译运行，但设备画像（如 A76 集群线程绑定、核心数）与性能档按 RK3588
+> 验证——**换板运行请先跑 `--test-l3` / `--bench-mixed` 自检**并以自检结果为准。运行建议
+> `export OMP_NUM_THREADS=8`（RK3588：4×A76 + 4×A55）。非 aarch64 / 非 x86-64 架构会在
+> `vllm_platform.h` 编译期报错退出。
 
 ## 运行
 
 ```bash
-# 1) 模型目录需含：config.json + model.safetensors（或 model.vqf / model.gguf）+ vocab.bin
-#    vocab.bin 可由 tools/build_vocab_bin.py 从 tokenizer.json 生成：
+# 1) 模型目录需含：config.json + model.vqf（单文件 VQF v2，mmap 直挂）
+#    + 可选 vocab.bin（由 tools/build_vocab_bin.py 从 tokenizer.json 生成；
+#      缺失时引擎回落到内嵌 vocab，功能可用但体积/词表以模型自带为准）：
 #    python tools/build_vocab_bin.py <tokenizer.json> <vocab.bin> <vocab.bin>
 
 # 2) 启动 OpenAI 兼容 HTTP 服务（默认端口 8080）
 ./vllm_kestrel --serve --port 8080 --model <model-dir> --auto-load --wmode q4
 
 #    长上下文优化档（对应上文 8K 基准，全部可选；prefix-kv 前缀复用默认开启）：
-./vllm_kestrel --serve --port 8080 --model <model-dir> --auto-load \
+#    --l3-evict 需配合环境变量 VLLM_L3_PREFIX_REUSE=1，二者共存才有 P3 收益
+#    （否则 L3 驱逐会静默打掉 prefix-kv，多轮追问将全量重算 prefill）。
+VLLM_L3_PREFIX_REUSE=1 ./vllm_kestrel --serve --port 8080 --model <model-dir> --auto-load \
     --wmode q4 --sparse-attn --sparse-k 32 --spec --spec-k 4 \
+    --l3-evict --l3-ratio 0.75 --l3-min-seq 128 \
     --disk-kv <kv-dir> --threads 8
 
 # 3) 对话（OpenAI 兼容）
@@ -165,35 +191,47 @@ curl http://<board>:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model":"qwen3-vl","messages":[{"role":"user","content":"你好"}],"max_tokens":64}'
 
-# 管理页 / 聊天页 / 转换页：http://<board>:8080/admin/  :8080/chat/  :8080/convert/
+# 管理页 / 聊天页：http://<board>:8080/admin/  :8080/chat/
+# （管理页含「有效优化组合（实测台账）」：8 个组合可一键套用，并标注每项优化
+#   针对 RAM / x86 是否有效；保存配置后需重启引擎生效）
 ```
 
-权重格式转换（一次性，均在本引擎内完成，输出单文件 mmap 的 VQF）：
+权重格式转换：本引擎**只加载 VQF v2**，不再内置 safetensors/GGUF 转换路径；
+转换由随版发布的独立工具 **`vqf_convert/`** 完成（safetensors / GGUF → 单文件 mmap 的 VQF）。
 
 ```bash
-./vllm_kestrel --convert-vqf <out.vqf> --model <safetensors-model-dir> --wmode q4
-./vllm_kestrel --convert-gguf <out.vqf> --model <model.gguf> --wmode q4
+# 构建转换工具（板端或主机）
+cd vqf_convert && ./build.sh          # Windows: build.bat
+# 转换（具体参数见 vqf_convert/ 内说明）
+./vqf_convert <out.vqf> --model <safetensors-model-dir> --wmode q4
 ```
 
 NPU 加速（可选）：默认后端为**零第三方依赖直驱**（自研写 stock rknpu 内核驱动）。
 首次使用先跑板端校准：`./vllm_kestrel --npu --npu-selftest --perf-only`
 （寄存器命令表未校准通过前提交路径保持禁用，自动回退 CPU）。
 
-权重保护与可验证推理：转换时可选口令加密（VQF-Enc）与 SM2 供应链签名；启动时置
-`VLLM_VQF_KEY` / `VLLM_VQF_SIGN_PUB` 解密验签，置 `VLLM_ATTEST=1`（详见
-[docs/权重保护与可验证推理方案.md](docs/权重保护与可验证推理方案.md)）即逐响应出证，
-用 `tools/verify_attest.py` 离线验签。
+权重保护与可验证推理：引擎支持 **VQF 存储态加密（VQF-Enc）加载** 与 **SM2 供应链签名验签**；
+启动时置 `VLLM_VQF_KEY` / `VLLM_VQF_SIGN_PUB` 解密验签，置 `VLLM_ATTEST=1`（详见
+[docs/权重保护与可验证推理方案.md](docs/权重保护与可验证推理方案.md)）即逐响应出证
+（attestation schema=3，含请求原文绑定），用 `tools/verify_attest.py` 离线验签。
+> 边界：本轮随版发布的 `vqf_convert/` 只产出**明文** VQF，尚未接入加密输出与内嵌签名；
+> 签名可用 `tools/vllm_vqf_sign.c` 对已有 VQF 离线补签，加密 VQF 的生成工具列入后续版本。
 
 ## 模型与复现
 
-> **模型支持范围（诚实声明）**：本引擎针对并实测验证的模型为 **Qwen3-VL 系列
-> （2B / 8B；纯文本与图片/视频多模态）**——tokenizer、mrope、DeepStack 视觉塔等均为
-> 该架构特化实现。**其他架构（Llama、旧版 Qwen / Qwen2 纯文本等）未经适配与验证**：
-> GGUF/VQF 转换可能报错或输出不可用，请勿据此推定为通用推理引擎。文中性能与安全数据
-> 均基于 Qwen3-VL-2B（RK3588 板端）与 Qwen3-VL-8B（x86 基准机）实测。
+> **模型支持范围（诚实声明）**：本引擎针对并实测验证的是**两类 Qwen3 架构**：
+>
+> - **Qwen3-VL 系列（2B / 8B）**——纯文本与图片/视频多模态；tokenizer、mrope、
+>   DeepStack 视觉塔等均为该架构特化实现。
+> - **Qwen3-MoE 系列（如 Qwen3-30B-A3B，文本）**——路由 + 逐专家 FFN 已接入
+>   （`--moe-batch` / `VLLM_ACTQ` 等加速，见管理页「MoE 模型服务」组合）。
+>
+> **其他架构（Llama、旧版 Qwen / Qwen2 纯文本等）未经适配与验证**：转换可能报错或
+> 输出不可用，请勿据此推定为通用推理引擎。文中性能与安全数据均基于 Qwen3-VL-2B
+> （RK3588 板端）与 Qwen3-VL-8B（x86 基准机）实测，MoE 路线为功能打通与机制验证口径。
 
-- 模型权重不随仓库分发。Qwen3-VL 系列权重遵循其原始开源许可（Qwen 社区许可），
-  下载后可用上文命令转换为 VQF/加载。
+- 模型权重不随仓库分发。Qwen 系列权重遵循其原始开源许可（Qwen 社区许可），
+  下载后可用 `vqf_convert/` 转换为 VQF 后加载（见上文「权重格式转换」）。
 - 基准数据复现方法、语料与驱动位置见
   [docs/RK3588_性能基准报告.md](docs/RK3588_性能基准报告.md) 附录。
 
@@ -203,8 +241,45 @@ NPU 加速（可选）：默认后端为**零第三方依赖直驱**（自研写
 |---|---|
 | [docs/技术文档.md](docs/技术文档.md) | 架构、模块、权重格式 VQF、内核、服务层、多模态、上下文管理、位级确定性、NPU、性能、调试、版本演进 |
 | [docs/RK3588_性能基准报告.md](docs/RK3588_性能基准报告.md) | vllm_kestrel vs llama.cpp 冷启动 / 长上下文 / KV 恢复全矩阵 |
-| [docs/优化配置与边界说明.md](docs/优化配置与边界说明.md) | 各优化档机制、收益与诚实边界 |
-| [docs/权重保护与可验证推理方案.md](docs/权重保护与可验证推理方案.md) | 三道安全防线：VQF 存储态加密、SM2 供应链签名、推理出证（schema=2），含相互关系、端到端用法与统一安全边界 |
+| [docs/优化配置与边界说明.md](docs/优化配置与边界说明.md) | 各优化档机制、收益与诚实边界（含有效组合与 x86 复核口径） |
+| [docs/KV缓存v2-惰性分配与分层驻留方案.md](docs/KV缓存v2-惰性分配与分层驻留方案.md) | KV 惰性分配、L3 分层驻留与 P3 前缀复用共存（L3 驱逐 + 前缀复用） |
+| [docs/权重保护与可验证推理方案.md](docs/权重保护与可验证推理方案.md) | 三道安全防线：VQF 存储态加密、SM2 供应链签名、推理出证（attestation schema=3，含请求原文绑定），含相互关系、端到端用法与统一安全边界 |
+
+## v1.0 变更摘要（相对 v0）
+
+**工程与形态**
+
+- **纯 VQF 运行时**：引擎只加载单文件 VQF v2（mmap 直挂），删除内置的 GGUF /
+  safetensors 加载与引擎内转换路径；转换职责移交随版发布的独立工具 **`vqf_convert/`**。
+- **源码瘦身**：随纯 VQF 运行时移除 `vllm_gguf.c/.h` 与 `convert.html` 等遗留件；
+  单产物仍约 0.8 MB；`CMakeLists.txt` 版本号提升至 `VERSION 1.0.0`。
+- **x86_64 分支随版**：`vllm_platform.h` 提供 x86-64（MinGW/MSVC）移植层；新增
+  `tools/build_x64.ps1` / `tools/check_x64.ps1`（已参数化，`VLLM_GCC` /
+  `VLLM_X64_OUTDIR` 可覆盖）。**x86 仅供功能自检与位级一致性对照，不作性能基准。**
+
+**性能与内存**
+
+- **P3：L3 驱逐 × 前缀复用共存**（`--l3-evict` + `VLLM_L3_PREFIX_REUSE=1`）——多轮
+  追问轮 prefill 实测 **−93%~−97%**，为 v1.0 收益最大的单项优化。
+- **L3 紧凑布局**：按驱逐顺序连续分配 `disk_off`（`wcursor`），文件 / RAM mirror
+  尺寸跟踪真实载荷而非全 KV 窗。
+- **P1/P2 内存分页**：mirror 跨轮复用 + `MADV_DONTNEED`；arena 化 + `imp_sum`
+  层内共享。
+- **管理页实测台账**：`/admin/` 新增「有效优化组合」表（8 组，可一键套用），并对
+  每项优化标注**针对 RAM / x86 是否有效**；补齐 P3 开关与 `--l3-evict` 未开 P3 门
+  时的联动告警。
+
+**安全与正确性**
+
+- **attestation schema 3**：新增**请求原文绑定**（`body_sha = SM3(客户端原始请求体)`），
+  只改 `top_k` / `thinking` 也必须改摘要。
+- **VQF 离线补签口径修复**：离线签名工具先置 `VQF_FLAG_SIGNED` 再算摘要（与写侧
+  口径一致），修复补签后永远 digest mismatch 的问题。
+- **Debug 构建修复**：`CMAKE_C_FLAGS_DEBUG` 补 `-march`，避免 NEON dotprod 内联
+  在 Debug 档编译失败。
+- **注释编码修复**：修正历史遗留的若干源码注释乱码（`vqf_convert/src/conv_main.c`、
+  `src/serve/vllm_server.c`、`src/serve/vllm_batch.c`）。
+
 
 ## 许可与合规
 

@@ -87,7 +87,8 @@ int vc_sm2_verify(const uint8_t pub[64], const uint8_t *msg, size_t msglen,
 
 /* 密码学安全随机数（32B）。SM2 签名的随机数 k 必须由此生成（不可复用、
  * 不可预测；k 复用会泄露私钥）。Linux 用 getrandom(2)，失败回退
- * /dev/urandom；非 Linux 平台返回 -1。 */
+ * /dev/urandom；Windows 用 BCryptGenRandom（构建需链接 -lbcrypt）；
+ * 其余平台返回 -1。 */
 int vc_secure_rand(uint8_t out[32]);
 
 /* hex 解码：输入须为 2*outlen 个十六进制字符（可含尾部 '\0'），输出
