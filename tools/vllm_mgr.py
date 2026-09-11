@@ -23,6 +23,7 @@ Config file schema (written by the admin page):
     "sparse_attn": false,
     "sparse_k": 32, "npu": true, "npu_load": 1, "npu_infer": 1,
     "npu_timing": 0, "port": 8080, "threads": 8, "max_queued": 16,
+    "batch_max": 8,
     "min_free_mb": 2048, "env": {"OMP_NUM_THREADS": "4"} }
 
 Optional key, not written by the admin page but honoured when present in a
@@ -91,6 +92,10 @@ def build_cmd(cfg, bin_):
            "--threads", str(int(cfg.get("threads", 8))),
            "--max-queued", str(int(cfg.get("max_queued", 16))),
            "--min-free-mb", str(int(cfg.get("min_free_mb", 2048)))]
+    # 连续批处理（--batch-max N，0/1 = 关，上限 32）：多用户并发档。
+    _bm = int(cfg.get("batch_max") or 0)
+    if _bm > 0:
+        cmd += ["--batch-max", str(_bm)]
     # 量化模式已从管理页移除：量化在转换期由 vqf_convert --wmode 固化进 VQF 文件，
     # 加载侧不再选择。仅当 config 显式携带 wmode 时透传（手工编辑 / 遗留配置的
     # 逃生口——例如 g256 离线基准档需要加载侧 --wmode g256 通过布局校验）。

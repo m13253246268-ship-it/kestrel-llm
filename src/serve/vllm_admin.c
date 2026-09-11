@@ -266,6 +266,8 @@ static VJson *build_config_json(const VLLMServerCtx *ctx) {
     vjson_obj_set(o, "port", vjson_new_number((double)ctx->port));
     vjson_obj_set(o, "threads", vjson_new_number((double)ctx->threads));
     vjson_obj_set(o, "max_queued", vjson_new_number((double)ctx->max_queued));
+    /* 连续批处理（--batch-max N，0/1 = 关）：多用户并发档，管理页组合⑥ 用 */
+    vjson_obj_set(o, "batch_max", vjson_new_number((double)ctx->batch_max));
     vjson_obj_set(o, "min_free_mb", vjson_new_number((double)ctx->min_free_mb));
     /* Conversation features (KV prefix reuse / disk persistence / spec decode /
      * min-p), see vllm_server.h. disk_kv_dir is the checkpoint directory. */

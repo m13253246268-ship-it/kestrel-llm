@@ -24,6 +24,9 @@ header h1{font-size:16px;margin:0;font-weight:600}
 .ptag.ram{color:var(--warn);border-color:var(--warn)}
 .ptag.x86{color:var(--acc);border-color:var(--acc)}
 .ptag.x86no{color:var(--bad);border-color:var(--bad)}
+/* 「当前在用」标记：仅当已保存/运行中的配置命中该组合的开关集合时出现 */
+.inuse{display:inline-block;padding:0 6px;border-radius:8px;font-size:10.5px;line-height:16px;
+       border:1px solid var(--ok);color:var(--ok);margin-left:6px;vertical-align:1px;white-space:nowrap}
 /* 有效优化组合表 */
 table.combos{width:100%;border-collapse:collapse;font-size:12px;margin-top:4px}
 table.combos th,table.combos td{border-bottom:1px solid var(--bd);padding:6px 8px;text-align:left;vertical-align:top}
@@ -181,6 +184,7 @@ a{color:var(--acc)}
     <label class="fld"><span class="t" data-en="Port (--port)">端口 (--port)</span><input type="number" id="f_port" min="1" max="65535" value="8080"></label>
     <label class="fld"><span class="t" data-en="Worker threads (--threads)">Worker 线程 (--threads)</span><input type="number" id="f_threads" min="1" max="32" value="8"></label>
     <label class="fld"><span class="t" data-en="Max queued (--max-queued)">最大排队 (--max-queued)</span><input type="number" id="f_max_queued" min="0" value="16"></label>
+    <label class="fld"><span class="t" data-en="Continuous batching (--batch-max, 0/1 = off, max 32)">连续批处理 (--batch-max，0/1=关，上限 32)</span><input type="number" id="f_batch_max" min="0" max="32" value="0"></label>
     <label class="fld"><span class="t">OMP_NUM_THREADS</span><input type="text" id="f_omp" value="4"></label>
   </div>
 
@@ -464,6 +468,7 @@ function loadStateText(s){
 }
 function renderLoadBar(s){
   const box = $("loadbar");
+  if (!s){ box.style.display = "none"; return; }   /* 引擎不可达（loadStatus 的 catch 会传 null）*/
   if (s.load_state === 1){
     const total = s.load_total > 0 ? s.load_total : 1;
     const pct = Math.min(100, Math.round(s.load_layer / total * 100));
@@ -663,6 +668,7 @@ function fillForm(c){
   $("f_port").value = c.port || 8080;
   $("f_threads").value = c.threads || 8;
   $("f_max_queued").value = c.max_queued == null ? 16 : c.max_queued;
+  $("f_batch_max").value = c.batch_max == null ? 0 : c.batch_max;
   $("f_min_free_mb").value = c.min_free_mb == null ? 512 : c.min_free_mb;
   $("f_auto_load").checked = !!c.auto_load;
   $("f_auto_unload_s").value = c.auto_unload_s == null ? 0 : c.auto_unload_s;
@@ -717,6 +723,7 @@ function collectForm(){
     port: num("f_port"),
     threads: num("f_threads"),
     max_queued: num("f_max_queued"),
+    batch_max: num("f_batch_max"),
     min_free_mb: num("f_min_free_mb"),
     auto_load: bool("f_auto_load"),
     auto_unload_s: num("f_auto_unload_s"),
@@ -798,6 +805,8 @@ function applyFields(o){
   if (o.tp_spin != null)         $("f_tp_spin").value = o.tp_spin;
   if (o.row_slice != null)       $("f_row_slice").value = o.row_slice;
   if (o.kv_q4 != null)           $("f_kv_q4").checked = !!o.kv_q4;
+  if (o.batch_max != null)       $("f_batch_max").value = String(o.batch_max);
+  if (o.max_queued != null)      $("f_max_queued").value = String(o.max_queued);
   if (o.prefix_kv != null)       $("f_prefix_kv").checked = !!o.prefix_kv;
   if (o.sparse_attn != null)     $("f_sparse_attn").checked = !!o.sparse_attn;
   if (o.sparse_k != null)        $("f_sparse_k").value = String(o.sparse_k);
@@ -893,7 +902,7 @@ const COMBO_ROWS = [
     ev: "板端 ~1.7×；<b>x86 实测仅 +4.5%</b>（GEMM 算力瓶颈，批处理摊不掉算力）",
     ev_en: "Board ~1.7×; <b>x86 measured only +4.5%</b> (GEMM compute-bound; batching cannot amortize compute)",
     plat: ["x86no"],
-    set: {} },
+    set: { batch_max: 8, max_queued: 16 } },
 
   { name: "⑦ 精确重复文本", name_en: "⑦ Exact repeated text",
     scene: "模板 / 列表 / 代码复读", scene_en: "Templates / lists / repeated code",
@@ -925,7 +934,7 @@ function renderCombos(){
       `<span class="ptag ${PTAG_TEXT[p][0]}" data-en="${PTAG_TEXT[p][2]}">${PTAG_TEXT[p][1]}</span>`).join("");
     const enHtml = (r.ev_en || r.ev) + (r.note ? `<br><span class=&quot;why&quot;>${r.note_en || r.note}</span>` : "");
     return `<tr>
-      <td class="name" data-en="${r.name_en || r.name}">${r.name}</td>
+      <td class="name"><span data-en="${r.name_en || r.name}">${r.name}</span><span class="inuse" id="comboInUse${i}" style="display:none" data-en="In use">当前在用</span></td>
       <td data-en="${r.scene_en || r.scene}">${r.scene}</td>
       <td><code data-en="${r.sw_en || r.sw}">${r.sw}</code></td>
       <td class="ev" data-en-html='${enHtml}'>${r.ev}${r.note ? `<br><span class="why">${r.note}</span>` : ""}</td>
@@ -936,6 +945,7 @@ function renderCombos(){
   tb.querySelectorAll("button[data-combo]").forEach(b => {
     b.onclick = () => comboApply(parseInt(b.dataset.combo, 10));
   });
+  refreshComboInUse();
   applyLang();
 }
 function comboApply(i){
@@ -946,6 +956,49 @@ function comboApply(i){
   msg($("combomsg"),
       T(`已套用「${r.name}」。可微调后点「保存配置」，再重启引擎生效。`,
         `Applied "${r.name_en || r.name}". Fine-tune, then click "Save config" and restart the engine to take effect.`), true);
+}
+/* ---- 「当前在用」标记 ----
+ * 判定口径：以「已保存 / 运行中的配置」（/admin/api/config）为准，而不是表单草稿
+ * ——表单里改了但没保存、没重启，不算在用。规则：组合 set 里的每个键都与该配置
+ * 一致即命中；set 为空（⑥ 的 --batch-max 页面上无对应控件）不参与判定；多行同时
+ * 命中是正常的（②/③/④ 都是在①的重叠子集上叠加）。 */
+let curCfg = null;
+function cfgNum(v, d){ return (v == null || v === "") ? d : Number(v); }
+function cfgValOf(c, k){
+  const ev = c.env || {};
+  switch (k){
+    case "prefix_kv":       return c.prefix_kv !== false;
+    case "kv_q4":           return !!c.kv_q4;
+    case "batch_max":       return cfgNum(c.batch_max, 0);
+    case "max_queued":      return cfgNum(c.max_queued, 16);
+    case "prefill_q8":      return !!c.prefill_q8;
+    case "sparse_attn":     return !!c.sparse_attn;
+    case "sparse_k":        return cfgNum(c.sparse_k, 32);
+    case "l3_evict":        return !!c.l3_evict;
+    case "l3_ratio":        return cfgNum(c.l3_ratio, 0.75);
+    case "l3_min_seq":      return cfgNum(c.l3_min_seq, 128);
+    case "l3_prefix_reuse": return ev.VLLM_L3_PREFIX_REUSE === "1";
+    case "vqf_stream":      return parseInt(ev.VLLM_VQF_STREAM || "0", 10) > 0;
+    case "disk_kv":         return !!c.disk_kv;
+    case "spec":            return !!c.spec;
+    case "spec_k":          return cfgNum(c.spec_k, 4);
+    case "actq":            return ev.VLLM_ACTQ === "1";
+    case "moe_batch":       return ev.VLLM_MOE_BATCH !== "0";
+    case "npu":             return !!c.npu;
+    default:                return undefined;
+  }
+}
+function comboInUse(r){
+  if (!curCfg || !r.set) return false;
+  const keys = Object.keys(r.set);
+  if (!keys.length) return false;
+  return keys.every(k => cfgValOf(curCfg, k) === r.set[k]);
+}
+function refreshComboInUse(){
+  COMBO_ROWS.forEach((r, i) => {
+    const el = $("comboInUse" + i);
+    if (el) el.style.display = comboInUse(r) ? "inline-block" : "none";
+  });
 }
 /* 开 --l3-evict 却没开 P3 门 → 显式告警（这是最容易踩的坑） */
 function updateP3Warn(){
@@ -990,7 +1043,12 @@ async function applyDevRecommend(){
 async function loadConfig(){
   try {
     const r = await eng("/admin/api/config");
-    if (r.config) { fillForm(r.config); badgeT($("cfgBadge"), "配置: 已载入", "Config: loaded", "ok"); }
+    if (r.config) {
+      fillForm(r.config);
+      curCfg = r.config;              /* 「当前在用」判定基准 = 已保存配置 */
+      refreshComboInUse();
+      badgeT($("cfgBadge"), "配置: 已载入", "Config: loaded", "ok");
+    }
     fillDeviceSelect(r);
   } catch (e) { msg($("cfgmsg"), T("读取配置失败: ", "Failed to read config: ") + e, false); }
 }
@@ -1003,6 +1061,7 @@ async function saveConfig(){
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify(cfg)
     });
+    if (r.ok) { curCfg = cfg; refreshComboInUse(); }
     msg($("cfgmsg"), r.ok ? T("已保存到 ", "Saved to ") + (r.path||"") + T("。", ".") + (r.note||"") : (T("保存失败: ", "Save failed: ") + (r.error||"")), !!r.ok);
   } catch (e) { msg($("cfgmsg"), T("保存失败: ", "Save failed: ") + e, false); }
   $("btn_savecfg").disabled = false;
