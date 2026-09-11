@@ -29,6 +29,11 @@ int vqf_load(STModelWeights *w, const char *path);
 /* 探测文件是否为 VQF（读 magic）。 */
 int vqf_is_file(const char *path);
 
+/* 已加载 VQF 的「文件内固化布局」（/admin 只读展示用）。返回 1 = 有已加载的
+ * 模型并回填 flags（VQF_FLAG_*）/version（VQF_VERSION[_MOE]）；0 = 未加载。
+ * 量化模式在转换期已固化进文件，加载侧不可更改，故这里只做只读回读。 */
+int vqf_layout_state(uint32_t *flags, uint32_t *version);
+
 /* 后台线程预热 mmap 权重页（madvise WILLNEED + 逐页 touch）：把 eMMC→RAM
  * 的页 fault 成本从首次推理挪到就绪后的空闲期。由 VLLM_VQF_PREWARM=1 触发；
  * detach 线程，不阻塞 serve。Windows 下为空操作。 */

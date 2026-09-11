@@ -142,9 +142,8 @@ typedef struct VLLMServerCtx {
     volatile int  load_state;
     char load_error[256];
     void *load_arg;            /* opaque load context (main.c ServeModel) */
-    int load_wmode;            /* wmode requested for the next load (-1 = keep) */
-    int load_format;           /* 加载格式: 0=auto(自动定位 VQF), 1=vqf 强制 */
-    char load_format_str[16];  /* 管理页回显用（"auto"/"vqf"） */
+    int load_format;           /* 加载格式（--load-format，CLI 专属；v1.0 纯 VQF
+                                * 运行时下 0=auto 与 1=vqf 等价，保留兼容） */
 
     /* Load-on-use / unload-when-idle lifecycle (VQF 等自研格式：用时加载、
      * 不用时卸载，释放权重+KV 内存；卸载后上下文状态（KV/prefix/batch）清零，

@@ -18,12 +18,17 @@ Usage:
   python3 vllm_mgr.py serve [--serve 8082]   # HTTP supervisor (daemon loop)
 
 Config file schema (written by the admin page):
-  { "model_dir": "<path-to-model-dir>", "wmode": "q4", "kv_q4": false,
+  { "model_dir": "<path-to-model-dir>", "kv_q4": false,
     "prefix_kv": true, "prefix_cache": false, "prefill_q8": false,
     "sparse_attn": false,
     "sparse_k": 32, "npu": true, "npu_load": 1, "npu_infer": 1,
     "npu_timing": 0, "port": 8080, "threads": 8, "max_queued": 16,
     "min_free_mb": 2048, "env": {"OMP_NUM_THREADS": "4"} }
+
+Optional key, not written by the admin page but honoured when present in a
+hand-edited config: "wmode" — passed through to the engine's --wmode. 量化在
+转换期由 vqf_convert --wmode 固化进 VQF 文件，加载侧不选择；只有 g256 离线
+基准档需要加载侧同档位才能通过布局校验。
 """
 import argparse
 import json
@@ -83,10 +88,15 @@ def build_cmd(cfg, bin_):
     cmd = [bin_, "--serve",
            "--port", str(int(cfg.get("port", 8080))),
            "--model", cfg.get("model_dir", os.path.join(REPO, "models", "qwen3-vl-2b")),
-           "--wmode", cfg.get("wmode", "q4"),
            "--threads", str(int(cfg.get("threads", 8))),
            "--max-queued", str(int(cfg.get("max_queued", 16))),
            "--min-free-mb", str(int(cfg.get("min_free_mb", 2048)))]
+    # 量化模式已从管理页移除：量化在转换期由 vqf_convert --wmode 固化进 VQF 文件，
+    # 加载侧不再选择。仅当 config 显式携带 wmode 时透传（手工编辑 / 遗留配置的
+    # 逃生口——例如 g256 离线基准档需要加载侧 --wmode g256 通过布局校验）。
+    _wm = str(cfg.get("wmode") or "").strip()
+    if _wm:
+        cmd += ["--wmode", _wm]
     if cfg.get("kv_q4"):
         cmd.append("--kv-q4")
     # KV 前缀复用默认开（引擎默认）；管理页取消勾选（prefix_kv=false）时才关闭
@@ -135,13 +145,11 @@ def build_cmd(cfg, bin_):
     au = int(cfg.get("auto_unload_s") or 0)
     if au > 0:
         cmd += ["--auto-unload", str(au)]
-    # Model load format (auto / vqf). 引擎已为纯 VQF 运行时。
-    lf = str(cfg.get("format") or "auto").strip().lower()
-    if lf in ("vqf",):
-        cmd += ["--load-format", lf]
+    # 加载格式（--load-format）：v1.0 引擎为纯 VQF 运行时，加载时自动定位模型
+    # 目录内的 model.vqf，auto 与 vqf 等价，故不再注入该参数。
     if not cfg.get("auto_start"):
         # Manual mode: the engine starts with the model NOT loaded; the
-        # admin page triggers the load (with a chosen quantization mode).
+        # admin page triggers the load (VQF 单文件，量化由文件固化).
         cmd.append("--no-auto-load")
     return cmd
 

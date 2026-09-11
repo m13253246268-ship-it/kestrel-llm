@@ -3408,11 +3408,6 @@ static void fill_model_name(VLLMServerCtx *ctx, const STModelConfig *c) {
 static void *serve_load_thread(void *arg) {
     VLLMServerCtx *ctx = (VLLMServerCtx *)arg;
     ServeModel *m = (ServeModel *)ctx->load_arg;
-    /* The admin page may have requested a different quantization mode for
-     * this load (selected in the UI before pressing "加载模型"). */
-    if (ctx->load_wmode >= 0 && ctx->load_wmode <= 5) {
-        g_st_wmode = ctx->load_wmode;
-    }
     /* Portable manual-load mode: the model dir may have been set on the
      * admin page after startup (ctx->model_dir repointed by
      * vllm_serve_set_model_dir). Sync it into the load context. */
@@ -3651,9 +3646,7 @@ static int vllm_serve_main(int port, const char *model_dir_arg, int auto_load) {
     ctx.auto_load = g_serve_load_on_use;  /* 用时加载：请求触发加载（--load-on-use） */
     ctx.auto_unload_s = g_serve_auto_unload_s; /* 不用时卸载：空闲 N 秒自动卸载 */
     if (ctx.auto_unload_s > 0) ctx.auto_load = 1; /* 卸载后能自愈：下个请求重新加载 */
-    ctx.load_format = g_serve_load_format; /* 加载格式优先级（--load-format，管理页可改） */
-    snprintf(ctx.load_format_str, sizeof(ctx.load_format_str), "%s",
-             g_serve_load_format == 1 ? "vqf" : "auto");
+    ctx.load_format = g_serve_load_format; /* 加载格式（--load-format，CLI 专属） */
     /* Admin/management metadata (reported by /admin; NULL paths use the
      * board defaults in vllm_admin.c). */
     ctx.model_dir = model_dir;
@@ -3692,9 +3685,8 @@ static int vllm_serve_main(int port, const char *model_dir_arg, int auto_load) {
     ServeModel m;
     memset(&m, 0, sizeof(m));
     snprintf(m.model_dir, sizeof(m.model_dir), "%s", model_dir);
-    m.format_prio = ctx.load_format;   /* 管理页设置的加载格式优先级 */
+    m.format_prio = ctx.load_format;   /* --load-format（CLI 专属） */
     ctx.load_arg = &m;
-    ctx.load_wmode = -1;   /* not overridden: keep the --wmode from the CLI */
 
     /* 方案 2：可验证推理背书初始化（VLLM_ATTEST=1 启用，见 vllm_attest.c）。
      * 须在模型加载前调用：vatt_model_ready 在加载成功后固化模型指纹。 */

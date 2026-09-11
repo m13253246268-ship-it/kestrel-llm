@@ -196,6 +196,45 @@ static const char *getenv_int_str(const char *name, const char *dflt) {
     return (e && e[0]) ? e : dflt;
 }
 
+/* ---------- VQF 文件内固化布局（只读展示） ----------
+ * 量化模式在转换期已由 vqf_convert --wmode 固化进 VQF 文件，加载侧不可更改；
+ * 管理页不再提供"量化模式/加载格式"选择，改为回读文件头 flags 做只读展示。 */
+static void lappend(char *buf, size_t cap, size_t *n, const char *s) {
+    if (cap == 0 || *n >= cap) return;
+    int k = snprintf(buf + *n, cap - *n, "%s", s);
+    if (k > 0) {
+        *n += (size_t)k;
+        if (*n >= cap) *n = cap - 1;
+    }
+}
+
+static void vqf_layout_str(uint32_t flags, uint32_t version,
+                           char *buf, size_t cap) {
+    static const struct { uint32_t bit; const char *name; } items[] = {
+        { VQF_FLAG_Q8BUF_Q4, "q4i" },        /* q8_* 存 pre-unpacked Q4 int8 */
+        { VQF_FLAG_G256,     "g256" },
+        { VQF_FLAG_Q8_8X8,   "q8-8x8" },
+        { VQF_FLAG_Q4_4X4,   "q4-4x4" },
+        { VQF_FLAG_X8,       "x8-8x8l" },
+        { VQF_FLAG_EMB_F16,  "emb-f16" },
+        { VQF_FLAG_VISION,   "vision" },
+        { VQF_FLAG_ENC,      "enc" },
+        { VQF_FLAG_SIGNED,   "signed" },
+        { VQF_FLAG_MOE,      "moe" },
+    };
+    char tmp[48];
+    size_t n = 0;
+    if (cap == 0) return;
+    snprintf(tmp, sizeof(tmp), "v%u", version);
+    lappend(buf, cap, &n, tmp);
+    for (size_t i = 0; i < sizeof(items) / sizeof(items[0]); i++) {
+        if (!(flags & items[i].bit)) continue;
+        snprintf(tmp, sizeof(tmp), " · %s", items[i].name);
+        lappend(buf, cap, &n, tmp);
+    }
+    if (n == 0) snprintf(buf, cap, "-");
+}
+
 static void json_put_str(VJson *obj, const char *key, const char *val) {
     vjson_obj_set(obj, key, vjson_new_string(val ? val : ""));
 }
@@ -204,7 +243,6 @@ static void json_put_str(VJson *obj, const char *key, const char *val) {
 static VJson *build_config_json(const VLLMServerCtx *ctx) {
     VJson *o = vjson_new_object();
     json_put_str(o, "model_dir", ctx->model_dir);
-    json_put_str(o, "wmode", wmode_str(g_st_wmode));
     vjson_obj_set(o, "kv_q4", vjson_new_bool(g_kv_q4));
     vjson_obj_set(o, "prefix_cache", vjson_new_bool(ctx->prefix_cache));
     vjson_obj_set(o, "prefill_q8", vjson_new_bool(g_st_prefill_q8));
@@ -240,9 +278,8 @@ static VJson *build_config_json(const VLLMServerCtx *ctx) {
     /* Load-on-use / unload-when-idle lifecycle config */
     vjson_obj_set(o, "auto_load", vjson_new_bool(ctx->auto_load));
     vjson_obj_set(o, "auto_unload_s", vjson_new_number((double)ctx->auto_unload_s));
-    /* 模型加载格式（管理页"加载格式"下拉，"auto"/"vqf"） */
-    json_put_str(o, "format", ctx->load_format_str[0] ? ctx->load_format_str
-                                                      : "auto");
+    /* 模型加载格式：v1.0 起引擎为纯 VQF 运行时，无格式可选（加载时自动定位
+     * 模型目录内的 model.vqf），故不再持久化 format 字段。 */
     json_put_str(o, "device", ctx->device_id);
     VJson *env = vjson_new_object();
     json_put_str(env, "OMP_NUM_THREADS",
@@ -389,6 +426,18 @@ static void handle_admin_status(const VLLMServerCtx *ctx, VHttpResponse *resp) {
     json_put_str(o, "model_name", ctx->model_name[0] ? ctx->model_name : NULL);
     json_put_str(o, "model_dir", ctx->model_dir);
     json_put_str(o, "wmode", wmode_str(g_st_wmode));
+    /* VQF 文件内固化布局（只读）：量化在转换期由 vqf_convert --wmode 固化进
+     * 文件，加载侧不可更改。未加载 / 加载失败时不下发该字段，管理页显示 "-"。 */
+    {
+        uint32_t vqf_flags = 0, vqf_ver = 0;
+        if (vqf_layout_state(&vqf_flags, &vqf_ver)) {
+            char lbuf[160];
+            vqf_layout_str(vqf_flags, vqf_ver, lbuf, sizeof(lbuf));
+            vjson_obj_set(o, "vqf_flags", vjson_new_number((double)vqf_flags));
+            vjson_obj_set(o, "vqf_version", vjson_new_number((double)vqf_ver));
+            json_put_str(o, "layout", lbuf);
+        }
+    }
     /* Device profile */
     json_put_str(o, "device_id", ctx->device_id);
     json_put_str(o, "device_name", ctx->device_name);
@@ -766,29 +815,14 @@ static void handle_admin_l3_clear(VLLMServerCtx *ctx, VHttpResponse *resp) {
     admin_json_reply(resp, o);
 }
 
-/* wmode string ("q4"/"q4i"/"q8"/"g256"/"q2mix"/"dual") -> g_st_wmode int. */
-static int wmode_parse(const char *s) {
-    if (!s || !s[0]) return -1;
-    if (s[0] == 'q' || s[0] == 'Q') {
-        if (s[1] == '2') return 5;   /* q2mix */
-        if (s[1] == '4' && s[2] == 'i') return 3;   /* q4i */
-        if (s[1] == '4') return 1;
-        if (s[1] == '8') return 2;
-    }
-    if (s[0] == 'g' || s[0] == 'G') return 4;       /* g256 */
-    if (s[0] == 'd' || s[0] == 'D') return 0;       /* dual */
-    return -1;
-}
-
 static void handle_admin_model_load(VLLMServerCtx *ctx, const VHttpRequest *req,
                                     VHttpResponse *resp) {
     VJson *o = vjson_new_object();
-    /* Optional body: {"wmode": "q4|q8|g256|...", "model_dir": "<path>"}.
-     * wmode selects the quantization mode for THIS load (overrides the CLI
-     * --wmode); model_dir points the load at a model directory that may not
-     * have been resolvable at startup (portable manual-load mode — the
-     * packaged exe can run from any directory and the admin page supplies
-     * the path). */
+    /* Optional body: {"model_dir": "<path>"}. model_dir points the load at a
+     * model directory that may not have been resolvable at startup (portable
+     * manual-load mode — the packaged exe can run from any directory and the
+     * admin page supplies the path). The load always targets the VQF single
+     * file in that directory (model.vqf / weights.vqf / vllm.vqf). */
     if (req->body && req->body_len > 0) {
         char *copy = (char *)malloc(req->body_len + 1);
         if (copy) {
@@ -796,26 +830,10 @@ static void handle_admin_model_load(VLLMServerCtx *ctx, const VHttpRequest *req,
             copy[req->body_len] = '\0';
             VJson *root = vjson_parse(copy);
             if (root && root->type == VJ_OBJECT) {
-                const VJson *wm = vjson_obj_get(root, "wmode");
-                if (wm && wm->type == VJ_STRING) {
-                    int w = wmode_parse(vjson_str(wm));
-                    if (w >= 0) ctx->load_wmode = w;
-                }
                 const VJson *md = vjson_obj_get(root, "model_dir");
                 if (md && md->type == VJ_STRING) {
                     const char *s = vjson_str(md);
                     if (s && s[0]) vllm_serve_set_model_dir(ctx, s);
-                }
-                /* 加载格式（"auto"/"vqf"；VQF 单一运行时，其余一律按 auto 处理） */
-                const VJson *fm = vjson_obj_get(root, "format");
-                if (fm && fm->type == VJ_STRING) {
-                    const char *s = vjson_str(fm);
-                    if (s && s[0]) {
-                        ctx->load_format = (strcmp(s, "vqf") == 0) ? 1 : 0;
-                        snprintf(ctx->load_format_str,
-                                 sizeof(ctx->load_format_str), "%s",
-                                 ctx->load_format == 1 ? "vqf" : "auto");
-                    }
                 }
             }
             vjson_free(root);

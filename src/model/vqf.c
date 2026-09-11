@@ -38,6 +38,18 @@
 /* 分层驻留：vqf_load 成功路径传入当前 VQF 的 fd（setup/advise 共用） */
 static int g_vqf_stream_fd = -1;
 
+/* 已加载 VQF 的文件内固化布局（只读展示，/admin 用）：量化在转换期已固化，
+ * 加载侧不可更改，故此处只回填文件头的 flags/version 供读取。 */
+static uint32_t g_vqf_loaded_flags = 0;
+static uint32_t g_vqf_loaded_version = 0;
+
+int vqf_layout_state(uint32_t *flags, uint32_t *version) {
+    if (!g_vqf_loaded_flags) return 0;
+    if (flags)   *flags   = g_vqf_loaded_flags;
+    if (version) *version = g_vqf_loaded_version;
+    return 1;
+}
+
 /* 引擎全局布局开关（vllm_safetensors.c）：几何门控失败会被清零，转换时
  * 以实际状态为准。 */
 extern int g_st_q8_repack;
@@ -206,6 +218,8 @@ static int vqf_header_normalize(const uint8_t *raw, size_t file_size,
 
 int vqf_load(STModelWeights *w, const char *path) {
     st_mmap_t m;
+    g_vqf_loaded_flags = 0;      /* 布局展示：加载失败/未加载时归零 */
+    g_vqf_loaded_version = 0;
     m.fi = -1; m.data = NULL; m.len = 0; m.fd = -1;
     if (st_mmap_open(&m, 0, path) != 0) {
         fprintf(stderr, "[VQF] mmap failed: %s\n", path);
@@ -533,6 +547,8 @@ int vqf_load(STModelWeights *w, const char *path) {
     w->has_x8  = (h->flags & VQF_FLAG_X8) ? 1 : 0;
     w->q8_buf_q4 = (h->flags & VQF_FLAG_Q8BUF_Q4) ? 1 : 0;
     w->emb_f16 = (h->flags & VQF_FLAG_EMB_F16) ? 1 : 0;
+    g_vqf_loaded_flags = h->flags;      /* /admin 只读展示"文件内固化布局" */
+    g_vqf_loaded_version = h->version;
     w->n_layers_allocated = c->n_layers;
     w->is_allocated = 1;
     w->vqf_map = m.data;

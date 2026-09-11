@@ -4,7 +4,7 @@
 
 #include <stddef.h>
 
-/* embedded admin.html (65438 bytes) */
+/* embedded admin.html (63635 bytes) */
 const char *embedded_admin_html(size_t *len);
 
 /* embedded chat.html (26180 bytes) */

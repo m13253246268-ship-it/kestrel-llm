@@ -124,21 +124,8 @@ a{color:var(--acc)}
     <div class="sec">模型路径与格式</div>
     <label class="fld hl"><span class="t">模型文件夹路径 <b style="color:var(--warn);font-weight:600">（必填）</b></span>
       <input type="text" id="f_model_dir" placeholder="D:\Modl\Qwen3-VL-2B-Instruct"></label>
-    <label class="fld"><span class="t">量化模式 (--wmode)</span>
-      <select id="f_wmode">
-        <option value="dual">dual (prefill Q8 + decode Q4, 混合精度, serve 推荐)</option>
-        <option value="q4">q4  (Q4_0 nibble, 6.3GB)</option>
-        <option value="q4i">q4i (Q4 预解包 int8, decode 快)</option>
-        <option value="q2mix">q2mix (attention Q4 + FFN Q2_1, 带宽÷1.7, 混合精度)</option>
-        <option value="q8">q8  (Q8_0, 9.8GB)</option>
-        <option value="g256">g256 (NPU K-block 256, 离线基准)</option>
-      </select></label>
-    <label class="fld"><span class="t">加载格式</span>
-      <select id="f_format_prio">
-        <option value="auto">自动 (VQF，自动定位 model.vqf)</option>
-        <option value="vqf">VQF (自研单文件，mmap 秒级加载)</option>
-      </select></label>
-    <div style="font-size:11px;color:var(--tx2)">引擎为纯 VQF 运行时：模型目录内须放置自研 VQF 单文件 (model.vqf)，加载由 mmap 完成。</div>
+    <div style="font-size:11px;color:var(--tx2)">引擎为纯 VQF 运行时：在模型文件夹内自动定位 <b>model.vqf</b>（依次尝试 model.vqf / weights.vqf / vllm.vqf），mmap 直挂加载，无需选择格式。</div>
+    <div style="font-size:11px;color:var(--tx2)">量化模式在<b>转换期</b>已固化进 VQF 文件（由 vqf_convert --wmode 决定），加载侧不可更改——要换量化请重新转换。</div>
     <div style="margin-top:4px;padding:0 10px;border-left:3px solid var(--bd)">
       <div class="sec">加载 / 卸载策略</div>
       <div class="chkrow"><input type="checkbox" id="f_auto_load"><label for="f_auto_load">用时加载 (--load-on-use)：模型未加载时收到请求自动加载</label></div>
@@ -171,7 +158,6 @@ a{color:var(--acc)}
       <select id="f_device"></select></label>
     <div class="row" style="margin-top:4px">
       <button id="btn_applydev" style="padding:4px 10px;font-size:12px">应用设备推荐参数</button>
-      <span id="devWmodeHint" style="font-size:11px;color:var(--tx2);align-self:center"></span>
     </div>
     <div class="sec">量化与缓存</div>
     <div class="chkrow"><input type="checkbox" id="f_kv_q4"><label for="f_kv_q4">KV 量化 Q4 (--kv-q4, 内存 1.65x 压缩, decode +28%)<span class="ptag ram">省 RAM</span></label></div>
@@ -204,7 +190,7 @@ a{color:var(--acc)}
     <div class="chkrow"><input type="checkbox" id="f_q8_8x8"><label for="f_q8_8x8">Q8 Prefill 8x8 tile <b>(VLLM_Q8_8X8)</b> — 默认开：GEMM 1.6x / GEMV 1.17x，逐位一致</label></div>
     <div class="chkrow"><input type="checkbox" id="f_q8_repack"><label for="f_q8_repack">Q8 repack 预打包 <b>(VLLM_DISABLE_Q8_REPACK)</b> — 默认开，关闭后回退 legacy 布局</label></div>
     <div class="chkrow"><input type="checkbox" id="f_q4_repack"><label for="f_q4_repack">Q4 repack 预打包 <b>(VLLM_DISABLE_Q4_REPACK)</b> — 默认开，关闭后回退 legacy 布局</label></div>
-    <div class="chkrow"><input type="checkbox" id="f_q4_8x8l"><label for="f_q4_8x8l">纯 Q4 16x8 tile <b>(VLLM_ENABLE_8X8L)</b> — 默认关（仅 wmode=q4 有效）</label></div>
+    <div class="chkrow"><input type="checkbox" id="f_q4_8x8l"><label for="f_q4_8x8l">纯 Q4 16x8 tile <b>(VLLM_ENABLE_8X8L)</b> — 默认关（仅按 --wmode q4 转换的模型有效）</label></div>
     <div class="sec">线程与采样</div>
     <div class="chkrow"><input type="checkbox" id="f_pb_heap"><label for="f_pb_heap">有界堆采样 <b>(VLLM_PB_HEAP)</b> — 默认开，P2 采样优化（采样耗时 13.6ms→4.8ms）</label></div>
     <div class="chkrow"><input type="checkbox" id="f_tp_bind"><label for="f_tp_bind">线程亲和绑定 <b>(VLLM_TP_BIND)</b> — 默认关（实测关闭更快）</label></div>
@@ -341,11 +327,11 @@ a{color:var(--acc)}
     <label class="fld" style="margin-top:8px"><span class="t">快速组合优化（预设一键填充下方优化开关）</span>
       <select id="f_preset">
         <option value="">— 选择预设 —</option>
-        <option value="perf">性能最优 (推荐): dual 混合精度 + Q8 8x8 prefill</option>
-        <option value="lat">最低延迟: 全 Q4（4x4 decode + 8x8 prefill）</option>
-        <option value="acc">最高精度: 全 Q8（8x8）</option>
-        <option value="mem">低内存: 全 Q4 + KV Q4</option>
-        <option value="npu">NPU 卸载: dual + NPU load=1</option>
+        <option value="perf">性能最优 (推荐): Q8 8x8 prefill 布局（模型须按 dual 转换）</option>
+        <option value="lat">最低延迟: 4x4/8x8 布局开关（模型须按 --wmode q4 转换）</option>
+        <option value="acc">最高精度: 全 Q8 8x8 布局（模型须按 --wmode q8 转换）</option>
+        <option value="mem">低内存: Q4 布局 + KV Q4（模型须按 --wmode q4 转换）</option>
+        <option value="npu">NPU 卸载: NPU load=1</option>
         <option value="long">长上下文 + 多轮: 稀疏注意力 + L3 冷块淘汰 + P3 前缀复用门（必备，decode 快 3 倍）</option>
       </select></label>
     <div class="row">
@@ -539,7 +525,7 @@ async function loadStatus(){
       ["NPU 后端", s.device_npu || "-", ""],
       ["模型类型", s.model_name || (s.load_state === 2 ? (s.model_id || "-") : "未加载"), ""],
       ["模型目录", s.model_dir || "-", "small"],
-      ["量化模式", s.wmode || "-", ""],
+      ["VQF 固化布局", s.layout || "-", ""],
       ["VQF 分层驻留", vqfStreamText(s), ""],
       ["驻留策略档位", s.res ? (["L0 卸载","L1 初始层","L2 权重窗口","L3 KV淘汰","L4 全层驻留"][s.res.cur_level] + (s.res.auto_idle ? " · 自动降级" : "")) : "-", ""],
       ["KV 前缀复用", s.prefix_kv ? "开（多模态/文本共用）" : "关 (--no-prefix-kv)", ""],
@@ -599,7 +585,6 @@ async function loadStatus(){
 /* ---------- config ---------- */
 function fillForm(c){
   $("f_model_dir").value = c.model_dir || "";
-  $("f_wmode").value = c.wmode || "dual";
   $("f_kv_q4").checked = !!c.kv_q4;
   $("f_prefix_cache").checked = !!c.prefix_cache;
   $("f_prefix_kv").checked = c.prefix_kv !== false;
@@ -628,7 +613,6 @@ function fillForm(c){
   $("f_min_free_mb").value = c.min_free_mb == null ? 512 : c.min_free_mb;
   $("f_auto_load").checked = !!c.auto_load;
   $("f_auto_unload_s").value = c.auto_unload_s == null ? 0 : c.auto_unload_s;
-  $("f_format_prio").value = c.format || "auto";
   $("f_omp").value = (c.env && c.env.OMP_NUM_THREADS) ? c.env.OMP_NUM_THREADS : "4";
   const ev = c.env || {};
   $("f_vqf_prewarm").checked = ev.VLLM_VQF_PREWARM === "1";
@@ -656,7 +640,6 @@ function fillForm(c){
 function collectForm(){
   return {
     model_dir: $("f_model_dir").value.trim(),
-    wmode: $("f_wmode").value,
     kv_q4: bool("f_kv_q4"),
     prefix_cache: bool("f_prefix_cache"),
     prefix_kv: bool("f_prefix_kv"),
@@ -684,7 +667,6 @@ function collectForm(){
     min_free_mb: num("f_min_free_mb"),
     auto_load: bool("f_auto_load"),
     auto_unload_s: num("f_auto_unload_s"),
-    format: $("f_format_prio").value,
     auto_start: bool("f_auto_start"),
     device: $("f_device").value,
     env: collectEnv()
@@ -719,21 +701,23 @@ function collectEnv(){
   return ev;
 }
 
-/* ---- quick combo presets (fill only optimization-related fields) ---- */
+/* ---- quick combo presets (fill only optimization-related fields) ----
+ * 只填「运行时开关」：量化模式已从管理页移除（转换期由 vqf_convert --wmode 固化），
+ * 预设里的布局开关（q8_8x8/q8_repack/q4_repack/q4_8x8l）必须与转换档位一致。 */
 const PRESETS = {
-  perf: { wmode: "dual", prefill_q8: true,  q8_8x8: true, q8_repack: true, q4_repack: true,
+  perf: { prefill_q8: true,  q8_8x8: true, q8_repack: true, q4_repack: true,
           q4_8x8l: false, pb_heap: true, tp_bind: false, tp_spin: "", row_slice: "",
           kv_q4: false, npu: false },
-  lat:  { wmode: "q4",  prefill_q8: false, q8_8x8: true, q8_repack: true, q4_repack: true,
+  lat:  { prefill_q8: false, q8_8x8: true, q8_repack: true, q4_repack: true,
           q4_8x8l: false, pb_heap: true, tp_bind: false, tp_spin: "", row_slice: "",
           kv_q4: false, npu: false },
-  acc:  { wmode: "q8",  prefill_q8: true,  q8_8x8: true, q8_repack: true, q4_repack: true,
+  acc:  { prefill_q8: true,  q8_8x8: true, q8_repack: true, q4_repack: true,
           q4_8x8l: false, pb_heap: true, tp_bind: false, tp_spin: "", row_slice: "",
           kv_q4: false, npu: false },
-  mem:  { wmode: "q4",  prefill_q8: false, q8_8x8: true, q8_repack: true, q4_repack: true,
+  mem:  { prefill_q8: false, q8_8x8: true, q8_repack: true, q4_repack: true,
           q4_8x8l: false, pb_heap: true, tp_bind: false, tp_spin: "", row_slice: "",
           kv_q4: true, npu: false },
-  npu:  { wmode: "dual", prefill_q8: true, q8_8x8: true, q8_repack: true, q4_repack: true,
+  npu:  { prefill_q8: true, q8_8x8: true, q8_repack: true, q4_repack: true,
           q4_8x8l: false, pb_heap: true, tp_bind: false, tp_spin: "", row_slice: "",
           kv_q4: false, npu: true, npu_load: 1 },
   /* 长上下文优化 (≥4K 建议)：稀疏注意力 top-k=32 + L3 冷块淘汰 + P3 前缀复用门。
@@ -741,7 +725,7 @@ const PRESETS = {
    * 快 3 倍），KV 内存释放 ~1GB（3416 块淘汰到磁盘）。注意：不可与 KV Q4 同开（decode
    * 会退化为 exact 全量扫描导致长上下文卡死/断连）；P3 门必须开，否则 --prefix-kv
    * 被 L3 静默打掉、多轮追问全量重算（x86 复核 −96.9% 即来自这一项）。 */
-  long: { wmode: "dual", prefill_q8: true,  q8_8x8: true, q8_repack: true, q4_repack: true,
+  long: { prefill_q8: true,  q8_8x8: true, q8_repack: true, q4_repack: true,
           q4_8x8l: false, pb_heap: true, tp_bind: false, tp_spin: "", row_slice: "",
           kv_q4: false, npu: false,
           sparse_attn: true, sparse_k: 32, l3_evict: true, l3_ratio: 0.75, l3_min_seq: 128,
@@ -750,7 +734,6 @@ const PRESETS = {
 };
 function applyFields(o){
   /* 只写显式给出的键（undefined 一律不触碰），让预设与「组合套用」共用同一语义。 */
-  if (o.wmode != null)           $("f_wmode").value = o.wmode;
   if (o.prefill_q8 != null)      $("f_prefill_q8").checked = !!o.prefill_q8;
   if (o.q8_8x8 != null)          $("f_q8_8x8").checked = !!o.q8_8x8;
   if (o.q8_repack != null)       $("f_q8_repack").checked = !!o.q8_repack;
@@ -823,11 +806,11 @@ const COMBO_ROWS = [
            l3_prefix_reuse: true, sparse_attn: false } },
 
   { name: "⑤ MoE 模型服务", scene: "30B-A3B 等稀疏专家",
-    sw: "env VLLM_ACTQ=1 VLLM_MOE_BATCH=1 + --wmode q4（+ 逐层 / P3）",
+    sw: "env VLLM_ACTQ=1 VLLM_MOE_BATCH=1（+ 逐层 / P3）；模型须按 --wmode q4 转换",
     ev: "prefill <b>10.78×</b>（37.5s → 3.48s）/ decode <b>3.20×</b>（30B 逐层 t4）",
     note: "ACTQ 是近似轨（与精确轨非位级一致），且是 MOE_BATCH 生效硬前提",
     plat: [],
-    set: { wmode: "q4", actq: true, moe_batch: true } },
+    set: { actq: true, moe_batch: true } },
 
   { name: "⑥ 并发多用户", scene: "多人同时用同一引擎",
     sw: "--batch-max 8（上限 32）+ --max-queued 16",
@@ -899,28 +882,6 @@ function fillDeviceSelect(r){
   if (cur) sel.value = cur;
   $("devTag").textContent = (r.device && r.device.name) ? "· " + r.device.name : "";
 }
-function applyWmodeFilter(r){
-  const allowed = (r.device_wmodes || []).map(x => String(x));
-  const sel = $("f_wmode");
-  $("devWmodeHint").textContent = allowed.length ? "可用量化: " + allowed.join(" / ") : "";
-  if (!allowed.length) return;
-  const cur = sel.value;
-  const labels = {
-    q4: "q4  (Q4_0 nibble, 6.3GB, serve 推荐)",
-    q4i: "q4i (Q4 预解包 int8, decode 快)",
-    q8: "q8  (Q8_0, 9.8GB)",
-    g256: "g256 (NPU K-block 256, 离线基准)",
-    dual: "dual (Q8+Q4 混合权重)"
-  };
-  sel.innerHTML = "";
-  for (const w of allowed){
-    const opt = document.createElement("option");
-    opt.value = w;
-    opt.textContent = labels[w] || w;
-    sel.appendChild(opt);
-  }
-  if (allowed.indexOf(cur) >= 0) sel.value = cur;
-}
 async function applyDevRecommend(){
   const id = $("f_device").value;
   if (!id){ msg($("cfgmsg"), "请先选择设备", false); return; }
@@ -928,9 +889,6 @@ async function applyDevRecommend(){
     const r = await eng("/admin/api/device?id=" + encodeURIComponent(id));
     const rec = r.device_recommend;
     if (!rec){ msg($("cfgmsg"), "该设备没有推荐参数", false); return; }
-    applyWmodeFilter(r);
-    if (rec.wmode && (r.device_wmodes || []).indexOf(rec.wmode) >= 0)
-      $("f_wmode").value = rec.wmode;
     $("f_threads").value = rec.threads || 4;
     $("f_omp").value = rec.omp || 4;
     $("f_npu").checked = !!rec.npu;
@@ -947,7 +905,6 @@ async function loadConfig(){
     const r = await eng("/admin/api/config");
     if (r.config) { fillForm(r.config); badge($("cfgBadge"), "配置: 已载入", "ok"); }
     fillDeviceSelect(r);
-    applyWmodeFilter(r);
   } catch (e) { msg($("cfgmsg"), "读取配置失败: " + e, false); }
 }
 async function saveConfig(){
@@ -966,14 +923,13 @@ async function saveConfig(){
 
 /* ---------- ops ---------- */
 async function opLoadModel(){
-  const wmode = $("f_wmode").value;
   const modelDir = $("f_model_dir").value.trim();
-  msg($("opmsg"), "正在加载模型（量化类型: " + wmode + "）…", true);
+  msg($("opmsg"), "正在加载模型（VQF 单文件，量化由文件固化）…", true);
   try {
     const r = await eng("/admin/api/model/load", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({wmode: wmode, model_dir: modelDir})
+      body: JSON.stringify({model_dir: modelDir})
     });
     if (r.ok) { msg($("opmsg"), r.note || "已开始加载", true); loadStatus(); }
     else msg($("opmsg"), "加载失败: " + (r.error||""), false);
@@ -1131,14 +1087,6 @@ $("f_l3_evict").onchange = updateP3Warn;
 $("f_l3_prefix_reuse").onchange = updateP3Warn;
 renderCombos();
 $("btn_applydev").onclick = applyDevRecommend;
-$("f_device").onchange = async () => {
-  const id = $("f_device").value;
-  if (!id) return;
-  try {
-    const r = await eng("/admin/api/device?id=" + encodeURIComponent(id));
-    applyWmodeFilter(r);
-  } catch (e) {}
-};
 $("btn_start").onclick = opStart;
 $("btn_loadmodel").onclick = opLoadModel;
 $("btn_unload").onclick = opUnload;
