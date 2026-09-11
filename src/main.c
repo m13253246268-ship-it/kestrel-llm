@@ -26,6 +26,7 @@
 #include "vllm_server.h"
 #include "vllm_attest.h"
 #include "vllm_device.h"
+#include "vllm_i18n.h"     /* vllm_tr：引擎侧少量可现文案的中英双语 */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -3596,8 +3597,12 @@ int vllm_serve_unload_model_self(VLLMServerCtx *ctx) {
 static void serve_on_start(int actual_port, void *ud) {
     (void)ud;
     printf("\n  [SERVE] OpenAI-compatible API listening on http://0.0.0.0:%d\n", actual_port);
-    printf("  [SERVE] 管理入口: http://0.0.0.0:%d/admin/   (管理页 admin.html)\n", actual_port);
-    printf("  [SERVE] 对话入口: http://0.0.0.0:%d/chat    (对话页 chat.html)\n", actual_port);
+    printf("  [SERVE] %s http://0.0.0.0:%d/admin/   (%s)\n",
+           vllm_tr("管理入口:", "admin UI:"), actual_port,
+           vllm_tr("管理页 admin.html", "admin.html"));
+    printf("  [SERVE] %s http://0.0.0.0:%d/chat    (%s)\n",
+           vllm_tr("对话入口:", "chat UI:"), actual_port,
+           vllm_tr("对话页 chat.html", "chat.html"));
     printf("          GET  /v1/models\n");
     printf("          GET  /health\n");
     printf("          POST /v1/chat/completions  (stream=true SSE supported)\n");

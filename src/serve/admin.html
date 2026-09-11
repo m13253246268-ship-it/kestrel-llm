@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>vLLM-Kestrel 引擎管理</title>
+<title data-en="vLLM-Kestrel Engine Admin">vLLM-Kestrel 引擎管理</title>
 <style>
 :root{
   --bg:#0f1419; --panel:#1a212b; --panel2:#202a36; --bd:#2c3a4a;
@@ -92,59 +92,60 @@ a{color:var(--acc)}
 </head>
 <body>
 <header>
-  <h1>vLLM-Kestrel 引擎管理</h1>
+  <h1 data-en="vLLM-Kestrel Engine Admin">vLLM-Kestrel 引擎管理</h1>
   <span id="engBadge" class="badge">引擎: 未知</span>
   <span id="mgrBadge" class="badge">supervisor: 未知</span>
   <span id="cfgBadge" class="badge">配置: -</span>
   <span style="flex:1"></span>
-  <a class="navlink" href="/chat" target="_blank">对话页 /chat</a>
+  <button id="langBtn" class="navlink" type="button" title="切换为中文">EN</button>
+  <a class="navlink" href="/chat" target="_blank" data-en="Chat /chat">对话页 /chat</a>
   <span id="clock" style="color:var(--tx2);font-size:12px"></span>
 </header>
 <main>
   <!-- 状态 + 引擎控制 -->
   <div class="card" style="grid-column:1/-1">
-    <h2>运行状态</h2>
+    <h2 data-en="Runtime Status">运行状态</h2>
     <div class="grid" id="stGrid"></div>
     <div id="loadbar" style="display:none;margin-top:10px"></div>
-    <div class="sec">引擎控制</div>
+    <div class="sec" data-en="Engine Control">引擎控制</div>
     <div class="row" style="margin-top:2px">
-      <button id="btn_start" class="primary">启动引擎</button>
-      <button id="btn_restart">重启引擎</button>
-      <button id="btn_stop" class="danger">关闭引擎</button>
+      <button id="btn_start" class="primary" data-en="Start Engine">启动引擎</button>
+      <button id="btn_restart" data-en="Restart Engine">重启引擎</button>
+      <button id="btn_stop" class="danger" data-en="Shut Down Engine">关闭引擎</button>
     </div>
     <div style="font-size:12px;color:var(--tx2)">
-      引擎进程由 supervisor 管理（<span id="mgrUrl"></span>）· 引擎 API: <span id="engUrl"></span>
+      <span data-en="Engine process is managed by supervisor (">引擎进程由 supervisor 管理（</span><span id="mgrUrl"></span><span data-en=") · Engine API: ">）· 引擎 API: </span><span id="engUrl"></span>
     </div>
     <div class="msg" id="opmsg2"></div>
   </div>
 
   <!-- 模型加载 -->
   <div class="card">
-    <h2>模型加载</h2>
-    <div class="sec">模型路径与格式</div>
-    <label class="fld hl"><span class="t">模型文件夹路径 <b style="color:var(--warn);font-weight:600">（必填）</b></span>
+    <h2 data-en="Model Loading">模型加载</h2>
+    <div class="sec" data-en="Model Path &amp; Format">模型路径与格式</div>
+    <label class="fld hl"><span class="t"><span data-en="Model folder path ">模型文件夹路径 </span><b style="color:var(--warn);font-weight:600" data-en="(required)">（必填）</b></span>
       <input type="text" id="f_model_dir" placeholder="D:\Modl\Qwen3-VL-2B-Instruct"></label>
-    <div style="font-size:11px;color:var(--tx2)">引擎为纯 VQF 运行时：在模型文件夹内自动定位 <b>model.vqf</b>（依次尝试 model.vqf / weights.vqf / vllm.vqf），mmap 直挂加载，无需选择格式。</div>
-    <div style="font-size:11px;color:var(--tx2)">量化模式在<b>转换期</b>已固化进 VQF 文件（由 vqf_convert --wmode 决定），加载侧不可更改——要换量化请重新转换。</div>
+    <div style="font-size:11px;color:var(--tx2)" data-en-html="The engine is a pure VQF runtime: it auto-locates <b>model.vqf</b> inside the model folder (tries model.vqf / weights.vqf / vllm.vqf in order), mmap-mounts it directly; no format selection needed.">引擎为纯 VQF 运行时：在模型文件夹内自动定位 <b>model.vqf</b>（依次尝试 model.vqf / weights.vqf / vllm.vqf），mmap 直挂加载，无需选择格式。</div>
+    <div style="font-size:11px;color:var(--tx2)" data-en-html="The quantization mode is baked into the VQF file at <b>conversion time</b> (decided by vqf_convert --wmode); the load side cannot change it — re-convert to change the quantization.">量化模式在<b>转换期</b>已固化进 VQF 文件（由 vqf_convert --wmode 决定），加载侧不可更改——要换量化请重新转换。</div>
     <div style="margin-top:4px;padding:0 10px;border-left:3px solid var(--bd)">
-      <div class="sec">加载 / 卸载策略</div>
-      <div class="chkrow"><input type="checkbox" id="f_auto_load"><label for="f_auto_load">用时加载 (--load-on-use)：模型未加载时收到请求自动加载</label></div>
-      <label class="fld"><span class="t">空闲自动卸载秒数 (--auto-unload，0=关闭)</span><input type="number" id="f_auto_unload_s" min="0" value="0"></label>
-      <div style="font-size:11px;color:var(--tx2)">自动卸载开启后隐含启用用时加载：加载 → 使用 → 空闲 N 秒自动卸载（释放权重+KV 内存）→ 下个请求自动重载。</div>
-      <label class="fld"><span class="t">最小空闲内存 MB (--min-free-mb，低于则拒绝新请求)</span><input type="number" id="f_min_free_mb" min="0" value="512"></label>
-      <div class="chkrow"><input type="checkbox" id="f_vqf_prewarm"><label for="f_vqf_prewarm">VQF 加载后预热 (VLLM_VQF_PREWARM)：后台把 mmap 权重页拉进 RAM，降低首次推理延迟</label></div>
+      <div class="sec" data-en="Load / Unload Policy">加载 / 卸载策略</div>
+      <div class="chkrow"><input type="checkbox" id="f_auto_load"><label for="f_auto_load" data-en="Load on use (--load-on-use): auto-load the model when a request arrives while it is unloaded">用时加载 (--load-on-use)：模型未加载时收到请求自动加载</label></div>
+      <label class="fld"><span class="t" data-en="Idle auto-unload seconds (--auto-unload, 0=off)">空闲自动卸载秒数 (--auto-unload，0=关闭)</span><input type="number" id="f_auto_unload_s" min="0" value="0"></label>
+      <div style="font-size:11px;color:var(--tx2)" data-en="When auto-unload is on, load-on-use is implied: load → use → auto-unload after N idle seconds (frees weights + KV memory) → the next request reloads.">自动卸载开启后隐含启用用时加载：加载 → 使用 → 空闲 N 秒自动卸载（释放权重+KV 内存）→ 下个请求自动重载。</div>
+      <label class="fld"><span class="t" data-en="Minimum free memory MB (--min-free-mb, reject new requests below this)">最小空闲内存 MB (--min-free-mb，低于则拒绝新请求)</span><input type="number" id="f_min_free_mb" min="0" value="512"></label>
+      <div class="chkrow"><input type="checkbox" id="f_vqf_prewarm"><label for="f_vqf_prewarm" data-en="VQF prewarm after load (VLLM_VQF_PREWARM): background-pull mmap weight pages into RAM to cut first-inference latency">VQF 加载后预热 (VLLM_VQF_PREWARM)：后台把 mmap 权重页拉进 RAM，降低首次推理延迟</label></div>
       <div class="chkrow" style="flex-wrap:wrap">
-        <input type="checkbox" id="f_vqf_stream"><label for="f_vqf_stream">VQF 分层驻留 (VLLM_VQF_STREAM)：AirLLM 型逐层驱逐/预读，RSS 大幅下降</label>
-        <span style="font-size:11px;color:var(--tx2);margin-left:2px">常驻层窗口</span>
-        <input type="number" id="f_vqf_stream_keep" min="1" max="32" value="1" style="width:56px" title="N：允许常驻的落后层数，1=只留当前层">
+        <input type="checkbox" id="f_vqf_stream"><label for="f_vqf_stream" data-en="VQF layered residency (VLLM_VQF_STREAM): AirLLM-style per-layer eviction/prefetch, RSS drops sharply">VQF 分层驻留 (VLLM_VQF_STREAM)：AirLLM 型逐层驱逐/预读，RSS 大幅下降</label>
+        <span style="font-size:11px;color:var(--tx2);margin-left:2px" data-en="Resident layer window">常驻层窗口</span>
+        <input type="number" id="f_vqf_stream_keep" min="1" max="32" value="1" style="width:56px" title="N：允许常驻的落后层数，1=只留当前层" data-en-title="N: number of trailing layers allowed to stay resident, 1=keep only the current layer">
       </div>
-      <div style="font-size:11px;color:var(--tx2)">仅明文 VQF 生效（加密模型自动拒绝）；embed/final_norm/lm_head/vision 恒常驻，只驱逐整层权重段，推理位级一致。模型不超过内存预算时逐出反而自伤，需按需开启。</div>
-      <label class="fld"><span class="t">VQF 加密口令 (VLLM_VQF_KEY，留空=明文)</span>
-        <input type="password" id="f_vqf_key" placeholder="加载加密 VQF 时填写" autocomplete="off"></label>
+      <div style="font-size:11px;color:var(--tx2)" data-en="Plaintext VQF only (encrypted models are rejected); embed/final_norm/lm_head/vision stay resident always; only whole-layer weight segments are evicted, inference stays bit-identical. If the model fits the memory budget, eviction hurts — enable only when needed.">仅明文 VQF 生效（加密模型自动拒绝）；embed/final_norm/lm_head/vision 恒常驻，只驱逐整层权重段，推理位级一致。模型不超过内存预算时逐出反而自伤，需按需开启。</div>
+      <label class="fld"><span class="t" data-en="VQF encryption passphrase (VLLM_VQF_KEY, empty=plaintext)">VQF 加密口令 (VLLM_VQF_KEY，留空=明文)</span>
+        <input type="password" id="f_vqf_key" placeholder="加载加密 VQF 时填写" data-en-ph="Enter when loading an encrypted VQF" autocomplete="off"></label>
     </div>
     <div class="row" style="margin-top:4px">
-      <button id="btn_loadmodel" class="primary">加载模型</button>
-      <button id="btn_unload" style="display:none">卸载模型</button>
+      <button id="btn_loadmodel" class="primary" data-en="Load Model">加载模型</button>
+      <button id="btn_unload" style="display:none" data-en="Unload Model">卸载模型</button>
       <span id="modelInfo" style="font-size:12px;color:var(--tx2);align-self:center"></span>
     </div>
     <div class="msg" id="opmsg"></div>
@@ -152,130 +153,130 @@ a{color:var(--acc)}
 
   <!-- 核心配置 -->
   <div class="card">
-    <h2>核心配置 <span id="devTag" style="margin-left:8px"></span></h2>
-    <div class="sec">设备</div>
-    <label class="fld"><span class="t">设备类型（架构 × 类别 × 型号）</span>
+    <h2><span data-en="Core Config ">核心配置 </span><span id="devTag" style="margin-left:8px"></span></h2>
+    <div class="sec" data-en="Device">设备</div>
+    <label class="fld"><span class="t" data-en="Device type (arch × class × model)">设备类型（架构 × 类别 × 型号）</span>
       <select id="f_device"></select></label>
     <div class="row" style="margin-top:4px">
-      <button id="btn_applydev" style="padding:4px 10px;font-size:12px">应用设备推荐参数</button>
+      <button id="btn_applydev" style="padding:4px 10px;font-size:12px" data-en="Apply device-recommended settings">应用设备推荐参数</button>
     </div>
-    <div class="sec">量化与缓存</div>
-    <div class="chkrow"><input type="checkbox" id="f_kv_q4"><label for="f_kv_q4">KV 量化 Q4 (--kv-q4, 内存 1.65x 压缩, decode +28%)<span class="ptag ram">省 RAM</span></label></div>
-    <div class="chkrow"><input type="checkbox" id="f_prefix_kv"><label for="f_prefix_kv">KV 前缀复用 (默认开，关=--no-prefix-kv)：连续请求共享上一段 KV 前缀，P4 多模态/文本前缀跳过 prefill<span class="ptag x86">x86 复核 −97%</span></label></div>
-    <div class="chkrow"><input type="checkbox" id="f_prefix_cache"><label for="f_prefix_cache">前缀缓存 (--prefix-cache)</label></div>
+    <div class="sec" data-en="Quantization &amp; Cache">量化与缓存</div>
+    <div class="chkrow"><input type="checkbox" id="f_kv_q4"><label for="f_kv_q4"><span data-en="KV quant Q4 (--kv-q4, 1.65x memory compression, decode +28%)">KV 量化 Q4 (--kv-q4, 内存 1.65x 压缩, decode +28%)</span><span class="ptag ram" data-en="RAM saver">省 RAM</span></label></div>
+    <div class="chkrow"><input type="checkbox" id="f_prefix_kv"><label for="f_prefix_kv"><span data-en="KV prefix reuse (on by default; off = --no-prefix-kv): consecutive requests share the previous KV prefix, P4 multimodal/text prefix skips prefill">KV 前缀复用 (默认开，关=--no-prefix-kv)：连续请求共享上一段 KV 前缀，P4 多模态/文本前缀跳过 prefill</span><span class="ptag x86" data-en="x86 review −97%">x86 复核 −97%</span></label></div>
+    <div class="chkrow"><input type="checkbox" id="f_prefix_cache"><label for="f_prefix_cache" data-en="Prefix cache (--prefix-cache)">前缀缓存 (--prefix-cache)</label></div>
     <div class="chkrow"><input type="checkbox" id="f_prefill_q8"><label for="f_prefill_q8">Prefill Q8 (--prefill-q8)</label></div>
-    <div class="chkrow"><input type="checkbox" id="f_sparse_attn"><label for="f_sparse_attn">稀疏注意力 (--sparse-attn)<span class="ptag">长上下文</span><span class="ptag x86no">x86 总 prefill 仅 −6.7%</span></label></div>
-    <label class="fld"><span class="t">sparse-k（须 &lt; 上下文块数才生效，块大小 32）</span><input type="number" id="f_sparse_k" min="1" value="32"></label>
-    <div class="chkrow"><input type="checkbox" id="f_disk_kv"><label for="f_disk_kv">磁盘 KV 持久化 (--disk-kv，重启后跨进程复用对话前缀 KV)<span class="ptag ram">KV 落盘</span><span class="ptag x86">x86 复核 −97%</span></label></div>
-    <label class="fld"><span class="t">KV checkpoint 目录</span><input type="text" id="f_disk_kv_dir" placeholder="kv_disk（引擎工作目录）"></label>
-    <div class="sec">采样与推测解码</div>
-    <div class="chkrow"><input type="checkbox" id="f_spec"><label for="f_spec">推测解码 (--spec，n-gram 草稿 + 批量验证，仅贪婪模式)<span class="ptag">须客户端传 top_p=1.0</span><span class="ptag x86no">x86 反慢 2.4×</span></label></div>
-    <label class="fld"><span class="t">草稿长度 (--spec-k)</span><input type="number" id="f_spec_k" min="1" max="16" value="4"></label>
-    <label class="fld"><span class="t">min-p 采样 (--min-p，0=关闭)</span><input type="number" id="f_min_p" min="0" max="1" step="0.01" value="0"></label>
+    <div class="chkrow"><input type="checkbox" id="f_sparse_attn"><label for="f_sparse_attn"><span data-en="Sparse attention (--sparse-attn)">稀疏注意力 (--sparse-attn)</span><span class="ptag" data-en="Long context">长上下文</span><span class="ptag x86no" data-en="x86 total prefill only −6.7%">x86 总 prefill 仅 −6.7%</span></label></div>
+    <label class="fld"><span class="t" data-en="sparse-k (effective only when &lt; the context block count; block size 32)">sparse-k（须 &lt; 上下文块数才生效，块大小 32）</span><input type="number" id="f_sparse_k" min="1" value="32"></label>
+    <div class="chkrow"><input type="checkbox" id="f_disk_kv"><label for="f_disk_kv"><span data-en="Disk KV persistence (--disk-kv, reuse conversation prefix KV across processes after restart)">磁盘 KV 持久化 (--disk-kv，重启后跨进程复用对话前缀 KV)</span><span class="ptag ram" data-en="KV on disk">KV 落盘</span><span class="ptag x86" data-en="x86 review −97%">x86 复核 −97%</span></label></div>
+    <label class="fld"><span class="t" data-en="KV checkpoint directory">KV checkpoint 目录</span><input type="text" id="f_disk_kv_dir" placeholder="kv_disk（引擎工作目录）" data-en-ph="kv_disk (engine working directory)"></label>
+    <div class="sec" data-en="Sampling &amp; Speculative Decoding">采样与推测解码</div>
+    <div class="chkrow"><input type="checkbox" id="f_spec"><label for="f_spec"><span data-en="Speculative decoding (--spec, n-gram draft + batch verify, greedy mode only)">推测解码 (--spec，n-gram 草稿 + 批量验证，仅贪婪模式)</span><span class="ptag" data-en="Client must send top_p=1.0">须客户端传 top_p=1.0</span><span class="ptag x86no" data-en="x86 2.4× slower">x86 反慢 2.4×</span></label></div>
+    <label class="fld"><span class="t" data-en="Draft length (--spec-k)">草稿长度 (--spec-k)</span><input type="number" id="f_spec_k" min="1" max="16" value="4"></label>
+    <label class="fld"><span class="t" data-en="min-p sampling (--min-p, 0=off)">min-p 采样 (--min-p，0=关闭)</span><input type="number" id="f_min_p" min="0" max="1" step="0.01" value="0"></label>
   </div>
 
   <!-- 服务 -->
   <div class="card">
-    <h2>HTTP 服务</h2>
-    <label class="fld"><span class="t">端口 (--port)</span><input type="number" id="f_port" min="1" max="65535" value="8080"></label>
-    <label class="fld"><span class="t">Worker 线程 (--threads)</span><input type="number" id="f_threads" min="1" max="32" value="8"></label>
-    <label class="fld"><span class="t">最大排队 (--max-queued)</span><input type="number" id="f_max_queued" min="0" value="16"></label>
+    <h2 data-en="HTTP Server">HTTP 服务</h2>
+    <label class="fld"><span class="t" data-en="Port (--port)">端口 (--port)</span><input type="number" id="f_port" min="1" max="65535" value="8080"></label>
+    <label class="fld"><span class="t" data-en="Worker threads (--threads)">Worker 线程 (--threads)</span><input type="number" id="f_threads" min="1" max="32" value="8"></label>
+    <label class="fld"><span class="t" data-en="Max queued (--max-queued)">最大排队 (--max-queued)</span><input type="number" id="f_max_queued" min="0" value="16"></label>
     <label class="fld"><span class="t">OMP_NUM_THREADS</span><input type="text" id="f_omp" value="4"></label>
   </div>
 
   <!-- 内核优化 (NEON GEMM/GEMV) -->
   <div class="card">
-    <h2>内核优化 (NEON)</h2>
-    <div class="sec">Q8 / Q4 布局</div>
-    <div class="chkrow"><input type="checkbox" id="f_q8_8x8"><label for="f_q8_8x8">Q8 Prefill 8x8 tile <b>(VLLM_Q8_8X8)</b> — 默认开：GEMM 1.6x / GEMV 1.17x，逐位一致</label></div>
-    <div class="chkrow"><input type="checkbox" id="f_q8_repack"><label for="f_q8_repack">Q8 repack 预打包 <b>(VLLM_DISABLE_Q8_REPACK)</b> — 默认开，关闭后回退 legacy 布局</label></div>
-    <div class="chkrow"><input type="checkbox" id="f_q4_repack"><label for="f_q4_repack">Q4 repack 预打包 <b>(VLLM_DISABLE_Q4_REPACK)</b> — 默认开，关闭后回退 legacy 布局</label></div>
-    <div class="chkrow"><input type="checkbox" id="f_q4_8x8l"><label for="f_q4_8x8l">纯 Q4 16x8 tile <b>(VLLM_ENABLE_8X8L)</b> — 默认关（仅按 --wmode q4 转换的模型有效）</label></div>
-    <div class="sec">线程与采样</div>
-    <div class="chkrow"><input type="checkbox" id="f_pb_heap"><label for="f_pb_heap">有界堆采样 <b>(VLLM_PB_HEAP)</b> — 默认开，P2 采样优化（采样耗时 13.6ms→4.8ms）</label></div>
-    <div class="chkrow"><input type="checkbox" id="f_tp_bind"><label for="f_tp_bind">线程亲和绑定 <b>(VLLM_TP_BIND)</b> — 默认关（实测关闭更快）</label></div>
-    <label class="fld"><span class="t">线程池自旋预算 (VLLM_TP_SPIN，空 = 默认)</span><input type="text" id="f_tp_spin" placeholder="默认"></label>
-    <label class="fld"><span class="t">Q4 decode 行分片 (VLLM_ROW_SLICE，空 = 自动全矩阵分片)</span><input type="text" id="f_row_slice" placeholder="auto"></label>
+    <h2 data-en="Kernel Optimization (NEON)">内核优化 (NEON)</h2>
+    <div class="sec" data-en="Q8 / Q4 Layout">Q8 / Q4 布局</div>
+    <div class="chkrow"><input type="checkbox" id="f_q8_8x8"><label for="f_q8_8x8"><span data-en="Q8 Prefill 8x8 tile ">Q8 Prefill 8x8 tile </span><b>(VLLM_Q8_8X8)</b><span data-en=" — on by default: GEMM 1.6x / GEMV 1.17x, bit-identical"> — 默认开：GEMM 1.6x / GEMV 1.17x，逐位一致</span></label></div>
+    <div class="chkrow"><input type="checkbox" id="f_q8_repack"><label for="f_q8_repack"><span data-en="Q8 repack pre-pack ">Q8 repack 预打包 </span><b>(VLLM_DISABLE_Q8_REPACK)</b><span data-en=" — on by default; disabling falls back to the legacy layout"> — 默认开，关闭后回退 legacy 布局</span></label></div>
+    <div class="chkrow"><input type="checkbox" id="f_q4_repack"><label for="f_q4_repack"><span data-en="Q4 repack pre-pack ">Q4 repack 预打包 </span><b>(VLLM_DISABLE_Q4_REPACK)</b><span data-en=" — on by default; disabling falls back to the legacy layout"> — 默认开，关闭后回退 legacy 布局</span></label></div>
+    <div class="chkrow"><input type="checkbox" id="f_q4_8x8l"><label for="f_q4_8x8l"><span data-en="Pure Q4 16x8 tile ">纯 Q4 16x8 tile </span><b>(VLLM_ENABLE_8X8L)</b><span data-en=" — off by default (only effective for models converted with --wmode q4)"> — 默认关（仅按 --wmode q4 转换的模型有效）</span></label></div>
+    <div class="sec" data-en="Threads &amp; Sampling">线程与采样</div>
+    <div class="chkrow"><input type="checkbox" id="f_pb_heap"><label for="f_pb_heap"><span data-en="Bounded-heap sampling ">有界堆采样 </span><b>(VLLM_PB_HEAP)</b><span data-en=" — on by default, P2 sampling optimization (sampling time 13.6ms→4.8ms)"> — 默认开，P2 采样优化（采样耗时 13.6ms→4.8ms）</span></label></div>
+    <div class="chkrow"><input type="checkbox" id="f_tp_bind"><label for="f_tp_bind"><span data-en="Thread affinity binding ">线程亲和绑定 </span><b>(VLLM_TP_BIND)</b><span data-en=" — off by default (measured faster when disabled)"> — 默认关（实测关闭更快）</span></label></div>
+    <label class="fld"><span class="t" data-en="Thread-pool spin budget (VLLM_TP_SPIN, empty = default)">线程池自旋预算 (VLLM_TP_SPIN，空 = 默认)</span><input type="text" id="f_tp_spin" placeholder="默认" data-en-ph="default"></label>
+    <label class="fld"><span class="t" data-en="Q4 decode row slicing (VLLM_ROW_SLICE, empty = auto full-matrix slicing)">Q4 decode 行分片 (VLLM_ROW_SLICE，空 = 自动全矩阵分片)</span><input type="text" id="f_row_slice" placeholder="auto"></label>
   </div>
 
   <!-- MoE 优化 (Qwen3-30B-A3B 稀疏专家) -->
   <div class="card">
-    <h2>MoE 优化（稀疏专家）</h2>
-    <div class="sec">批式 prefill（跨 token 融合）</div>
-    <div class="chkrow"><input type="checkbox" id="f_moe_batch"><label for="f_moe_batch">MoE 跨 token 批式 <b>(VLLM_MOE_BATCH)</b> — 默认开：GATEUP 2.60×(t4) / 3.95×(t8)，与逐 token 路径位级一致；decode 不受影响</label></div>
-    <div class="sec">int8-dot 近似轨</div>
-    <div class="chkrow"><input type="checkbox" id="f_actq"><label for="f_actq">q4 专家 int8-dot 近似轨 <b>(VLLM_ACTQ)</b> — 默认关：<b>近似计算</b>（与精确轨非位级一致）；<b>批式生效的硬前提</b></label></div>
-    <div class="sec">并行与 SIMD</div>
-    <div class="chkrow"><input type="checkbox" id="f_moe_par"><label for="f_moe_par">专家并行 <b>(VLLM_MOE_PAR)</b> — 默认开；关闭回退串行专家循环</label></div>
-    <div class="chkrow"><input type="checkbox" id="f_moe_q4simd"><label for="f_moe_q4simd">q4 MoE 行组 SIMD <b>(VLLM_MOE_Q4SIMD)</b> — 默认开；关闭回退标量</label></div>
-    <div style="font-size:12px;color:var(--tx2);margin-top:6px">仅对 <b>q4 专家</b>生效（非 q4 自动回落逐 token）；标记「保存」后需重启引擎生效。参数口径见《核心性能参数配置注意事项.md》。</div>
+    <h2 data-en="MoE Optimization (Sparse Experts)">MoE 优化（稀疏专家）</h2>
+    <div class="sec" data-en="Batched prefill (cross-token fusion)">批式 prefill（跨 token 融合）</div>
+    <div class="chkrow"><input type="checkbox" id="f_moe_batch"><label for="f_moe_batch"><span data-en="MoE cross-token batching ">MoE 跨 token 批式 </span><b>(VLLM_MOE_BATCH)</b><span data-en=" — on by default: GATEUP 2.60×(t4) / 3.95×(t8), bit-identical to the per-token path; decode unaffected"> — 默认开：GATEUP 2.60×(t4) / 3.95×(t8)，与逐 token 路径位级一致；decode 不受影响</span></label></div>
+    <div class="sec" data-en="int8-dot approximate track">int8-dot 近似轨</div>
+    <div class="chkrow"><input type="checkbox" id="f_actq"><label for="f_actq"><span data-en="q4 expert int8-dot approximate track ">q4 专家 int8-dot 近似轨 </span><b>(VLLM_ACTQ)</b><span data-en=" — off by default: "> — 默认关：</span><b data-en="approximate compute">近似计算</b><span data-en=" (not bit-identical to the exact track); ">（与精确轨非位级一致）；</span><b data-en="hard prerequisite for batching to take effect">批式生效的硬前提</b></label></div>
+    <div class="sec" data-en="Parallelism &amp; SIMD">并行与 SIMD</div>
+    <div class="chkrow"><input type="checkbox" id="f_moe_par"><label for="f_moe_par"><span data-en="Expert parallelism ">专家并行 </span><b>(VLLM_MOE_PAR)</b><span data-en=" — on by default; disabling falls back to a serial expert loop"> — 默认开；关闭回退串行专家循环</span></label></div>
+    <div class="chkrow"><input type="checkbox" id="f_moe_q4simd"><label for="f_moe_q4simd"><span data-en="q4 MoE row-group SIMD ">q4 MoE 行组 SIMD </span><b>(VLLM_MOE_Q4SIMD)</b><span data-en=" — on by default; disabling falls back to scalar"> — 默认开；关闭回退标量</span></label></div>
+    <div style="font-size:12px;color:var(--tx2);margin-top:6px"><span data-en="Applies to ">仅对 </span><b data-en="q4 experts">q4 专家</b><span data-en=" only (non-q4 falls back to per-token automatically); after clicking Save, restart the engine for it to take effect. For parameter details see 《核心性能参数配置注意事项.md》.">生效（非 q4 自动回落逐 token）；标记「保存」后需重启引擎生效。参数口径见《核心性能参数配置注意事项.md》。</span></div>
   </div>
 
   <!-- NPU -->
   <div class="card">
-    <h2>NPU 卸载</h2>
-    <div class="chkrow"><input type="checkbox" id="f_npu"><label for="f_npu">启用 NPU 直驱 (--npu)</label></div>
-    <label class="fld"><span class="t">CPU 负载档位 (VLLM_NPU_LOAD)</span>
+    <h2 data-en="NPU Offload">NPU 卸载</h2>
+    <div class="chkrow"><input type="checkbox" id="f_npu"><label for="f_npu" data-en="Enable NPU direct drive (--npu)">启用 NPU 直驱 (--npu)</label></div>
+    <label class="fld"><span class="t" data-en="CPU load level (VLLM_NPU_LOAD)">CPU 负载档位 (VLLM_NPU_LOAD)</span>
       <select id="f_npu_load">
-        <option value="0">0  - 基线 (prefill 卸载 O3/DOWN6)</option>
-        <option value="1">1  - 推荐 (+QKV prefill 卸载)</option>
-        <option value="2">2  - 最低 CPU 负载 (decode 卸载, 小模型适用, 8B 上 TPOT×12.5)</option>
+        <option value="0" data-en="0  - Baseline (prefill offload O3/DOWN6)">0  - 基线 (prefill 卸载 O3/DOWN6)</option>
+        <option value="1" data-en="1  - Recommended (+QKV prefill offload)">1  - 推荐 (+QKV prefill 卸载)</option>
+        <option value="2" data-en="2  - Lowest CPU load (decode offload, for small models, TPOT×12.5 on 8B)">2  - 最低 CPU 负载 (decode 卸载, 小模型适用, 8B 上 TPOT×12.5)</option>
       </select></label>
     <label class="fld"><span class="t">VLLM_NPU_INFER (0/1)</span><input type="number" id="f_npu_infer" min="0" max="1" value="1"></label>
     <label class="fld"><span class="t">VLLM_NPU_TIMING (0/1)</span><input type="number" id="f_npu_timing" min="0" max="1" value="0"></label>
     <div class="row">
-      <button id="btn_selftest">NPU 自测 (--npu-calib)</button>
+      <button id="btn_selftest" data-en="NPU self-test (--npu-calib)">NPU 自测 (--npu-calib)</button>
     </div>
   </div>
 
   <!-- NPU 驱动 -->
   <div class="card">
-    <h2>NPU 驱动 <span id="npudrvBadge" class="badge" style="margin-left:6px">未知</span></h2>
+    <h2><span data-en="NPU Driver ">NPU 驱动 </span><span id="npudrvBadge" class="badge" style="margin-left:6px">未知</span></h2>
     <div id="npudrvGrid" style="font-size:12px;color:var(--tx2);min-height:20px">点击「检测驱动」查看内核 / 设备节点 / DRM 驱动状态。</div>
     <div class="row">
-      <button id="btn_npudrv_check">检测驱动</button>
-      <button id="btn_npudrv_install">安装 / 修复</button>
+      <button id="btn_npudrv_check" data-en="Check driver">检测驱动</button>
+      <button id="btn_npudrv_install" data-en="Install / Repair">安装 / 修复</button>
     </div>
     <div class="msg" id="npudrvMsg"></div>
   </div>
 
   <!-- 长上下文淘汰 (L3) -->
   <div class="card">
-    <h2>长上下文淘汰 (L3)</h2>
-    <div class="chkrow"><input type="checkbox" id="f_l3_evict"><label for="f_l3_evict">启用 L3 冷块淘汰 (--l3-evict，需配合稀疏注意力)<span class="ptag ram">省 RAM</span></label></div>
-    <div class="chkrow"><input type="checkbox" id="f_l3_prefix_reuse"><label for="f_l3_prefix_reuse"><b>L3 前缀复用门 (VLLM_L3_PREFIX_REUSE)</b> — 让 L3 驱逐与 KV 前缀复用共存<span class="ptag x86">x86 复核 −96.9%</span><span class="ptag ram">省 RAM</span></label></div>
-    <div class="chkrow" id="p3warn" style="display:none;color:var(--warn);font-size:12px;line-height:1.6">
+    <h2 data-en="Long-Context Eviction (L3)">长上下文淘汰 (L3)</h2>
+    <div class="chkrow"><input type="checkbox" id="f_l3_evict"><label for="f_l3_evict"><span data-en="Enable L3 cold-block eviction (--l3-evict, requires sparse attention)">启用 L3 冷块淘汰 (--l3-evict，需配合稀疏注意力)</span><span class="ptag ram" data-en="RAM saver">省 RAM</span></label></div>
+    <div class="chkrow"><input type="checkbox" id="f_l3_prefix_reuse"><label for="f_l3_prefix_reuse"><b data-en="L3 prefix-reuse gate (VLLM_L3_PREFIX_REUSE)">L3 前缀复用门 (VLLM_L3_PREFIX_REUSE)</b><span data-en=" — lets L3 eviction coexist with KV prefix reuse"> — 让 L3 驱逐与 KV 前缀复用共存</span><span class="ptag x86" data-en="x86 review −96.9%">x86 复核 −96.9%</span><span class="ptag ram" data-en="RAM saver">省 RAM</span></label></div>
+    <div class="chkrow" id="p3warn" style="display:none;color:var(--warn);font-size:12px;line-height:1.6" data-en-html="⚠ --l3-evict is on but the P3 gate is off: <code>--prefix-kv</code> is silently dropped and multi-turn follow-ups recompute the full prefill. Turn on the option above.">
       ⚠ 已开 <code>--l3-evict</code> 但未开 P3 门：<code>--prefix-kv</code> 会被静默打掉，多轮追问将全量重算 prefill。建议开启上面这项。
     </div>
-    <label class="fld"><span class="t">淘汰比例 (--l3-ratio)</span><input type="number" id="f_l3_ratio" min="0" max="0.99" step="0.05" value="0.75"></label>
-    <label class="fld"><span class="t">触发时机: 最小上下文长度 (--l3-min-seq)</span><input type="number" id="f_l3_min_seq" min="0" value="128"></label>
-    <label class="fld"><span class="t">淘汰缓存保存路径 (--l3-path)</span><input type="text" id="f_l3_path" placeholder="默认 kv_l3.bin（引擎工作目录）"></label>
-    <label class="fld"><span class="t">最大保存大小 MB (--l3-max-size)</span><input type="number" id="f_l3_max_size" min="0" value="0"></label>
-    <label class="fld"><span class="t">用户淘汰文件闲置 TTL 分钟 (--l3-user-ttl)</span><input type="number" id="f_l3_user_ttl" min="0" value="30"></label>
-    <div style="font-size:11px;color:var(--tx2);line-height:1.7">
+    <label class="fld"><span class="t" data-en="Eviction ratio (--l3-ratio)">淘汰比例 (--l3-ratio)</span><input type="number" id="f_l3_ratio" min="0" max="0.99" step="0.05" value="0.75"></label>
+    <label class="fld"><span class="t" data-en="Trigger: minimum context length (--l3-min-seq)">触发时机: 最小上下文长度 (--l3-min-seq)</span><input type="number" id="f_l3_min_seq" min="0" value="128"></label>
+    <label class="fld"><span class="t" data-en="Eviction cache save path (--l3-path)">淘汰缓存保存路径 (--l3-path)</span><input type="text" id="f_l3_path" placeholder="默认 kv_l3.bin（引擎工作目录）" data-en-ph="default kv_l3.bin (engine working directory)"></label>
+    <label class="fld"><span class="t" data-en="Max saved size MB (--l3-max-size)">最大保存大小 MB (--l3-max-size)</span><input type="number" id="f_l3_max_size" min="0" value="0"></label>
+    <label class="fld"><span class="t" data-en="Idle TTL minutes for user eviction files (--l3-user-ttl)">用户淘汰文件闲置 TTL 分钟 (--l3-user-ttl)</span><input type="number" id="f_l3_user_ttl" min="0" value="30"></label>
+    <div style="font-size:11px;color:var(--tx2);line-height:1.7" data-en-html='0 = always evict after prefill; N&gt;0 = start evicting when the context reaches N tokens (measured value 128; smaller means more wasted eviction overhead).<br>The path may be an eMMC mount point (e.g. /mnt/emmc/kv_l3.bin); max size 0 = unlimited.<br>Each user has an independent cache file, auto-deleted after TTL idle minutes (0 = never clean up).<br><b style="color:var(--warn)">When --l3-evict is on, be sure to also enable the P3 gate above, otherwise KV prefix reuse is silently dropped.</b>'>
       0 = prefill 后总是淘汰；N&gt;0 = 上下文达到 N tokens 才启动淘汰（实测口径 128，越小越白付驱逐开销）。<br>
       路径可填 eMMC 挂载点（如 /mnt/emmc/kv_l3.bin）；最大大小 0 = 不限制。<br>
       每用户独立缓存文件，闲置超 TTL 分钟自动删除（0 = 不清理）。<br>
       <b style="color:var(--warn)">开 --l3-evict 时务必同时开上面那项 P3 门，否则 KV 前缀复用会被静默打掉。</b>
     </div>
     <div class="row" style="margin-top:10px">
-      <button id="btn_l3clear" class="danger">清空用户缓存</button>
+      <button id="btn_l3clear" class="danger" data-en="Clear user cache">清空用户缓存</button>
       <div class="msg" id="l3msg"></div>
     </div>
   </div>
 
   <!-- 有效优化组合（实测台账） -->
   <div class="card" style="grid-column:1/-1">
-    <h2>有效优化组合（实测台账）<span class="sub">点「套用」把该组合填进表单；全部为同一二进制单开关 A/B 实测</span></h2>
+    <h2><span data-en="Effective Optimization Combos (measured ledger)">有效优化组合（实测台账）</span><span class="sub" data-en="Click Apply to fill the combo into the form; all are single-flag A/B measurements on the same binary">点「套用」把该组合填进表单；全部为同一二进制单开关 A/B 实测</span></h2>
     <table class="combos">
       <thead><tr>
-        <th style="width:15%">组合</th><th style="width:15%">适用场景</th>
-        <th style="width:33%">关键开关</th><th style="width:22%">实测收益</th>
-        <th style="width:9%">平台</th><th></th>
+        <th style="width:15%" data-en="Combo">组合</th><th style="width:15%" data-en="Use case">适用场景</th>
+        <th style="width:33%" data-en="Key flags">关键开关</th><th style="width:22%" data-en="Measured gain">实测收益</th>
+        <th style="width:9%" data-en="Platform">平台</th><th></th>
       </tr></thead>
       <tbody id="comboBody"></tbody>
     </table>
-    <div style="font-size:11px;color:var(--tx2);line-height:1.9;margin-top:10px">
+    <div style="font-size:11px;color:var(--tx2);line-height:1.9;margin-top:10px" data-en-html='<b>Platform tags</b>: <span class="ptag ram">RAM saver</span> effective in memory-constrained cases · <span class="ptag x86">x86 reproduced</span> independently reproduced on local x86 · <span class="ptag x86no">x86 no gain</span> no/negative gain on x86 (<b>board-side ARM data still governs</b>)<br><b>Three hard rules</b>: ① <code>--l3-evict</code> requires <code>VLLM_L3_PREFIX_REUSE=1</code>; ② <code>--sparse-k</code> must not go below 32; ③ encrypted VQF can only be fully resident (per-layer <code>VLLM_VQF_STREAM</code> unavailable).<br><b>Mutually exclusive</b>: <code>--kv-q4</code> × <code>--sparse-attn</code>; <code>--spec</code> × {<code>--sparse-attn</code>, <code>--l3-evict</code>, <code>--batch-max</code>}.'>
       <b>平台标签</b>：
       <span class="ptag ram">省 RAM</span> 内存受限场景有效 ·
       <span class="ptag x86">x86 已复现</span> 已在本地 x86 独立复现 ·
@@ -289,29 +290,29 @@ a{color:var(--acc)}
 
   <!-- 内存驻留策略（档位阶梯 · 运行时动态） -->
   <div class="card">
-    <h2>内存驻留策略（档位阶梯 · 运行时动态）</h2>
-    <div class="sec">当前档位</div>
+    <h2 data-en="Memory Residency Policy (level ladder · runtime dynamic)">内存驻留策略（档位阶梯 · 运行时动态）</h2>
+    <div class="sec" data-en="Current level">当前档位</div>
     <div style="font-size:12px;line-height:1.8" id="resStatus">-</div>
-    <div class="sec">空闲自动降级（模型级全局空闲 → 逐级降档）</div>
-    <div class="chkrow"><input type="checkbox" id="f_res_auto"><label for="f_res_auto">启用空闲逐级自动降级（客户多久没交互：全层驻留 → KV逐层淘汰 → 权重窗口 → 初始层 → KV落盘退出）</label></div>
-    <label class="fld"><span class="t">L4→L3 KV 逐层淘汰：空闲等待秒 (0=停在 L4)</span><input type="number" id="f_res_idle4" min="0" value="300"></label>
-    <label class="fld"><span class="t">L3→L2 权重窗口：空闲等待秒 (0=停在 L3)</span><input type="number" id="f_res_idle3" min="0" value="900"></label>
-    <label class="fld"><span class="t">L2→L1 初始层：空闲等待秒 (0=停在 L2)</span><input type="number" id="f_res_idle2" min="0" value="1800"></label>
-    <label class="fld"><span class="t">L1→L0 KV落盘+卸载：空闲等待秒 (0=停在 L1)</span><input type="number" id="f_res_idle1" min="0" value="3600"></label>
-    <label class="fld"><span class="t">L2 权重窗口保留层数 w_keep（保留层 0..N）</span><input type="number" id="f_res_wkeep" min="0" value="8"></label>
-    <div class="sec">内存紧张主动降级（软水位，低于自动降一档）</div>
-    <label class="fld"><span class="t">软水位 MB（0=关闭；与"核心配置-最低可用内存"硬 503 配合）</span><input type="number" id="f_res_soft" min="0" value="0"></label>
-    <label class="fld"><span class="t">允许自动降到的档位（0=可卸载 · 3=仅KV淘汰 · 4=不自动降）</span><input type="number" id="f_res_lowlvl" min="0" max="4" value="0"></label>
+    <div class="sec" data-en="Idle auto-downgrade (model-level global idle → step down one level at a time)">空闲自动降级（模型级全局空闲 → 逐级降档）</div>
+    <div class="chkrow"><input type="checkbox" id="f_res_auto"><label for="f_res_auto" data-en="Enable idle step-by-step auto-downgrade (how long since the client interacted: full residency → KV per-layer eviction → weight window → initial layers → KV to disk + exit)">启用空闲逐级自动降级（客户多久没交互：全层驻留 → KV逐层淘汰 → 权重窗口 → 初始层 → KV落盘退出）</label></div>
+    <label class="fld"><span class="t" data-en="L4→L3 KV per-layer eviction: idle wait seconds (0=stay at L4)">L4→L3 KV 逐层淘汰：空闲等待秒 (0=停在 L4)</span><input type="number" id="f_res_idle4" min="0" value="300"></label>
+    <label class="fld"><span class="t" data-en="L3→L2 weight window: idle wait seconds (0=stay at L3)">L3→L2 权重窗口：空闲等待秒 (0=停在 L3)</span><input type="number" id="f_res_idle3" min="0" value="900"></label>
+    <label class="fld"><span class="t" data-en="L2→L1 initial layers: idle wait seconds (0=stay at L2)">L2→L1 初始层：空闲等待秒 (0=停在 L2)</span><input type="number" id="f_res_idle2" min="0" value="1800"></label>
+    <label class="fld"><span class="t" data-en="L1→L0 KV to disk + unload: idle wait seconds (0=stay at L1)">L1→L0 KV落盘+卸载：空闲等待秒 (0=停在 L1)</span><input type="number" id="f_res_idle1" min="0" value="3600"></label>
+    <label class="fld"><span class="t" data-en="L2 weight-window resident layers w_keep (keep layers 0..N)">L2 权重窗口保留层数 w_keep（保留层 0..N）</span><input type="number" id="f_res_wkeep" min="0" value="8"></label>
+    <div class="sec" data-en="Proactive downgrade on memory pressure (soft watermark; drop one level when below)">内存紧张主动降级（软水位，低于自动降一档）</div>
+    <label class="fld"><span class="t" data-en='Soft watermark MB (0=off; works with the "Core Config - minimum free memory" hard 503)'>软水位 MB（0=关闭；与"核心配置-最低可用内存"硬 503 配合）</span><input type="number" id="f_res_soft" min="0" value="0"></label>
+    <label class="fld"><span class="t" data-en="Lowest level allowed for auto-downgrade (0=unloadable · 3=KV eviction only · 4=no auto-downgrade)">允许自动降到的档位（0=可卸载 · 3=仅KV淘汰 · 4=不自动降）</span><input type="number" id="f_res_lowlvl" min="0" max="4" value="0"></label>
     <div class="row" style="margin-top:10px">
-      <button id="btn_res_cfg" class="primary">应用策略参数</button>
-      <button id="btn_res_l4" title="KV 全驻留 + 权重不主动释放">L4 全层驻留</button>
-      <button id="btn_res_l3" title="prefill 后按重要性逐层淘汰冷块到磁盘 (需 --sparse-attn 配合自动开)">L3 KV淘汰</button>
-      <button id="btn_res_l2" title="释放 layer&gt;w_keep 权重物理页 (需明文 VQF + VLLM_VQF_STREAM)">L2 权重窗口</button>
-      <button id="btn_res_l1" title="从高向低释放到只剩初始层">L1 初始层</button>
-      <button id="btn_res_l0" class="danger" title="KV 落盘(磁盘KV开时)后整模卸载">L0 落盘+退出</button>
+      <button id="btn_res_cfg" class="primary" data-en="Apply policy parameters">应用策略参数</button>
+      <button id="btn_res_l4" title="KV 全驻留 + 权重不主动释放" data-en="L4 full-layer residency" data-en-title="KV fully resident + weights not proactively released">L4 全层驻留</button>
+      <button id="btn_res_l3" title="prefill 后按重要性逐层淘汰冷块到磁盘 (需 --sparse-attn 配合自动开)" data-en="L3 KV eviction" data-en-title="After prefill, evict cold blocks to disk layer by layer by importance (auto-enabled with --sparse-attn)">L3 KV淘汰</button>
+      <button id="btn_res_l2" title="释放 layer&gt;w_keep 权重物理页 (需明文 VQF + VLLM_VQF_STREAM)" data-en="L2 weight window" data-en-title="Free physical pages of weights for layer&gt;w_keep (needs plaintext VQF + VLLM_VQF_STREAM)">L2 权重窗口</button>
+      <button id="btn_res_l1" title="从高向低释放到只剩初始层" data-en="L1 initial layers" data-en-title="Release from high to low until only the initial layers remain">L1 初始层</button>
+      <button id="btn_res_l0" class="danger" title="KV 落盘(磁盘KV开时)后整模卸载" data-en="L0 to disk + exit" data-en-title="Persist KV to disk (when disk-KV is on) then unload the whole model">L0 落盘+退出</button>
     </div>
     <div class="msg" id="resmsg"></div>
-    <div style="font-size:11px;color:var(--tx2);line-height:1.7">
+    <div style="font-size:11px;color:var(--tx2);line-height:1.7" data-en-html="Level notes: <b>L4</b> full-layer residency throughout (default, fastest); <b>L3</b> KV per-layer eviction (prefix reuse is disabled when L3 is on); <b>L2</b> weight window (madvise frees physical pages, page faults auto-restore, zero numerical impact; available only with plaintext VQF + VLLM_VQF_STREAM layered mode); <b>L1</b> only the initial layers of weights remain; <b>L0</b> whole-model unload (the next request/load returns to L4 automatically). Weight levels (L2/L1) are auto-skipped straight to L0 when unavailable; upgrades/downgrades take effect immediately; upgrading only adds memory without losing context, and moving L3→L4 by turning L3 off resets the current context (recoverable when disk-KV is on).">
       档位说明：<b>L4</b> 全程全层驻留（默认，最快）；<b>L3</b> KV 逐层淘汰（前缀复用随
       L3 开启而关闭）；<b>L2</b> 权重窗口（madvise 释放物理页，缺页自动回驻，数值零影响，仅明文 VQF +
       启动 VLLM_VQF_STREAM 分层模式可用）；<b>L1</b> 权重只剩初始层；<b>L0</b> 整模卸载（下次请求/加载自动回 L4）。
@@ -321,39 +322,39 @@ a{color:var(--acc)}
 
   <!-- 配置与操作 -->
   <div class="card">
-    <h2>配置管理</h2>
-    <div class="sec">启动与预设</div>
-    <div class="chkrow"><input type="checkbox" id="f_auto_start"><label for="f_auto_start">自动启动 (supervisor 检测到引擎未运行时自动拉起并加载模型)</label></div>
-    <label class="fld" style="margin-top:8px"><span class="t">快速组合优化（预设一键填充下方优化开关）</span>
+    <h2 data-en="Config Management">配置管理</h2>
+    <div class="sec" data-en="Startup &amp; Presets">启动与预设</div>
+    <div class="chkrow"><input type="checkbox" id="f_auto_start"><label for="f_auto_start" data-en="Auto start (supervisor starts the engine and loads the model when it detects it is not running)">自动启动 (supervisor 检测到引擎未运行时自动拉起并加载模型)</label></div>
+    <label class="fld" style="margin-top:8px"><span class="t" data-en="Quick combo optimization (presets fill the optimization switches below in one click)">快速组合优化（预设一键填充下方优化开关）</span>
       <select id="f_preset">
-        <option value="">— 选择预设 —</option>
-        <option value="perf">性能最优 (推荐): Q8 8x8 prefill 布局（模型须按 dual 转换）</option>
-        <option value="lat">最低延迟: 4x4/8x8 布局开关（模型须按 --wmode q4 转换）</option>
-        <option value="acc">最高精度: 全 Q8 8x8 布局（模型须按 --wmode q8 转换）</option>
-        <option value="mem">低内存: Q4 布局 + KV Q4（模型须按 --wmode q4 转换）</option>
-        <option value="npu">NPU 卸载: NPU load=1</option>
-        <option value="long">长上下文 + 多轮: 稀疏注意力 + L3 冷块淘汰 + P3 前缀复用门（必备，decode 快 3 倍）</option>
+        <option value="" data-en="— Select a preset —">— 选择预设 —</option>
+        <option value="perf" data-en="Best performance (recommended): Q8 8x8 prefill layout (model must be converted as dual)">性能最优 (推荐): Q8 8x8 prefill 布局（模型须按 dual 转换）</option>
+        <option value="lat" data-en="Lowest latency: 4x4/8x8 layout switches (model must be converted with --wmode q4)">最低延迟: 4x4/8x8 布局开关（模型须按 --wmode q4 转换）</option>
+        <option value="acc" data-en="Highest accuracy: full Q8 8x8 layout (model must be converted with --wmode q8)">最高精度: 全 Q8 8x8 布局（模型须按 --wmode q8 转换）</option>
+        <option value="mem" data-en="Low memory: Q4 layout + KV Q4 (model must be converted with --wmode q4)">低内存: Q4 布局 + KV Q4（模型须按 --wmode q4 转换）</option>
+        <option value="npu" data-en="NPU offload: NPU load=1">NPU 卸载: NPU load=1</option>
+        <option value="long" data-en="Long context + multi-turn: sparse attention + L3 cold-block eviction + P3 prefix-reuse gate (required, decode 3× faster)">长上下文 + 多轮: 稀疏注意力 + L3 冷块淘汰 + P3 前缀复用门（必备，decode 快 3 倍）</option>
       </select></label>
     <div class="row">
-      <button id="btn_preset">应用预设</button>
+      <button id="btn_preset" data-en="Apply preset">应用预设</button>
       <div class="msg" id="presetmsg"></div>
     </div>
-    <div class="sec">持久化</div>
+    <div class="sec" data-en="Persistence">持久化</div>
     <div class="row">
-      <button id="btn_loadcfg">载入当前配置</button>
-      <button id="btn_savecfg" class="primary">保存配置</button>
+      <button id="btn_loadcfg" data-en="Load current config">载入当前配置</button>
+      <button id="btn_savecfg" class="primary" data-en="Save config">保存配置</button>
     </div>
     <div class="msg" id="cfgmsg"></div>
   </div>
 
   <!-- 日志 -->
   <div class="card" style="grid-column:1/-1">
-    <h2 style="display:flex;align-items:center;gap:10px">引擎日志 <span id="logMeta" style="color:var(--tx2);font-weight:400"></span>
+    <h2 style="display:flex;align-items:center;gap:10px"><span data-en="Engine Log ">引擎日志 </span><span id="logMeta" style="color:var(--tx2);font-weight:400"></span>
       <span style="flex:1"></span>
       <button id="btn_logpause" style="padding:3px 10px;font-size:12px">暂停</button>
     </h2>
     <div class="logfilters" id="logFilters">
-      <button data-lv="" class="on">全部 <span class="lc" id="cnt_all">0</span></button>
+      <button data-lv="" class="on"><span data-en="All ">全部 </span><span class="lc" id="cnt_all">0</span></button>
       <button data-lv="info">INFO <span class="lc" id="cnt_info">0</span></button>
       <button data-lv="warn">WARN <span class="lc" id="cnt_warn">0</span></button>
       <button data-lv="error">ERROR <span class="lc" id="cnt_error">0</span></button>
@@ -362,7 +363,7 @@ a{color:var(--acc)}
     <div id="log"></div>
   </div>
 </main>
-<footer>vLLM-Kestrel management · 配置保存在 <span id="cfgPath">-</span> · 引擎未运行时请启动 supervisor 后使用本页"启动引擎"</footer>
+<footer><span data-en="vLLM-Kestrel management · Config saved at ">vLLM-Kestrel management · 配置保存在 </span><span id="cfgPath">-</span><span data-en=" · When the engine is not running, start supervisor first, then use &quot;Start Engine&quot; on this page"> · 引擎未运行时请启动 supervisor 后使用本页"启动引擎"</span></footer>
 
 <script>
 "use strict";
@@ -379,9 +380,53 @@ const $ = id => document.getElementById(id);
 const num = id => parseInt($(id).value, 10) || 0;
 const bool = id => $(id).checked;
 
+/* ============ 双语（中 / 英）================
+ * 中文为源码原文（默认语言，DOM 里原样保留），英文另给一份：
+ *   - HTML 静态文案：元素加 data-en="English"；含子元素需保留标签的用 data-en-html。
+ *     applyLang() 首次运行快照中文原文，之后在中英之间来回切换。
+ *   - JS 动态文案：T("中文", "English")；设备名用 devName(d)（后端同时下发 name/name_en）。
+ *   - 选择写入 localStorage，刷新后保持；<html lang> 同步。
+ * 边界：引擎日志正文与 supervisor 页（vllm_mgr.py）不在本机制内，见 include/common/vllm_i18n.h。 */
+const LANG_KEY = "vllm_lang";
+let LANG = (function(){ try { return localStorage.getItem(LANG_KEY) === "en" ? "en" : "zh"; } catch(e){ return "zh"; } })();
+function T(zh, en){ return LANG === "en" ? en : zh; }
+function devName(d){ return d ? ((LANG === "en" && d.name_en) ? d.name_en : (d.name || "")) : ""; }
+function applyLang(){
+  document.documentElement.lang = (LANG === "en") ? "en" : "zh-CN";
+  document.querySelectorAll("[data-en]").forEach(function(el){
+    if (el.__zh === undefined) el.__zh = el.textContent;
+    el.textContent = (LANG === "en") ? el.dataset.en : el.__zh;
+  });
+  document.querySelectorAll("[data-en-html]").forEach(function(el){
+    if (el.__zhHtml === undefined) el.__zhHtml = el.innerHTML;
+    el.innerHTML = (LANG === "en") ? el.dataset.enHtml : el.__zhHtml;
+  });
+  document.querySelectorAll("[data-en-ph]").forEach(function(el){
+    if (el.__zhPh === undefined) el.__zhPh = el.placeholder;
+    el.placeholder = (LANG === "en") ? el.dataset.enPh : el.__zhPh;
+  });
+  document.querySelectorAll("[data-en-title]").forEach(function(el){
+    if (el.__zhTi === undefined) el.__zhTi = el.title;
+    el.title = (LANG === "en") ? el.dataset.enTitle : el.__zhTi;
+  });
+  var lb = $("langBtn");
+  if (lb){ lb.textContent = T("EN", "中文"); lb.title = T("Switch to English", "切换为中文"); }
+  try { localStorage.setItem(LANG_KEY, LANG); } catch(e){}
+}
+function setLang(l){ LANG = (l === "en") ? "en" : "zh"; applyLang(); }
+
 function badge(el, text, cls){
   el.textContent = text;
   el.className = "badge " + (cls || "");
+}
+/* 会随语言变化的状态徽标：记住中英文案与样式，切换语言时可原样重绘
+ * （否则切换语言后徽标会停留在旧语言）。 */
+function badgeT(el, zh, en, cls){
+  el.__zh = zh; el.__en = en; el.__cls = cls;
+  badge(el, T(zh, en), cls);
+}
+function refreshBadgeT(el){
+  if (el && el.__zh !== undefined) badge(el, T(el.__zh, el.__en), el.__cls);
 }
 function msg(el, text, ok){
   el.textContent = text;
@@ -411,10 +456,10 @@ async function mgr(fn, opts){
 /* ---------- status ---------- */
 function loadStateText(s){
   switch (s.load_state){
-    case 1: return "加载中 " + (s.load_total > 0 ? "(" + s.load_layer + "/" + s.load_total + ")" : "");
-    case 2: return "已就绪";
-    case 3: return "加载失败";
-    default: return "未加载";
+    case 1: return T("加载中 ", "Loading ") + (s.load_total > 0 ? "(" + s.load_layer + "/" + s.load_total + ")" : "");
+    case 2: return T("已就绪", "Ready");
+    case 3: return T("加载失败", "Load failed");
+    default: return T("未加载", "Not loaded");
   }
 }
 function renderLoadBar(s){
@@ -423,7 +468,7 @@ function renderLoadBar(s){
     const total = s.load_total > 0 ? s.load_total : 1;
     const pct = Math.min(100, Math.round(s.load_layer / total * 100));
     box.innerHTML = `
-      <div class="loadbar-t">模型加载中… <span id="loadPct">${pct}%</span> (层 ${s.load_layer}/${s.load_total || "?"})</div>
+      <div class="loadbar-t">${T("模型加载中…", "Loading model…")} <span id="loadPct">${pct}%</span> (${T("层", "layer")} ${s.load_layer}/${s.load_total || "?"})</div>
       <div class="progress"><div style="width:${pct}%"></div></div>`;
     box.style.display = "block";
   } else {
@@ -441,27 +486,33 @@ function updateButtons(s){
 }
 function vqfStreamText(s){
   const v = s.vqf_stream;
-  if (!v) return "关闭";
-  if (!v.on) return "关闭";
-  return "启用 · 常驻窗口 keep=" + v.keep + " · " + v.n_layers + " 层 × " +
-         v.n_segments + " 段 · 每层可驱逐 " +
+  if (!v) return T("关闭", "Off");
+  if (!v.on) return T("关闭", "Off");
+  return T("启用", "Enabled") + " · " + T("常驻窗口", "resident window") + " keep=" + v.keep + " · " + v.n_layers + T(" 层 × ", " layers × ") +
+         v.n_segments + T(" 段 · 每层可驱逐 ", " segments · evictable per layer ") +
          (v.per_layer_mb ? v.per_layer_mb.toFixed(1) : "?") + " MB" +
-         (v.cold ? " · 冷驱逐(含页缓存)" : "");
+         (v.cold ? T(" · 冷驱逐(含页缓存)", " · cold eviction (incl. page cache)") : "");
 }
 /* ---------- 内存驻留策略（档位阶梯）UI ---------- */
 const RES_LVL_CN = ["L0 已卸载(落盘善后)", "L1 初始层(只剩初始层权重)",
                     "L2 权重窗口(w_keep)", "L3 KV逐层淘汰", "L4 全程全层驻留"];
+const RES_LVL_EN = ["L0 unloaded (persisted)", "L1 initial layers (only initial-layer weights)",
+                    "L2 weight window (w_keep)", "L3 KV per-layer eviction", "L4 full-layer residency throughout"];
+const RES_LVL_SHORT_CN = ["L0 卸载","L1 初始层","L2 权重窗口","L3 KV淘汰","L4 全层驻留"];
+const RES_LVL_SHORT_EN = ["L0 unloaded","L1 initial layers","L2 weight window","L3 KV eviction","L4 full-layer residency"];
+function resLvlName(i){ return (LANG === "en" ? RES_LVL_EN : RES_LVL_CN)[i]; }
+function resLvlShort(i){ return (LANG === "en" ? RES_LVL_SHORT_EN : RES_LVL_SHORT_CN)[i]; }
 function resRender(r){
   if (!r) return;
-  const wc = r.w_capable ? "权重分层可用" : "权重分层未启用（L2/L1 自动跳到 L0）";
+  const wc = r.w_capable ? T("权重分层可用", "Weight layering available") : T("权重分层未启用（L2/L1 自动跳到 L0）", "Weight layering disabled (L2/L1 auto-skip to L0)");
   $("resStatus").innerHTML =
-    "当前档位：<b>" + RES_LVL_CN[r.cur_level] + "</b>" +
+    T("当前档位：", "Current level: ") + "<b>" + resLvlName(r.cur_level) + "</b>" +
     " <span style='color:var(--tx2)'>(cfg L" + r.cfg_level + " · L3 " +
-    (r.l3_evict ? "开" : "关") + " · 自动降级 " + r.steps + " 次)</span><br>" +
-    "空闲等待：L4→L3 " + r.idle_s[0] + "s · L3→L2 " + r.idle_s[1] + "s · " +
+    (r.l3_evict ? T("开", "on") : T("关", "off")) + T(" · 自动降级 ", " · auto-downgrade ") + r.steps + T(" 次", " times") + ")</span><br>" +
+    T("空闲等待：", "Idle waits: ") + "L4→L3 " + r.idle_s[0] + "s · L3→L2 " + r.idle_s[1] + "s · " +
     "L2→L1 " + r.idle_s[2] + "s · L1→L0 " + r.idle_s[3] + "s" +
-    " · 自动空闲降级 " + (r.auto_idle ? "开" : "关") + "<br>" +
-    "软水位 " + r.mem_soft_mb + " MB · 最低允许档 L" + r.mem_low_lvl +
+    T(" · 自动空闲降级 ", " · auto idle downgrade ") + (r.auto_idle ? T("开", "on") : T("关", "off")) + "<br>" +
+    T("软水位 ", "Soft watermark ") + r.mem_soft_mb + T(" MB · 最低允许档 L", " MB · lowest allowed level L") + r.mem_low_lvl +
     " · " + wc;
   $("f_res_auto").checked = !!r.auto_idle;
   $("f_res_idle4").value = r.idle_s[0];
@@ -486,11 +537,11 @@ async function opResCfg(){
     const r = await eng("/admin/api/policy/config",
       {method:"POST", headers:{"Content-Type":"application/json"},
        body: JSON.stringify(body)});
-    m.textContent = (r && r.error) ? ("失败: " + r.error)
-                                   : ((r && r.note) || "策略参数已应用");
+    m.textContent = (r && r.error) ? (T("失败: ", "Failed: ") + r.error)
+                                   : ((r && r.note) || T("策略参数已应用", "Policy parameters applied"));
     m.style.color = (r && r.error) ? "var(--bad,#d44)" : "";
     loadStatus();
-  } catch (e) { m.textContent = "请求失败: " + e; }
+  } catch (e) { m.textContent = T("请求失败: ", "Request failed: ") + e; }
 }
 async function opResSet(level){
   const m = $("resmsg");
@@ -499,14 +550,14 @@ async function opResSet(level){
       {method:"POST", headers:{"Content-Type":"application/json"},
        body: JSON.stringify({level: level})});
     if (r && r.ok){
-      m.textContent = "已切换至 " + (r.level_name || ("L" + level));
+      m.textContent = T("已切换至 ", "Switched to ") + (r.level_name || ("L" + level));
       m.style.color = "";
     } else {
-      m.textContent = "切换失败: " + (r && r.error ? r.error : "未知错误");
+      m.textContent = T("切换失败: ", "Switch failed: ") + (r && r.error ? r.error : T("未知错误", "unknown error"));
       m.style.color = "var(--bad,#d44)";
     }
     loadStatus();
-  } catch (e) { m.textContent = "请求失败: " + e; }
+  } catch (e) { m.textContent = T("请求失败: ", "Request failed: ") + e; }
 }
 async function loadStatus(){
   let ok = false;
@@ -517,33 +568,33 @@ async function loadStatus(){
     const g = $("stGrid");
     g.innerHTML = "";
     const items = [
-      ["引擎", "vllm_kestrel", ""],
-      ["模型状态", loadStateText(s), ""],
-      ["设备", s.device_id || "-", ""],
-      ["设备说明", s.device_name || "-", "small"],
-      ["架构/类别", (s.device_arch || "-") + " / " + (s.device_class || "-"), ""],
-      ["NPU 后端", s.device_npu || "-", ""],
-      ["模型类型", s.model_name || (s.load_state === 2 ? (s.model_id || "-") : "未加载"), ""],
-      ["模型目录", s.model_dir || "-", "small"],
-      ["VQF 固化布局", s.layout || "-", ""],
-      ["VQF 分层驻留", vqfStreamText(s), ""],
-      ["驻留策略档位", s.res ? (["L0 卸载","L1 初始层","L2 权重窗口","L3 KV淘汰","L4 全层驻留"][s.res.cur_level] + (s.res.auto_idle ? " · 自动降级" : "")) : "-", ""],
-      ["KV 前缀复用", s.prefix_kv ? "开（多模态/文本共用）" : "关 (--no-prefix-kv)", ""],
-      ["上次启动耗时", s.last_load_ms ? (s.last_load_ms + " ms") : "-", ""],
-      ["卸载次数", (s.unload_count||0) + (s.auto_unload_count ? ("（自动 " + s.auto_unload_count + "）") : ""), ""],
-      ["按需加载/卸载", (s.auto_load ? "用时加载 开" : "用时加载 关") + " / " + (s.auto_unload_s > 0 ? ("空闲 " + s.auto_unload_s + "s 卸载") : "不用时卸载 关"), ""],
-      ["NPU", s.npu ? "已启用" : "关闭", ""],
-      ["端口", String(s.port), ""],
-      ["线程", String(s.threads), ""],
-      ["运行时长", fmtUptime(s.uptime_s), ""],
-      ["推理中", s.busy ? "是" : "否", ""],
-      ["当前连接", String(s.connections || 0), ""],
-      ["活跃/排队", s.active + " / " + s.queued + " (上限 " + s.max_queued + ")", ""],
-      ["连续批处理", s.batch_max ? ("batch_max=" + s.batch_max + "，批内 " + (s.batch_active || 0)) : "关闭", ""],
-      ["累计请求", String(s.total_requests), ""],
-      ["RSS 内存", fmtMB(s.rss_mb), ""],
-      ["可用内存", fmtMB(s.mem_avail_mb) + " / " + fmtMB(s.mem_total_mb), ""],
-      ["CPU 占用", s.cpu_pct != null && s.cpu_pct >= 0 ? s.cpu_pct.toFixed(0) + "%" : "-", ""],
+      [T("引擎", "Engine"), "vllm_kestrel", ""],
+      [T("模型状态", "Model status"), loadStateText(s), ""],
+      [T("设备", "Device"), s.device_id || "-", ""],
+      [T("设备说明", "Device desc"), LANG === "en" ? (s.device_name_en || s.device_name || "-") : (s.device_name || "-"), "small"],
+      [T("架构/类别", "Arch/Class"), (s.device_arch || "-") + " / " + (s.device_class || "-"), ""],
+      [T("NPU 后端", "NPU backend"), s.device_npu || "-", ""],
+      [T("模型类型", "Model type"), s.model_name || (s.load_state === 2 ? (s.model_id || "-") : T("未加载", "not loaded")), ""],
+      [T("模型目录", "Model dir"), s.model_dir || "-", "small"],
+      [T("VQF 固化布局", "VQF baked layout"), s.layout || "-", ""],
+      [T("VQF 分层驻留", "VQF layered residency"), vqfStreamText(s), ""],
+      [T("驻留策略档位", "Residency level"), s.res ? (resLvlShort(s.res.cur_level) + (s.res.auto_idle ? T(" · 自动降级", " · auto-downgrade") : "")) : "-", ""],
+      [T("KV 前缀复用", "KV prefix reuse"), s.prefix_kv ? T("开（多模态/文本共用）", "On (shared by multimodal/text)") : T("关 (--no-prefix-kv)", "Off (--no-prefix-kv)"), ""],
+      [T("上次启动耗时", "Last load time"), s.last_load_ms ? (s.last_load_ms + " ms") : "-", ""],
+      [T("卸载次数", "Unload count"), (s.unload_count||0) + (s.auto_unload_count ? (T("（自动 ", " (auto ") + s.auto_unload_count + T("）", ")")) : ""), ""],
+      [T("按需加载/卸载", "Load/unload on demand"), (s.auto_load ? T("用时加载 开", "load-on-use on") : T("用时加载 关", "load-on-use off")) + " / " + (s.auto_unload_s > 0 ? (T("空闲 ", "idle ") + s.auto_unload_s + T("s 卸载", "s unload")) : T("不用时卸载 关", "unload-when-idle off")), ""],
+      [T("NPU", "NPU"), s.npu ? T("已启用", "Enabled") : T("关闭", "Off"), ""],
+      [T("端口", "Port"), String(s.port), ""],
+      [T("线程", "Threads"), String(s.threads), ""],
+      [T("运行时长", "Uptime"), fmtUptime(s.uptime_s), ""],
+      [T("推理中", "Inferring"), s.busy ? T("是", "Yes") : T("否", "No"), ""],
+      [T("当前连接", "Connections"), String(s.connections || 0), ""],
+      [T("活跃/排队", "Active/queued"), s.active + " / " + s.queued + T(" (上限 ", " (max ") + s.max_queued + ")", ""],
+      [T("连续批处理", "Continuous batching"), s.batch_max ? ("batch_max=" + s.batch_max + T("，批内 ", "; in-batch ") + (s.batch_active || 0)) : T("关闭", "Off"), ""],
+      [T("累计请求", "Total requests"), String(s.total_requests), ""],
+      [T("RSS 内存", "RSS memory"), fmtMB(s.rss_mb), ""],
+      [T("可用内存", "Available memory"), fmtMB(s.mem_avail_mb) + " / " + fmtMB(s.mem_total_mb), ""],
+      [T("CPU 占用", "CPU usage"), s.cpu_pct != null && s.cpu_pct >= 0 ? s.cpu_pct.toFixed(0) + "%" : "-", ""],
     ];
     for (const [k, v, cls] of items){
       const d = document.createElement("div");
@@ -557,17 +608,17 @@ async function loadStatus(){
     resRender(s.res);   /* 内存驻留策略：状态 + 表单回填 */
     renderLoadBar(s);
     const mi = $("modelInfo");
-    if (s.load_state === 2) mi.textContent = "✓ " + (s.model_name || s.model_id || "已加载");
-    else if (s.load_state === 1) mi.textContent = "加载中…";
+    if (s.load_state === 2) mi.textContent = "✓ " + (s.model_name || s.model_id || T("已加载", "loaded"));
+    else if (s.load_state === 1) mi.textContent = T("加载中…", "Loading…");
     else mi.textContent = (s.unload_count > 0 && s.auto_load)
-      ? "已卸载（用时加载：下次请求自动重新加载）"
-      : (s.model_dir ? "尚未加载（填好上方路径后点「加载模型」）" : "未加载");
+      ? T("已卸载（用时加载：下次请求自动重新加载）", "Unloaded (load-on-use: reloads automatically on the next request)")
+      : (s.model_dir ? T("尚未加载（填好上方路径后点「加载模型」）", "Not loaded yet (fill in the path above, then click Load Model)") : T("未加载", "Not loaded"));
     const st = s.load_state;
-    const stTxt = st === 1 ? "·加载中" : (st === 2 ? "·已就绪" : "·未加载模型");
-    badge($("engBadge"), "引擎: 运行中" + stTxt,
+    const stTxt = st === 1 ? T("·加载中", "·loading") : (st === 2 ? T("·已就绪", "·ready") : T("·未加载模型", "·no model loaded"));
+    badge($("engBadge"), T("引擎: 运行中", "Engine: running") + stTxt,
           st === 1 ? "warn" : (st === 2 ? "ok" : "warn"));
   } catch (e) {
-    badge($("engBadge"), "引擎: 已停止", "stop");
+    badge($("engBadge"), T("引擎: 已停止", "Engine: stopped"), "stop");
     renderLoadBar(null);
   }
   updateButtons(s);
@@ -575,15 +626,17 @@ async function loadStatus(){
   try {
     const m = await mgr("/api/status");
     const running = m.engine_running;
-    badge($("mgrBadge"), "supervisor: 在线" + (running ? " · 引擎运行中" : " · 引擎已停止"), running ? "ok" : "warn");
+    badge($("mgrBadge"), T("supervisor: 在线", "supervisor: online") + (running ? T(" · 引擎运行中", " · engine running") : T(" · 引擎已停止", " · engine stopped")), running ? "ok" : "warn");
   } catch (e) {
-    badge($("mgrBadge"), "supervisor: 不可达", "bad");
+    badge($("mgrBadge"), T("supervisor: 不可达", "supervisor: unreachable"), "bad");
   }
+  applyLang();
   return ok;
 }
 
 /* ---------- config ---------- */
 function fillForm(c){
+  const ev = c.env || {};   /* 必须在下面的 ev.* 读取之前声明（原实现声明靠后，触发 TDZ） */
   $("f_model_dir").value = c.model_dir || "";
   $("f_kv_q4").checked = !!c.kv_q4;
   $("f_prefix_cache").checked = !!c.prefix_cache;
@@ -614,7 +667,6 @@ function fillForm(c){
   $("f_auto_load").checked = !!c.auto_load;
   $("f_auto_unload_s").value = c.auto_unload_s == null ? 0 : c.auto_unload_s;
   $("f_omp").value = (c.env && c.env.OMP_NUM_THREADS) ? c.env.OMP_NUM_THREADS : "4";
-  const ev = c.env || {};
   $("f_vqf_prewarm").checked = ev.VLLM_VQF_PREWARM === "1";
   const vqs = parseInt(ev.VLLM_VQF_STREAM || "0", 10);
   $("f_vqf_stream").checked = vqs > 0;
@@ -635,7 +687,8 @@ function fillForm(c){
   $("f_moe_q4simd").checked = ev.VLLM_MOE_Q4SIMD !== "0";
   $("f_auto_start").checked = !!c.auto_start;
   updateP3Warn();
-  badge($("cfgBadge"), "配置: 已载入", "ok");
+  badgeT($("cfgBadge"), "配置: 已载入", "Config: loaded", "ok");
+  applyLang();
 }
 function collectForm(){
   return {
@@ -730,7 +783,8 @@ const PRESETS = {
           kv_q4: false, npu: false,
           sparse_attn: true, sparse_k: 32, l3_evict: true, l3_ratio: 0.75, l3_min_seq: 128,
           l3_prefix_reuse: true, prefix_kv: true,
-          desc: "长上下文 + 多轮优化：稀疏注意力 + L3 冷块淘汰 + P3 前缀复用门（这三项要一起开）。5.2K 下 decode 比 llama.cpp 快 3 倍，KV 省 ~1GB，追问轮 prefill 降 93~97%。勿再开 KV Q4。" },
+          desc: "长上下文 + 多轮优化：稀疏注意力 + L3 冷块淘汰 + P3 前缀复用门（这三项要一起开）。5.2K 下 decode 比 llama.cpp 快 3 倍，KV 省 ~1GB，追问轮 prefill 降 93~97%。勿再开 KV Q4。",
+          desc_en: "Long context + multi-turn optimization: sparse attention + L3 cold-block eviction + P3 prefix-reuse gate (these three go together). At 5.2K, decode is 3× faster than llama.cpp, KV saves ~1GB, and follow-up-turn prefill drops 93~97%. Do not also enable KV Q4." },
 };
 function applyFields(o){
   /* 只写显式给出的键（undefined 一律不触碰），让预设与「组合套用」共用同一语义。 */
@@ -763,10 +817,10 @@ function applyFields(o){
 }
 function applyPreset(){
   const p = PRESETS[$("f_preset").value];
-  if (!p){ msg($("presetmsg"), "请先选择预设", false); return; }
+  if (!p){ msg($("presetmsg"), T("请先选择预设", "Select a preset first"), false); return; }
   applyFields(p);
-  badge($("cfgBadge"), "配置: 已载入预设", "ok");
-  msg($("presetmsg"), p.desc ? p.desc : "预设已填充，可微调后保存配置", true);
+  badgeT($("cfgBadge"), "配置: 已载入预设", "Config: preset loaded", "ok");
+  msg($("presetmsg"), p.desc ? (LANG === "en" && p.desc_en ? p.desc_en : p.desc) : T("预设已填充，可微调后保存配置", "Preset filled; fine-tune and save the config"), true);
 }
 
 /* ---- 有效优化组合台账 ----
@@ -774,91 +828,124 @@ function applyPreset(){
  * 数据来源：资料/模型优化开关组合-稠密与MoE.md（板端 ARM 实测 + 2026-09-11 本地
  * x86 逐开关复核 §7.2）。plat: ram=省内存场景有效 / x86=x86 复现 / x86no=x86 无效。 */
 const COMBO_ROWS = [
-  { name: "① 多轮长上下文服务", scene: "对话 / 问答，多轮追问",
+  { name: "① 多轮长上下文服务", name_en: "① Multi-turn long-context serving",
+    scene: "对话 / 问答，多轮追问", scene_en: "Chat / Q&A, multi-turn follow-ups",
     sw: "--sparse-attn --sparse-k 32 --l3-evict --l3-min-seq 128 + env VLLM_L3_PREFIX_REUSE=1 + --prefix-kv",
+    sw_en: "--sparse-attn --sparse-k 32 --l3-evict --l3-min-seq 128 + env VLLM_L3_PREFIX_REUSE=1 + --prefix-kv",
     ev: "追问轮 prefill <b>−93% ~ −97%</b>（2B/8B/30B × 全层/逐层 四象限）",
+    ev_en: "Follow-up prefill <b>−93% ~ −97%</b> (2B/8B/30B × full-layer/per-layer, four quadrants)",
     note: "本仓库收益最大的组合；缺 P3 门则 --prefix-kv 被静默打掉",
+    note_en: "Largest win in this repo; without the P3 gate, --prefix-kv is silently dropped",
     plat: ["x86"],
     set: { prefix_kv: true, sparse_attn: true, sparse_k: 32, l3_evict: true,
            l3_ratio: 0.75, l3_min_seq: 128, l3_prefix_reuse: true, kv_q4: false } },
 
-  { name: "② 内存受限（逐层驻留）", scene: "权重放不下整份 RAM",
+  { name: "② 内存受限（逐层驻留）", name_en: "② Memory-constrained (per-layer residency)",
+    scene: "权重放不下整份 RAM", scene_en: "Weights do not fit in full RAM",
     sw: "env VLLM_VQF_STREAM=1（逐层）+ 叠 ① 的 L3 + P3",
+    sw_en: "env VLLM_VQF_STREAM=1 (per-layer) + stack L3 + P3 from ①",
     ev: "权重 RSS 省 <b>4.6× ~ 21.8×</b>（2B 0.40GB / 8B 0.47GB / 30B 0.50GB）",
+    ev_en: "Weight RSS reduced <b>4.6× ~ 21.8×</b> (2B 0.40GB / 8B 0.47GB / 30B 0.50GB)",
     note: "代价 prefill +11~25% / decode +121~259%；仅明文 VQF",
+    note_en: "Cost: prefill +11~25% / decode +121~259%; plaintext VQF only",
     plat: ["ram"],
     set: { vqf_stream: true, prefix_kv: true, sparse_attn: true, sparse_k: 32,
            l3_evict: true, l3_min_seq: 128, l3_prefix_reuse: true } },
 
-  { name: "③ 重启后复用会话", scene: "升级 / 重启引擎后接着聊",
+  { name: "③ 重启后复用会话", name_en: "③ Reuse session across restarts",
+    scene: "升级 / 重启引擎后接着聊", scene_en: "Keep chatting after engine upgrade / restart",
     sw: "--disk-kv &lt;目录&gt; + --prefix-kv",
+    sw_en: "--disk-kv &lt;dir&gt; + --prefix-kv",
     ev: "重启后第 2/3 轮 prefill <b>−97.3%</b>（38.3s → 1.05s）",
+    ev_en: "2nd/3rd turn prefill after restart <b>−97.3%</b> (38.3s → 1.05s)",
     note: "KV 落盘，对 RAM 也友好",
+    note_en: "KV persisted to disk; also RAM-friendly",
     plat: ["x86", "ram"],
     set: { disk_kv: true, prefix_kv: true } },
 
-  { name: "④ KV 内存吃紧", scene: "长上下文 + RAM 紧",
+  { name: "④ KV 内存吃紧", name_en: "④ Tight KV memory",
+    scene: "长上下文 + RAM 紧", scene_en: "Long context + tight RAM",
     sw: "--kv-q4 + --l3-evict --l3-min-seq 128 + P3 门",
+    sw_en: "--kv-q4 + --l3-evict --l3-min-seq 128 + P3 gate",
     ev: "KV <b>1.65×</b> 压缩、decode +28%；L3 再释放 ~1GB（5.2K）",
+    ev_en: "KV <b>1.65×</b> compression, decode +28%; L3 frees another ~1GB (5.2K)",
     note: "⚠ --kv-q4 与 --sparse-attn 互斥：L3 侧会自动开稀疏，二者不可同开",
+    note_en: "⚠ --kv-q4 and --sparse-attn are mutually exclusive: the L3 side auto-enables sparse, so they cannot both be on",
     plat: ["ram"],
     set: { kv_q4: true, prefix_kv: true, l3_evict: true, l3_min_seq: 128,
            l3_prefix_reuse: true, sparse_attn: false } },
 
-  { name: "⑤ MoE 模型服务", scene: "30B-A3B 等稀疏专家",
+  { name: "⑤ MoE 模型服务", name_en: "⑤ MoE model serving",
+    scene: "30B-A3B 等稀疏专家", scene_en: "Sparse-expert models like 30B-A3B",
     sw: "env VLLM_ACTQ=1 VLLM_MOE_BATCH=1（+ 逐层 / P3）；模型须按 --wmode q4 转换",
+    sw_en: "env VLLM_ACTQ=1 VLLM_MOE_BATCH=1 (+ per-layer / P3); model must be converted with --wmode q4",
     ev: "prefill <b>10.78×</b>（37.5s → 3.48s）/ decode <b>3.20×</b>（30B 逐层 t4）",
+    ev_en: "prefill <b>10.78×</b> (37.5s → 3.48s) / decode <b>3.20×</b> (30B per-layer t4)",
     note: "ACTQ 是近似轨（与精确轨非位级一致），且是 MOE_BATCH 生效硬前提",
+    note_en: "ACTQ is an approximate track (not bit-identical to the exact track) and a hard prerequisite for MOE_BATCH",
     plat: [],
     set: { actq: true, moe_batch: true } },
 
-  { name: "⑥ 并发多用户", scene: "多人同时用同一引擎",
+  { name: "⑥ 并发多用户", name_en: "⑥ Multi-user concurrency",
+    scene: "多人同时用同一引擎", scene_en: "Several users sharing one engine",
     sw: "--batch-max 8（上限 32）+ --max-queued 16",
+    sw_en: "--batch-max 8 (max 32) + --max-queued 16",
     ev: "板端 ~1.7×；<b>x86 实测仅 +4.5%</b>（GEMM 算力瓶颈，批处理摊不掉算力）",
+    ev_en: "Board ~1.7×; <b>x86 measured only +4.5%</b> (GEMM compute-bound; batching cannot amortize compute)",
     plat: ["x86no"],
     set: {} },
 
-  { name: "⑦ 精确重复文本", scene: "模板 / 列表 / 代码复读",
+  { name: "⑦ 精确重复文本", name_en: "⑦ Exact repeated text",
+    scene: "模板 / 列表 / 代码复读", scene_en: "Templates / lists / repeated code",
     sw: "--spec --spec-k 4（须与 sparse / l3 / batch 互斥）",
+    sw_en: "--spec --spec-k 4 (must be exclusive with sparse / l3 / batch)",
     ev: "板端 1.30× 文本 / 1.64× 多模态；<b>x86 实测反慢 2.4×</b>",
+    ev_en: "Board 1.30× text / 1.64× multimodal; <b>x86 measured 2.4× slower</b>",
     note: "⚠ 必须由客户端传 top_p=1.0，否则 spec 静默不生效；仅字面重复有效",
+    note_en: "⚠ The client must send top_p=1.0, otherwise spec is silently ignored; only literal repetition helps",
     plat: ["x86no"],
     set: { spec: true, spec_k: 4, prefix_kv: true } },
 
-  { name: "⑧ 最小回退 / 排障", scene: "怀疑优化引入问题时复现基线",
+  { name: "⑧ 最小回退 / 排障", name_en: "⑧ Minimal fallback / troubleshooting",
+    scene: "怀疑优化引入问题时复现基线", scene_en: "Reproduce the baseline when suspecting an optimization",
     sw: "--no-prefix-kv，且不设任何 VLLM_* 优化 env",
+    sw_en: "--no-prefix-kv, and set no VLLM_* optimization env",
     ev: "基线档，用于对照",
+    ev_en: "Baseline, for comparison",
     plat: [],
     set: { prefix_kv: false, sparse_attn: false, l3_evict: false, l3_prefix_reuse: false,
            kv_q4: false, spec: false, disk_kv: false, vqf_stream: false } },
 ];
-const PTAG_TEXT = { ram: ["ram", "省 RAM"], x86: ["x86", "x86 已复现"], x86no: ["x86no", "x86 无效"] };
+const PTAG_TEXT = { ram: ["ram", "省 RAM", "RAM saver"], x86: ["x86", "x86 已复现", "x86 reproduced"], x86no: ["x86no", "x86 无效", "x86 no gain"] };
 function renderCombos(){
   const tb = $("comboBody");
   if (!tb) return;
   tb.innerHTML = COMBO_ROWS.map((r, i) => {
     const tags = (r.plat || []).map(p =>
-      `<span class="ptag ${PTAG_TEXT[p][0]}">${PTAG_TEXT[p][1]}</span>`).join("");
+      `<span class="ptag ${PTAG_TEXT[p][0]}" data-en="${PTAG_TEXT[p][2]}">${PTAG_TEXT[p][1]}</span>`).join("");
+    const enHtml = (r.ev_en || r.ev) + (r.note ? `<br><span class=&quot;why&quot;>${r.note_en || r.note}</span>` : "");
     return `<tr>
-      <td class="name">${r.name}</td>
-      <td>${r.scene}</td>
-      <td><code>${r.sw}</code></td>
-      <td class="ev">${r.ev}${r.note ? `<br><span class="why">${r.note}</span>` : ""}</td>
+      <td class="name" data-en="${r.name_en || r.name}">${r.name}</td>
+      <td data-en="${r.scene_en || r.scene}">${r.scene}</td>
+      <td><code data-en="${r.sw_en || r.sw}">${r.sw}</code></td>
+      <td class="ev" data-en-html='${enHtml}'>${r.ev}${r.note ? `<br><span class="why">${r.note}</span>` : ""}</td>
       <td>${tags}</td>
-      <td class="act"><button data-combo="${i}">套用</button></td>
+      <td class="act"><button data-combo="${i}" data-en="Apply">套用</button></td>
     </tr>`;
   }).join("");
   tb.querySelectorAll("button[data-combo]").forEach(b => {
     b.onclick = () => comboApply(parseInt(b.dataset.combo, 10));
   });
+  applyLang();
 }
 function comboApply(i){
   const r = COMBO_ROWS[i];
   if (!r) return;
   applyFields(r.set || {});
-  badge($("cfgBadge"), "配置: 已载入组合", "ok");
+  badgeT($("cfgBadge"), "配置: 已载入组合", "Config: combo loaded", "ok");
   msg($("combomsg"),
-      `已套用「${r.name}」。可微调后点「保存配置」，再重启引擎生效。`, true);
+      T(`已套用「${r.name}」。可微调后点「保存配置」，再重启引擎生效。`,
+        `Applied "${r.name_en || r.name}". Fine-tune, then click "Save config" and restart the engine to take effect.`), true);
 }
 /* 开 --l3-evict 却没开 P3 门 → 显式告警（这是最容易踩的坑） */
 function updateP3Warn(){
@@ -876,19 +963,19 @@ function fillDeviceSelect(r){
   for (const d of (r.devices || [])){
     const opt = document.createElement("option");
     opt.value = d.id;
-    opt.textContent = d.name + "  (" + d.arch + " / " + d.cls + ")";
+    opt.textContent = devName(d) + "  (" + d.arch + " / " + d.class + ")";
     sel.appendChild(opt);
   }
   if (cur) sel.value = cur;
-  $("devTag").textContent = (r.device && r.device.name) ? "· " + r.device.name : "";
+  $("devTag").textContent = (r.device && r.device.name) ? "· " + devName(r.device) : "";
 }
 async function applyDevRecommend(){
   const id = $("f_device").value;
-  if (!id){ msg($("cfgmsg"), "请先选择设备", false); return; }
+  if (!id){ msg($("cfgmsg"), T("请先选择设备", "Select a device first"), false); return; }
   try {
     const r = await eng("/admin/api/device?id=" + encodeURIComponent(id));
     const rec = r.device_recommend;
-    if (!rec){ msg($("cfgmsg"), "该设备没有推荐参数", false); return; }
+    if (!rec){ msg($("cfgmsg"), T("该设备没有推荐参数", "No recommended parameters for this device"), false); return; }
     $("f_threads").value = rec.threads || 4;
     $("f_omp").value = rec.omp || 4;
     $("f_npu").checked = !!rec.npu;
@@ -896,16 +983,16 @@ async function applyDevRecommend(){
     $("f_prefill_q8").checked = !!rec.prefill_q8;
     if (rec.model_dir) $("f_model_dir").value = rec.model_dir;
     if (rec.mem_limit_mb > 0) $("f_min_free_mb").value = rec.mem_limit_mb;
-    badge($("cfgBadge"), "设备推荐已应用", "ok");
-    msg($("cfgmsg"), "已按设备 " + r.device.name + " 预填推荐参数，请核对后保存", true);
-  } catch (e) { msg($("cfgmsg"), "获取设备推荐失败: " + e, false); }
+    badgeT($("cfgBadge"), "设备推荐已应用", "Device recommendation applied", "ok");
+    msg($("cfgmsg"), T("已按设备 ", "Recommended parameters prefilled for ") + devName(r.device) + T(" 预填推荐参数，请核对后保存", "; review before saving"), true);
+  } catch (e) { msg($("cfgmsg"), T("获取设备推荐失败: ", "Failed to get device recommendation: ") + e, false); }
 }
 async function loadConfig(){
   try {
     const r = await eng("/admin/api/config");
-    if (r.config) { fillForm(r.config); badge($("cfgBadge"), "配置: 已载入", "ok"); }
+    if (r.config) { fillForm(r.config); badgeT($("cfgBadge"), "配置: 已载入", "Config: loaded", "ok"); }
     fillDeviceSelect(r);
-  } catch (e) { msg($("cfgmsg"), "读取配置失败: " + e, false); }
+  } catch (e) { msg($("cfgmsg"), T("读取配置失败: ", "Failed to read config: ") + e, false); }
 }
 async function saveConfig(){
   const cfg = collectForm();
@@ -916,75 +1003,77 @@ async function saveConfig(){
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify(cfg)
     });
-    msg($("cfgmsg"), r.ok ? "已保存到 " + (r.path||"") + "。" + (r.note||"") : ("保存失败: " + (r.error||"")), !!r.ok);
-  } catch (e) { msg($("cfgmsg"), "保存失败: " + e, false); }
+    msg($("cfgmsg"), r.ok ? T("已保存到 ", "Saved to ") + (r.path||"") + T("。", ".") + (r.note||"") : (T("保存失败: ", "Save failed: ") + (r.error||"")), !!r.ok);
+  } catch (e) { msg($("cfgmsg"), T("保存失败: ", "Save failed: ") + e, false); }
   $("btn_savecfg").disabled = false;
 }
 
 /* ---------- ops ---------- */
 async function opLoadModel(){
   const modelDir = $("f_model_dir").value.trim();
-  msg($("opmsg"), "正在加载模型（VQF 单文件，量化由文件固化）…", true);
+  msg($("opmsg"), T("正在加载模型（VQF 单文件，量化由文件固化）…", "Loading model (single VQF file; quantization is baked in)…"), true);
   try {
     const r = await eng("/admin/api/model/load", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({model_dir: modelDir})
     });
-    if (r.ok) { msg($("opmsg"), r.note || "已开始加载", true); loadStatus(); }
-    else msg($("opmsg"), "加载失败: " + (r.error||""), false);
-  } catch (e) { msg($("opmsg"), "请求失败: " + e, false); }
+    if (r.ok) { msg($("opmsg"), r.note || T("已开始加载", "Loading started"), true); loadStatus(); }
+    else msg($("opmsg"), T("加载失败: ", "Load failed: ") + (r.error||""), false);
+  } catch (e) { msg($("opmsg"), T("请求失败: ", "Request failed: ") + e, false); }
 }
 async function opUnload(){
-  if (!confirm("卸载当前模型？将释放权重与 KV 缓存内存（约数 GB），未保存的对话上下文会丢失。\n若已启用「用时加载」，下一次请求会自动重新加载。")) return;
-  msg($("opmsg"), "正在卸载模型…", true);
+  if (!confirm(T("卸载当前模型？将释放权重与 KV 缓存内存（约数 GB），未保存的对话上下文会丢失。\n若已启用「用时加载」，下一次请求会自动重新加载。", "Unload the current model? This frees weights and KV-cache memory (several GB); unsaved conversation context is lost.\nIf load-on-use is enabled, the next request reloads it automatically."))) return;
+  msg($("opmsg"), T("正在卸载模型…", "Unloading model…"), true);
   try {
     const r = await eng("/admin/api/model/unload", {method: "POST"});
-    msg($("opmsg"), r.ok ? (r.note || "已卸载") : ("卸载失败: " + (r.error||"")), !!r.ok);
+    msg($("opmsg"), r.ok ? (r.note || T("已卸载", "Unloaded")) : (T("卸载失败: ", "Unload failed: ") + (r.error||"")), !!r.ok);
     loadStatus();
-  } catch (e) { msg($("opmsg"), "请求失败: " + e, false); }
+  } catch (e) { msg($("opmsg"), T("请求失败: ", "Request failed: ") + e, false); }
 }
 async function opStart(){
-  msg($("opmsg2"), "正在通过 supervisor 启动引擎…", true);
+  msg($("opmsg2"), T("正在通过 supervisor 启动引擎…", "Starting the engine via supervisor…"), true);
   try {
     const r = await mgr("/api/start", {method: "POST"});
-    msg($("opmsg2"), r.ok ? "已提交启动。模型加载约需数分钟，请查看日志。" : "启动失败: " + (r.error||""), !!r.ok);
-  } catch (e) { msg($("opmsg2"), "supervisor 不可达 (" + mgrBase + ")。请在板端运行: python3 tools/vllm_mgr.py --serve", false); }
+    msg($("opmsg2"), r.ok ? T("已提交启动。模型加载约需数分钟，请查看日志。", "Start submitted. Model loading takes a few minutes; check the log.") : T("启动失败: ", "Start failed: ") + (r.error||""), !!r.ok);
+  } catch (e) { msg($("opmsg2"), T("supervisor 不可达 (", "supervisor unreachable (") + mgrBase + T(")。请在板端运行: python3 tools/vllm_mgr.py --serve", "). Run on the board: python3 tools/vllm_mgr.py --serve"), false); }
   setTimeout(loadStatus, 1500);
 }
 async function opRestart(){
-  if (!confirm("重启引擎？当前配置将被保存并应用。")) return;
+  if (!confirm(T("重启引擎？当前配置将被保存并应用。", "Restart the engine? The current config will be saved and applied."))) return;
   await saveConfig();
-  msg($("opmsg2"), "正在重启（保存配置 → 设置重启标志 → 关闭引擎 → supervisor 拉起）…", true);
+  msg($("opmsg2"), T("正在重启（保存配置 → 设置重启标志 → 关闭引擎 → supervisor 拉起）…", "Restarting (save config → set restart flag → shut down engine → supervisor starts it)…"), true);
   try { await mgr("/api/restart", {method: "POST"}); }
-  catch (e) { msg($("opmsg2"), "supervisor 不可达，无法自动重启: " + e, false); return; }
+  catch (e) { msg($("opmsg2"), T("supervisor 不可达，无法自动重启: ", "supervisor unreachable; cannot auto-restart: ") + e, false); return; }
   try { await eng("/admin/api/shutdown", {method: "POST"}); } catch (e) {}
   setTimeout(loadStatus, 2000);
 }
 async function opStop(){
-  if (!confirm("关闭引擎？运行中的推理请求将被中断。")) return;
-  msg($("opmsg2"), "正在关闭引擎…", true);
+  if (!confirm(T("关闭引擎？运行中的推理请求将被中断。", "Shut down the engine? In-flight inference requests will be interrupted."))) return;
+  msg($("opmsg2"), T("正在关闭引擎…", "Shutting down the engine…"), true);
   try { await eng("/admin/api/shutdown", {method: "POST"}); } catch (e) {}
   setTimeout(loadStatus, 1500);
 }
 async function opL3Clear(){
-  if (!confirm("清空所有用户的 L3 淘汰缓存文件？\n推理不受影响，当前用户的缓存会在下一次请求时重建。")) return;
-  msg($("l3msg"), "正在清空…", true);
+  if (!confirm(T("清空所有用户的 L3 淘汰缓存文件？\n推理不受影响，当前用户的缓存会在下一次请求时重建。", "Clear all users' L3 eviction cache files?\nInference is unaffected; the current user's cache is rebuilt on the next request."))) return;
+  msg($("l3msg"), T("正在清空…", "Clearing…"), true);
   try {
     const r = await eng("/admin/api/l3/clear", {method: "POST"});
-    msg($("l3msg"), r.ok ? ("已清空 " + (r.removed||0) + " 个用户缓存文件") : ("清空失败: " + (r.error||"")), !!r.ok);
-  } catch (e) { msg($("l3msg"), "请求失败: " + e, false); }
+    msg($("l3msg"), r.ok ? (T("已清空 ", "Cleared ") + (r.removed||0) + T(" 个用户缓存文件", " user cache files")) : (T("清空失败: ", "Clear failed: ") + (r.error||"")), !!r.ok);
+  } catch (e) { msg($("l3msg"), T("请求失败: ", "Request failed: ") + e, false); }
 }
 async function opSelftest(){
-  msg($("npudrvMsg"), "NPU 自测运行中（--npu-calib，直驱命令表 vs CPU 参考）…", true);
+  msg($("npudrvMsg"), T("NPU 自测运行中（--npu-calib，直驱命令表 vs CPU 参考）…", "NPU self-test running (--npu-calib, direct-drive command table vs CPU reference)…"), true);
   try {
     const r = await mgr("/api/selftest", {method: "POST"});
-    msg($("npudrvMsg"), r.ok ? ("NPU 自测: " + (r.result || "完成")) : ("自测失败: " + (r.error||"")), !!r.ok);
-  } catch (e) { msg($("npudrvMsg"), "supervisor 不可达，无法自测: " + e, false); }
+    msg($("npudrvMsg"), r.ok ? (T("NPU 自测: ", "NPU self-test: ") + (r.result || T("完成", "done"))) : (T("自测失败: ", "Self-test failed: ") + (r.error||"")), !!r.ok);
+  } catch (e) { msg($("npudrvMsg"), T("supervisor 不可达，无法自测: ", "supervisor unreachable; cannot self-test: ") + e, false); }
 }
 
 /* ---------- NPU driver check / install ---------- */
+let lastNpuDrv = null;   /* 最近一次驱动检测结果，用于切换语言时重绘 */
 function renderNpuDrv(r){
+  lastNpuDrv = r;
   const grid = $("npudrvGrid");
   grid.innerHTML = "";
   for (const c of (r.checks || [])){
@@ -995,26 +1084,26 @@ function renderNpuDrv(r){
     grid.appendChild(d);
   }
   const cls = r.overall === "ok" ? "ok" : (r.overall === "warn" ? "warn" : "bad");
-  const txt = r.overall === "ok" ? "就绪" : (r.overall === "warn" ? "部分可用" : "异常");
+  const txt = r.overall === "ok" ? T("就绪", "Ready") : (r.overall === "warn" ? T("部分可用", "Partially available") : T("异常", "Error"));
   badge($("npudrvBadge"), txt, cls);
 }
 async function npuDrvCheck(){
-  msg($("npudrvMsg"), "正在检测 NPU 驱动…", true);
+  msg($("npudrvMsg"), T("正在检测 NPU 驱动…", "Checking NPU driver…"), true);
   try {
     const r = await mgr("/api/npu-info");
     renderNpuDrv(r);
-    msg($("npudrvMsg"), "检测完成", true);
-  } catch (e) { msg($("npudrvMsg"), "supervisor 不可达: " + e, false); }
+    msg($("npudrvMsg"), T("检测完成", "Check complete"), true);
+  } catch (e) { msg($("npudrvMsg"), T("supervisor 不可达: ", "supervisor unreachable: ") + e, false); }
 }
 async function npuDrvInstall(){
-  if (!confirm("执行 NPU 驱动安装/修复？（modprobe 候选模块 + 修复设备节点权限 + 重新检测）")) return;
-  msg($("npudrvMsg"), "正在执行…", true);
+  if (!confirm(T("执行 NPU 驱动安装/修复？（modprobe 候选模块 + 修复设备节点权限 + 重新检测）", "Run NPU driver install/repair? (modprobe candidate modules + fix device-node permissions + re-check)"))) return;
+  msg($("npudrvMsg"), T("正在执行…", "Running…"), true);
   try {
     const r = await mgr("/api/npu-install", {method: "POST"});
     renderNpuDrv(r);
     let s = (r.steps || []).map(st => (st.ok ? "✔ " : "✘ ") + st.step + " — " + st.detail).join("\n");
     msg($("npudrvMsg"), s + "\n" + (r.note || ""), r.open_test);
-  } catch (e) { msg($("npudrvMsg"), "supervisor 不可达: " + e, false); }
+  } catch (e) { msg($("npudrvMsg"), T("supervisor 不可达: ", "supervisor unreachable: ") + e, false); }
 }
 
 /* ---------- log ---------- */
@@ -1049,7 +1138,7 @@ function renderLog(){
     box.appendChild(d);
   }
   updateLogCounts();
-  $("logMeta").textContent = "(" + filtered.length + "/" + allLogLines.length + " 行 · " + logBytes + " B)";
+  $("logMeta").textContent = "(" + filtered.length + "/" + allLogLines.length + T(" 行 · ", " lines · ") + logBytes + " B)";
   if (atBottom || logAuto) box.scrollTop = box.scrollHeight;
 }
 function setLogLevel(lv){
@@ -1078,6 +1167,22 @@ async function pollLog(){
   setTimeout(pollLog, 2000);
 }
 
+/* 语言切换时同步「暂停/继续」按钮与初始状态文案 */
+function refreshPauseBtn(){ $("btn_logpause").textContent = logPaused ? T("继续", "Resume") : T("暂停", "Pause"); }
+function refreshInitTexts(){
+  badge($("engBadge"), T("引擎: 未知", "Engine: unknown"), "");
+  badge($("mgrBadge"), T("supervisor: 未知", "supervisor: unknown"), "");
+  badgeT($("cfgBadge"), "配置: -", "Config: -", "");
+  refreshPauseBtn();   /* 静态「暂停」按钮按当前语言初始化 */
+  refreshNpuDrvTexts();
+}
+/* NPU 驱动卡：未检测则显示双语提示，已检测则按缓存结果重绘（避免切语言被重置）。 */
+function refreshNpuDrvTexts(){
+  if (lastNpuDrv){ renderNpuDrv(lastNpuDrv); return; }
+  badge($("npudrvBadge"), T("未知", "Unknown"), "");
+  $("npudrvGrid").textContent = T("点击「检测驱动」查看内核 / 设备节点 / DRM 驱动状态。", "Click Check driver to view kernel / device node / DRM driver status.");
+}
+
 /* ---------- init ---------- */
 $("btn_loadcfg").onclick = loadConfig;
 $("btn_savecfg").onclick = saveConfig;
@@ -1104,13 +1209,23 @@ $("btn_npudrv_check").onclick = npuDrvCheck;
 $("btn_npudrv_install").onclick = npuDrvInstall;
 $("btn_logpause").onclick = () => {
   logPaused = !logPaused;
-  $("btn_logpause").textContent = logPaused ? "继续" : "暂停";
+  refreshPauseBtn();
 };
 document.querySelectorAll("#logFilters button").forEach(b => {
   b.onclick = () => setLogLevel(b.dataset.lv);
 });
+$("langBtn").onclick = function(){
+  setLang(LANG === "en" ? "zh" : "en");
+  renderCombos(); loadStatus(); refreshPauseBtn(); refreshNpuDrvTexts();
+  refreshBadgeT($("cfgBadge"));   /* 配置徽标按当前语言重绘（不重读配置，避免覆盖未保存编辑） */
+  /* 设备下拉的选项文案含中英两名，需要重拉设备列表；只刷下拉、
+   * 不调 fillForm 以免覆盖用户未保存的表单编辑。 */
+  eng("/admin/api/config").then(function(r){ if (r && r.devices) fillDeviceSelect(r); }).catch(function(){});
+};
 $("mgrUrl").textContent = mgrBase;
 $("engUrl").textContent = location.protocol + "//" + location.hostname + ":" + (location.port || 80);
+refreshInitTexts();
+applyLang();
 
 // try to load config when engine is up
 (async () => {

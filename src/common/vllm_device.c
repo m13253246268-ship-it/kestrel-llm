@@ -12,13 +12,16 @@
  * page (q4|q4i|q8|g256|dual). g256 (NPU K-block 256 layout) only exists on
  * the RK3588 profile. */
 static const VDevProfile g_devices[] = {
-    { "x86-pc", "x86 通用 PC（x86-64）", VDEV_ARCH_X86, VDEV_CLASS_PC,
+    { "x86-pc", "x86 通用 PC（x86-64）", "x86 generic PC (x86-64)",
+      VDEV_ARCH_X86, VDEV_CLASS_PC,
       NULL, "q8", 8, 8, 0, 0, 0, "q8,q4,q4i,dual", NULL },
     { "arm-rk3588-opi5", "RK3588 香橙派 5（ARM 嵌入式）",
+      "RK3588 Orange Pi 5 (ARM embedded)",
       VDEV_ARCH_ARM64, VDEV_CLASS_EMBEDDED,
       "rk3588-direct", "dual", 4, 4, 0, 1, 0, "g256,q4,q4i,q8,dual",
       "/NewVLLM/Modl/千问3_VL_8B_Instruct" },
-    { "arm-generic", "ARM 通用嵌入式", VDEV_ARCH_ARM64, VDEV_CLASS_EMBEDDED,
+    { "arm-generic", "ARM 通用嵌入式", "ARM generic embedded",
+      VDEV_ARCH_ARM64, VDEV_CLASS_EMBEDDED,
       NULL, "dual", 4, 4, 0, 0, 0, "q4,q4i,q8,dual", NULL },
     { NULL }
 };

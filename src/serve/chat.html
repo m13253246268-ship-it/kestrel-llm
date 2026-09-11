@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>vLLM-Kestrel 推理客户端</title>
+<title data-en="vLLM-Kestrel Inference Client">vLLM-Kestrel 推理客户端</title>
 <style>
 :root{
   --bg:#0f1419; --panel:#1a212b; --panel2:#202a36; --bd:#2c3a4a;
@@ -83,44 +83,45 @@ button:disabled{opacity:.5;cursor:not-allowed}
 </head>
 <body>
 <header>
-  <h1>vLLM-Kestrel 推理客户端</h1>
+  <h1 data-en="vLLM-Kestrel Inference Client">vLLM-Kestrel 推理客户端</h1>
   <span id="engBadge" class="badge">引擎: 未知</span>
   <span style="flex:1"></span>
-  <button id="btn_settings" class="toolbtn" title="推理参数设置">⚙ 设置</button>
-  <button id="btn_perf" class="toolbtn" title="性能指标历史">📊 性能</button>
-  <button id="btn_clear_hist" class="toolbtn" title="清空当前会话的历史记录（对话与上下文）">🗑 清理历史</button>
-  <select id="p_ctx" class="ctxsel" title="上下文关联模式：全关联=全部历史；关联前十条=最近10条消息；无关联=只看本轮（TTFT 最快）。控制每轮上下文计算量">
-    <option value="full">全关联</option>
-    <option value="last10">关联前十条</option>
-    <option value="none">无关联</option>
+  <button id="btn_settings" class="toolbtn" title="推理参数设置" data-en-title="Inference settings" data-en="⚙ Settings">⚙ 设置</button>
+  <button id="btn_perf" class="toolbtn" title="性能指标历史" data-en-title="Performance history" data-en="📊 Perf">📊 性能</button>
+  <button id="btn_clear_hist" class="toolbtn" title="清空当前会话的历史记录（对话与上下文）" data-en-title="Clear the current session history (messages and context)" data-en="🗑 Clear history">🗑 清理历史</button>
+  <select id="p_ctx" class="ctxsel" title="上下文关联模式：全关联=全部历史；关联前十条=最近10条消息；无关联=只看本轮（TTFT 最快）。控制每轮上下文计算量" data-en-title="Context mode: Full = all history; Last 10 = the 10 most recent messages; None = current turn only (fastest TTFT). Controls per-turn context computation.">
+    <option value="full" data-en="Full">全关联</option>
+    <option value="last10" data-en="Last 10">关联前十条</option>
+    <option value="none" data-en="None">无关联</option>
   </select>
-  <a href="/admin/" target="_blank">管理页 /admin/</a>
+  <a href="/admin/" target="_blank" data-en="Admin /admin/">管理页 /admin/</a>
+  <button id="langBtn" type="button" class="toolbtn" title="切换为中文">EN</button>
   <span id="clock" style="color:var(--tx2);font-size:12px"></span>
 </header>
-<div id="warnbar">模型未加载 —— 请到 <a href="/admin/" target="_blank" style="text-decoration:underline">管理页</a> 选择量化类型并点击「加载模型」，加载完成后即可在此对话。</div>
+<div id="warnbar"><span data-en="Model not loaded — go to ">模型未加载 —— 请到 </span><a href="/admin/" target="_blank" style="text-decoration:underline"><span data-en="Admin">管理页</span></a><span data-en=" to select a quantization type and click &quot;Load Model&quot;; once loaded you can chat here."> 选择量化类型并点击「加载模型」，加载完成后即可在此对话。</span></div>
 <div id="main"></div>
 <div id="metrics" class="hidden"></div>
 <div id="settings" class="overlay hidden">
   <div class="modal">
-    <div class="modal-head"><span>推理设置</span><button id="btn_close_set" class="toolbtn">✕</button></div>
-    <label class="fld">用户 ID（绑定独立上下文；切换后自动清空当前对话）
-      <input type="text" id="p_user" placeholder="留空 = 匿名（共享上下文）"></label>
+    <div class="modal-head"><span data-en="Inference settings">推理设置</span><button id="btn_close_set" class="toolbtn">✕</button></div>
+    <label class="fld"><span data-en="User ID (separate context; switching clears the current conversation)">用户 ID（绑定独立上下文；切换后自动清空当前对话）</span>
+      <input type="text" id="p_user" placeholder="留空 = 匿名（共享上下文）" data-en-ph="Empty = anonymous (shared context)"></label>
     <label class="fld">max_tokens<input type="number" id="p_max" min="1" max="4096" value="256"></label>
     <label class="fld">temperature<input type="number" id="p_temp" min="0" max="2" step="0.1" value="0.7"></label>
     <label class="fld">top_p<input type="number" id="p_topp" min="0" max="1" step="0.05" value="0.9"></label>
-    <label class="fld">输出模式
-      <select id="p_stream"><option value="1">流式 SSE</option><option value="0">一次性 JSON</option></select>
+    <label class="fld"><span data-en="Output mode">输出模式</span>
+      <select id="p_stream"><option value="1" data-en="Streaming SSE">流式 SSE</option><option value="0" data-en="Single JSON">一次性 JSON</option></select>
     </label>
     <div class="row">
-      <button id="btn_clear" class="toolbtn">清空对话</button>
-      <button id="btn_done_set" class="primary">完成</button>
+      <button id="btn_clear" class="toolbtn" data-en="Clear conversation">清空对话</button>
+      <button id="btn_done_set" class="primary" data-en="Done">完成</button>
     </div>
   </div>
 </div>
 <div id="perf" class="overlay hidden">
   <div class="modal">
-    <div class="modal-head"><span>性能指标历史</span><div style="display:flex;gap:6px"><button id="btn_clear_perf" class="toolbtn" title="清空全部性能记录">清空记录</button><button id="btn_close_perf" class="toolbtn">✕</button></div></div>
-    <input type="text" id="perf_search" placeholder="搜索（时间 / token / 耗时 / 速度…）">
+    <div class="modal-head"><span data-en="Performance history">性能指标历史</span><div style="display:flex;gap:6px"><button id="btn_clear_perf" class="toolbtn" title="清空全部性能记录" data-en-title="Clear all performance records" data-en="Clear records">清空记录</button><button id="btn_close_perf" class="toolbtn">✕</button></div></div>
+    <input type="text" id="perf_search" placeholder="搜索（时间 / token / 耗时 / 速度…）" data-en-ph="Search (time / token / latency / speed…)">
     <div id="perf_meta" style="font-size:11px;color:var(--tx2);margin:6px 0"></div>
     <div id="perf_list"></div>
   </div>
@@ -129,17 +130,57 @@ button:disabled{opacity:.5;cursor:not-allowed}
   <div style="display:flex;flex-direction:column;gap:6px">
     <div id="attachments"></div>
     <div style="display:flex;gap:8px">
-      <button id="btn_img" class="toolbtn" title="上传图片（可多张）">🖼 图片</button>
-      <button id="btn_vid" class="toolbtn" title="上传视频（自动抽帧）" style="display:none">🎬 视频</button>
+      <button id="btn_img" class="toolbtn" title="上传图片（可多张）" data-en-title="Upload images (multiple)" data-en="🖼 Image">🖼 图片</button>
+      <button id="btn_vid" class="toolbtn" title="上传视频（自动抽帧）" style="display:none" data-en-title="Upload video (frames auto-extracted)" data-en="🎬 Video">🎬 视频</button>
     </div>
     <input type="file" id="file_img" accept="image/*" multiple style="display:none">
     <input type="file" id="file_vid" accept="video/*" style="display:none">
   </div>
-  <textarea id="input" placeholder="输入消息…（支持文字 / 图片 / 视频，Enter 发送，Shift+Enter 换行）"></textarea>
-  <button id="btn_send" class="primary">发送</button>
+  <textarea id="input" placeholder="输入消息…（支持文字 / 图片 / 视频，Enter 发送，Shift+Enter 换行）" data-en-ph="Type a message… (text / image / video supported; Enter to send, Shift+Enter for newline)"></textarea>
+  <button id="btn_send" class="primary" data-en="Send">发送</button>
 </div>
 <script>
 "use strict";
+/* ============ 双语（中 / 英）================
+ * 与 admin.html 同一套机制与同一个 localStorage 键，两页语言保持一致。
+ *   - HTML 静态文案：元素加 data-en="English"；placeholder 加 data-en-ph；
+ *     title 加 data-en-title。含子元素的元素不要加 data-en，改为把中文文本段
+ *     各自包一层 <span data-en="...">…</span>。
+ *   - JS 动态文案：T("中文", "English")。
+ * 边界：引擎日志/后端原始串不在本机制内。 */
+var LANG_KEY = "vllm_lang";
+var LANG = (function(){ try { return localStorage.getItem(LANG_KEY) === "en" ? "en" : "zh"; } catch(e){ return "zh"; } })();
+function T(zh, en){ return LANG === "en" ? en : zh; }
+function applyLang(){
+  document.documentElement.lang = (LANG === "en") ? "en" : "zh-CN";
+  document.querySelectorAll("[data-en]").forEach(function(el){
+    if (el.__zh === undefined) el.__zh = el.textContent;
+    el.textContent = (LANG === "en") ? el.dataset.en : el.__zh;
+  });
+  document.querySelectorAll("[data-en-html]").forEach(function(el){
+    if (el.__zhHtml === undefined) el.__zhHtml = el.innerHTML;
+    el.innerHTML = (LANG === "en") ? el.dataset.enHtml : el.__zhHtml;
+  });
+  document.querySelectorAll("[data-en-ph]").forEach(function(el){
+    if (el.__zhPh === undefined) el.__zhPh = el.placeholder;
+    el.placeholder = (LANG === "en") ? el.dataset.enPh : el.__zhPh;
+  });
+  document.querySelectorAll("[data-en-title]").forEach(function(el){
+    if (el.__zhTi === undefined) el.__zhTi = el.title;
+    el.title = (LANG === "en") ? el.dataset.enTitle : el.__zhTi;
+  });
+  var lb = document.getElementById("langBtn");
+  if (lb){ lb.textContent = T("EN", "中文"); lb.title = T("Switch to English", "切换为中文"); }
+  try { localStorage.setItem(LANG_KEY, LANG); } catch(e){}
+}
+function setLang(l){ LANG = (l === "en") ? "en" : "zh"; applyLang(); }
+/* 语言切换后重跑本页的动态渲染（指标条 / 性能历史 / 附件缩略图 / 状态徽标）。 */
+function refreshAfterLang(){
+  if (lastMet) renderMetrics(lastMet);
+  renderPerfHistory();
+  renderAttachments();
+  refreshStatus();
+}
 const $ = id => document.getElementById(id);
 let history = [];        /* OpenAI-format messages (for multi-turn) */
 let historyTokens = null; /* 引擎回传的完整历史 token 序列（下轮 context_tokens 复用） */
@@ -152,24 +193,27 @@ const PERF_KEY = "vllm_perf_hist";
 let metricHistory = [];
 try { metricHistory = JSON.parse(localStorage.getItem(PERF_KEY) || "[]"); } catch (e) { metricHistory = []; }
 if (!Array.isArray(metricHistory)) metricHistory = [];
+let lastMet = null;      /* 最近一次指标，用于切换语言时重绘指标条 */
 
-const statusTxt = {
-  "-1":"未知", 0:"未加载", 1:"加载中", 2:"就绪", 3:"加载失败"
-};
+function statusTxt(st){
+  return ({
+    "-1":T("未知","Unknown"), 0:T("未加载","Not loaded"), 1:T("加载中","Loading"), 2:T("就绪","Ready"), 3:T("加载失败","Load failed")
+  })[st];
+}
 
 async function refreshStatus(){
   try {
     const s = await fetch("/admin/api/status").then(r => r.json());
     const st = s.load_state;
     const badge = $("engBadge");
-    badge.textContent = "模型: " + (statusTxt[st] || st) + (s.device_id ? " · " + s.device_id : "");
+    badge.textContent = T("模型: ","Model: ") + (statusTxt(st) || st) + (s.device_id ? " · " + s.device_id : "");
     badge.className = "badge " + (st === 2 ? "ok" : st === 1 ? "warn" : "stop");
     $("warnbar").classList.toggle("show", st !== 2);
     /* 模型未加载(0)/加载失败(3)时仍允许发送：--load-on-use 会在请求到达时
      * 自动重载模型（卸载→重载→上下文延续）；仅"加载中"或流式进行中禁用。 */
     $("btn_send").disabled = streaming || (st === 1);
   } catch (e) {
-    $("engBadge").textContent = "引擎: 已停止";
+    $("engBadge").textContent = T("引擎: 已停止","Engine: stopped");
     $("engBadge").className = "badge stop";
     $("warnbar").classList.add("show");
     $("btn_send").disabled = true;
@@ -182,7 +226,7 @@ function addMsg(role, parts){
   box.className = "msg " + (role === "user" ? "user" : "ai");
   const meta = document.createElement("div");
   meta.className = "meta";
-  meta.textContent = role === "user" ? "你" : "vllm-kestrel";
+  meta.textContent = role === "user" ? T("你","You") : "vllm-kestrel";
   box.appendChild(meta);
   const body = document.createElement("div");
   body.className = "body";
@@ -225,7 +269,7 @@ function renderAttachments(){
     w.className = "att";
     const el = document.createElement(a.kind === "image" ? "img" : "video");
     if (a.kind === "image") el.src = a.url;
-    else { el.src = a.frames[0]; el.title = a.frames.length + " 帧"; }
+    else { el.src = a.frames[0]; el.title = a.frames.length + T(" 帧"," frames"); }
     const x = document.createElement("button");
     x.className = "x";
     x.textContent = "×";
@@ -248,13 +292,13 @@ $("file_vid").onchange = async e => {
   const f = e.target.files[0];
   e.target.value = "";
   if (!f) return;
-  msgStatus("视频抽帧中…");
+  msgStatus(T("视频抽帧中…","Extracting video frames…"));
   try {
     const frames = await extractFrames(f, 8);
     addAttachment({kind:"video", frames});
     msgStatus("");
   } catch (err) {
-    msgStatus("视频处理失败: " + err, true);
+    msgStatus(T("视频处理失败: ","Video processing failed: ") + err, true);
   }
 };
 async function extractFrames(file, n){
@@ -296,8 +340,8 @@ function showProgress(nTok, elapsedMs){
   const m = $("metrics");
   m.classList.remove("hidden");
   m.innerHTML =
-    statChip("生成进度", nTok, "tok") +
-    statChip("已耗时", (elapsedMs / 1000).toFixed(1), "s") +
+    statChip(T("生成进度","Generated"), nTok, "tok") +
+    statChip(T("已耗时","Elapsed"), (elapsedMs / 1000).toFixed(1), "s") +
     '<span class="spinner"></span>';
 }
 function stopProgress(){
@@ -314,47 +358,52 @@ function saveMetric(met){
   try { localStorage.setItem(PERF_KEY, JSON.stringify(metricHistory)); } catch (e) {}
 }
 function perfText(e){
-  return [e.t, "上下文", e.prompt_tokens, "上一问", e.last_user_tokens, "生成", e.n_tokens,
+  return [e.t, T("上下文","Context"), e.prompt_tokens, T("上一问","Last user"), e.last_user_tokens, T("生成","Generated"), e.n_tokens,
     "ttft", e.ttft_ms, "tpot", e.tpot_ms, "prefill", e.prefill_ms,
-    "总耗时", e.total_ms, "速度", e.tok_s].join(" ");
+    T("总耗时","Total"), e.total_ms, T("速度","Speed"), e.tok_s].join(" ");
 }
 function renderPerfHistory(){
   const q = ($("perf_search").value || "").trim().toLowerCase();
   const list = $("perf_list");
   const filtered = metricHistory.filter(e => !q || perfText(e).toLowerCase().indexOf(q) >= 0);
-  $("perf_meta").textContent = "共 " + metricHistory.length + " 条，匹配 " + filtered.length + " 条";
+  $("perf_meta").textContent = T("共 ","Total ") + metricHistory.length + T(" 条，匹配 "," records, matched ") + filtered.length + T(" 条"," records");
   if (!filtered.length){
     list.innerHTML = '<div style="color:var(--tx2);text-align:center;padding:12px">' +
-      (metricHistory.length ? "无匹配" : "暂无记录") + '</div>';
+      (metricHistory.length ? T("无匹配","No match") : T("暂无记录","No records")) + '</div>';
     return;
   }
   list.innerHTML = filtered.map(e =>
     '<div class="pf"><div class="t">' + e.t + '</div><div class="g">' +
-      '<span>上下文 <b>' + ((e.prompt_tokens || 0) * 4 / 1024).toFixed(2) + ' KB</b></span>' +
-      '<span>生成 <b>' + (e.n_tokens != null ? e.n_tokens : "—") + '</b> tok</span>' +
+      '<span>' + T("上下文","Context") + ' <b>' + ((e.prompt_tokens || 0) * 4 / 1024).toFixed(2) + ' KB</b></span>' +
+      '<span>' + T("生成","Generated") + ' <b>' + (e.n_tokens != null ? e.n_tokens : "—") + '</b> tok</span>' +
       '<span>TTFT <b>' + (e.ttft_ms != null ? e.ttft_ms.toFixed(1) : "—") + '</b> ms</span>' +
       '<span>TPOT <b>' + (e.tpot_ms != null ? e.tpot_ms.toFixed(1) : "—") + '</b> ms</span>' +
-      '<span>总耗时 <b>' + (e.total_ms != null ? e.total_ms.toFixed(1) : "—") + '</b> ms</span>' +
-      '<span>速度 <b>' + (e.tok_s != null ? e.tok_s.toFixed(2) : "—") + '</b> tok/s</span>' +
+      '<span>' + T("总耗时","Total") + ' <b>' + (e.total_ms != null ? e.total_ms.toFixed(1) : "—") + '</b> ms</span>' +
+      '<span>' + T("速度","Speed") + ' <b>' + (e.tok_s != null ? e.tok_s.toFixed(2) : "—") + '</b> tok/s</span>' +
     '</div></div>'
   ).join("");
+  applyLang();
 }
 function showMetrics(met){
   if (met.n_tokens > 0 || met.prompt_tokens > 0) saveMetric(met);
+  lastMet = met;
+  renderMetrics(met);
+}
+function renderMetrics(met){
   const m = $("metrics");
   m.classList.remove("hidden");
   const tok_s = (met.tok_s != null ? met.tok_s : (met.total_ms > 0 ? met.n_tokens * 1000 / met.total_ms : 0)).toFixed(2);
   const lastU = (met.last_user_tokens != null) ? met.last_user_tokens : "—";
   const ctxKB = ((met.prompt_tokens || 0) * 4 / 1024).toFixed(2);
   m.innerHTML =
-    statChip("上下文总长", ctxKB, "KB") +
-    statChip("上一问", lastU, "tok") +
-    statChip("生成", met.n_tokens, "tok") +
+    statChip(T("上下文总长","Context length"), ctxKB, "KB") +
+    statChip(T("上一问","Last user"), lastU, "tok") +
+    statChip(T("生成","Generated"), met.n_tokens, "tok") +
     statChip("TTFT", met.ttft_ms.toFixed(1), "ms") +
     statChip("TPOT", met.tpot_ms.toFixed(1), "ms") +
     statChip("prefill", met.prefill_ms.toFixed(1), "ms") +
-    statChip("总耗时", met.total_ms.toFixed(1), "ms") +
-    statChip("速度", tok_s, "tok/s");
+    statChip(T("总耗时","Total"), met.total_ms.toFixed(1), "ms") +
+    statChip(T("速度","Speed"), tok_s, "tok/s");
 }
 
 /* ---------- send ---------- */
@@ -419,7 +468,7 @@ async function send(){
       const j = await r.json().catch(() => ({}));
       if (!r.ok){
         const err = (j.error && j.error.message) || ("HTTP " + r.status);
-        aiText.textContent = "错误: " + err;
+        aiText.textContent = T("错误: ","Error: ") + err;
         showMetricsFallback(t0);
         history.pop();
         throw new Error(err);
@@ -433,7 +482,7 @@ async function send(){
     }
     history.push({role:"assistant", content: rawContent || aiText.textContent});
   } catch (e) {
-    if (e.name !== "AbortError" && !aiText.textContent) aiText.textContent = "请求失败: " + e;
+    if (e.name !== "AbortError" && !aiText.textContent) aiText.textContent = T("请求失败: ","Request failed: ") + e;
     msgStatus(e.message || String(e), true);
   } finally {
     streaming = false;
@@ -451,7 +500,7 @@ async function streamRequest(bodyObj, aiText, t0, onRaw){
   if (!resp.ok){
     const j = await resp.json().catch(() => ({}));
     const err = (j.error && j.error.message) || ("HTTP " + resp.status);
-    aiText.textContent = "错误: " + err;
+    aiText.textContent = T("错误: ","Error: ") + err;
     history.pop();
     throw new Error(err);
   }
@@ -548,13 +597,15 @@ $("btn_done_set").onclick = () => $("settings").classList.add("hidden");
 /* 切换用户 ID：绑定独立上下文，自动清空当前对话。 */
 $("p_user").addEventListener("change", () => {
   clearHistory();
-  msgStatus("已切换用户（" + ($("p_user").value.trim() || "匿名") + "），对话已清空", false);
+  msgStatus(T("已切换用户（","Switched user (") + ($("p_user").value.trim() || T("匿名","anonymous")) + T("），对话已清空","); conversation cleared"), false);
 });
 $("btn_perf").onclick = () => { renderPerfHistory(); $("perf").classList.remove("hidden"); };
 $("btn_close_perf").onclick = () => $("perf").classList.add("hidden");
 $("perf_search").addEventListener("input", renderPerfHistory);
 $("settings").addEventListener("click", e => { if (e.target === $("settings")) $("settings").classList.add("hidden"); });
 $("perf").addEventListener("click", e => { if (e.target === $("perf")) $("perf").classList.add("hidden"); });
+$("langBtn").onclick = function(){ setLang(LANG === "en" ? "zh" : "en"); refreshAfterLang(); };
+applyLang();
 refreshStatus();
 setInterval(refreshStatus, 5000);
 setInterval(() => { $("clock").textContent = new Date().toLocaleTimeString(); }, 1000);

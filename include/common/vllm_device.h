@@ -35,7 +35,8 @@ typedef enum {
  * vllm_device.c). NULL strings mean "no recommendation / not supported". */
 typedef struct {
     const char *id;             /* canonical id, e.g. "arm-rk3588-opi5" */
-    const char *name;           /* human-readable, e.g. "RK3588 香橙派 5" */
+    const char *name;           /* human-readable (zh), e.g. "RK3588 香橙派 5" */
+    const char *name_en;        /* human-readable (en); 管理页按当前语言二选一 */
     VDevArch    arch;
     VDevClass   cls;
     const char *npu;            /* NPU backend id ("rk3588-direct") or NULL */

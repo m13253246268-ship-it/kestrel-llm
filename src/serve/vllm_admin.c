@@ -22,6 +22,7 @@
 #include "vqf.h"             /* vqf_stream_active (res policy 权重档能力) */
 #include "vllm_http.h"
 #include "vllm_device.h"
+#include "vllm_i18n.h"       /* vllm_tr：少量混排文案按 VLLM_LANG 二选一 */
 #include "embedded_web.h"
 
 /* VQF 分层驻留运行状态（vqf.c；避免在 serve 侧引入完整 VQF 头） */
@@ -441,6 +442,10 @@ static void handle_admin_status(const VLLMServerCtx *ctx, VHttpResponse *resp) {
     /* Device profile */
     json_put_str(o, "device_id", ctx->device_id);
     json_put_str(o, "device_name", ctx->device_name);
+    {   /* 设备说明的英文名：管理页按当前语言二选一（切换语言无需重启引擎） */
+        const VDevProfile *dp = ctx->device_id ? vdev_lookup(ctx->device_id) : NULL;
+        if (dp && dp->name_en) json_put_str(o, "device_name_en", dp->name_en);
+    }
     json_put_str(o, "device_arch", ctx->device_arch);
     json_put_str(o, "device_class", ctx->device_class);
     json_put_str(o, "device_npu", ctx->device_npu);
@@ -539,6 +544,7 @@ static void add_device_profile_json(VJson *o, const VDevProfile *p,
     VJson *d = vjson_new_object();
     json_put_str(d, "id", p->id);
     json_put_str(d, "name", p->name);
+    json_put_str(d, "name_en", p->name_en);
     json_put_str(d, "arch", arch_str);
     json_put_str(d, "class", cls_str);
     json_put_str(d, "npu", p->npu ? p->npu : "-");
@@ -574,6 +580,7 @@ static void add_device_list(VJson *o) {
         VJson *e = vjson_new_object();
         json_put_str(e, "id", q->id);
         json_put_str(e, "name", q->name);
+        json_put_str(e, "name_en", q->name_en);
         json_put_str(e, "arch", vdev_arch_str(q->arch));
         json_put_str(e, "class", vdev_class_str(q->cls));
         json_put_str(e, "npu", q->npu ? q->npu : "-");
@@ -867,8 +874,9 @@ static void handle_admin_model_unload(VLLMServerCtx *ctx,
     int rc = vllm_serve_unload_model_self(ctx);   /* self 豁免：handler 内卸载 */
     if (rc == 0) {
         vjson_obj_set(o, "ok", vjson_new_bool(1));
-        json_put_str(o, "note", "model unloaded (weights/KV freed; next request "
-                    "or 加载模型 will reload)");
+        json_put_str(o, "note", vllm_tr(
+                    "model unloaded (weights/KV freed; next request or 点「加载模型」 will reload)",
+                    "model unloaded (weights/KV freed; the next request or Load Model will reload)"));
     } else if (rc == -2) {
         vjson_obj_set(o, "ok", vjson_new_bool(0));
         json_put_str(o, "error", "model is still loading");
