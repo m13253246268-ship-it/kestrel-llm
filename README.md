@@ -200,22 +200,27 @@ curl http://<board>:8080/v1/chat/completions \
 转换由随版发布的独立工具 **`vqf_convert/`** 完成（safetensors / GGUF → 单文件 mmap 的 VQF）。
 
 ```bash
-# 构建转换工具（板端或主机）
-cd vqf_convert && ./build.sh          # Windows: build.bat
-# 转换（具体参数见 vqf_convert/ 内说明）
-./vqf_convert <out.vqf> --model <safetensors-model-dir> --wmode q4
+# 构建转换工具（主机/板端均可；Windows 用 build.bat）
+cd vqf_convert && ./build.sh
+# 转换（明文）
+./vqf_conv --model <safetensors-dir> --convert-vqf <out.vqf> --wmode q4
+# 加密（VQF-Enc：SM4-CTR + HMAC-SM3）
+VLLM_VQF_KEY='<pass>' ./vqf_conv --model <safetensors-dir> --convert-vqf <out.vqf> --wmode q4
+# 内嵌 SM2 供应链签名（可与加密叠加）
+VLLM_VQF_SIGN_PRIV='<64hex>' ./vqf_conv --model <safetensors-dir> --convert-vqf <out.vqf> --wmode q4
 ```
 
 NPU 加速（可选）：默认后端为**零第三方依赖直驱**（自研写 stock rknpu 内核驱动）。
 首次使用先跑板端校准：`./vllm_kestrel --npu --npu-selftest --perf-only`
 （寄存器命令表未校准通过前提交路径保持禁用，自动回退 CPU）。
 
-权重保护与可验证推理：引擎支持 **VQF 存储态加密（VQF-Enc）加载** 与 **SM2 供应链签名验签**；
-启动时置 `VLLM_VQF_KEY` / `VLLM_VQF_SIGN_PUB` 解密验签，置 `VLLM_ATTEST=1`（详见
-[docs/权重保护与可验证推理方案.md](docs/权重保护与可验证推理方案.md)）即逐响应出证
-（attestation schema=3，含请求原文绑定），用 `tools/verify_attest.py` 离线验签。
-> 边界：本轮随版发布的 `vqf_convert/` 只产出**明文** VQF，尚未接入加密输出与内嵌签名；
-> 签名可用 `tools/vllm_vqf_sign.c` 对已有 VQF 离线补签，加密 VQF 的生成工具列入后续版本。
+权重保护与可验证推理：**产出侧**由随版发布的 `vqf_convert/` 完成——设 `VLLM_VQF_KEY`
+输出 VQF-Enc 加密文件（SM4-CTR + HMAC-SM3），设 `VLLM_VQF_SIGN_PRIV`（64 hex）内嵌 SM2
+供应链签名，二者可叠加；**加载侧**置 `VLLM_VQF_KEY` / `VLLM_VQF_SIGN_PUB` 解密验签。
+置 `VLLM_ATTEST=1`（详见 [docs/权重保护与可验证推理方案.md](docs/权重保护与可验证推理方案.md)）
+即逐响应出证（attestation schema=3，含请求原文绑定），用 `tools/verify_attest.py` 离线验签。
+> 边界：加密 / 签名文件需**全层驻留**（`VLLM_VQF_STREAM` 会对加密 VQF 显式拒绝）；
+> 转换的 `--stream` 路径暂不支持加密 / 签名（去掉 `--stream` 走全量路径即可）。
 
 ## 模型与复现
 
@@ -273,6 +278,10 @@ NPU 加速（可选）：默认后端为**零第三方依赖直驱**（自研写
 
 - **attestation schema 3**：新增**请求原文绑定**（`body_sha = SM3(客户端原始请求体)`），
   只改 `top_k` / `thinking` 也必须改摘要。
+- **转换工具支持加密 / 签名产出**：`vqf_convert/` 设 `VLLM_VQF_KEY` 即输出 VQF-Enc 加密
+  文件（SM4-CTR + HMAC-SM3），设 `VLLM_VQF_SIGN_PRIV` 即内嵌 SM2 供应链签名，二者可叠加；
+  引擎侧加载日志实测 `decrypted (SM4-CTR, HMAC-SM3 ok)` + `SM2 verify ok`，错口令 / 篡改
+  数据字节均被拒绝。
 - **VQF 离线补签口径修复**：离线签名工具先置 `VQF_FLAG_SIGNED` 再算摘要（与写侧
   口径一致），修复补签后永远 digest mismatch 的问题。
 - **Debug 构建修复**：`CMAKE_C_FLAGS_DEBUG` 补 `-march`，避免 NEON dotprod 内联

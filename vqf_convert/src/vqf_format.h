@@ -41,7 +41,7 @@
 
 /* SM2 签名用户标识 ID_A（Z_A 绑定，签名/验签双方必须一致） */
 #define VQF_SIG_ID_MAX    32
-#define VQF_SM2_ID        "vllm-shs-vqf"
+#define VQF_SM2_ID        "vllm-kestrel-vqf"
 
 /* 张量量化类型（qtype） */
 #define VQF_QT_F32     0x01

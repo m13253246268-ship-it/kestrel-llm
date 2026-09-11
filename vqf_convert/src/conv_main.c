@@ -6,8 +6,9 @@
  *   parse -> alloc(dual 布局) -> embed/final_norm -> lm_head chunked
  *   -> st_load_layer_weights(逐层量化+repack) -> 明文 VQF 写出 + FNV。
  *
- * v1 范围：文本模型；wmode=dual(0)/q4(1)/q8(2)/q4i(3)/g256(4)；
- * vision / VQF-Enc / SM2 内嵌签名不在 v1（后续补）。
+ * v1 范围：文本模型；wmode=dual(0)/q4(1)/q8(2)/q4i(3)/g256(4)。
+ * VQF-Enc 加密（env VLLM_VQF_KEY）与 SM2 内嵌签名（env VLLM_VQF_SIGN_PRIV）
+ * 已支持；vision（多模态）权重写出不在 v1。
  *
  * 用法：
  *   vqf_convert --model <safetensors dir> --convert-vqf <out.vqf>
@@ -17,6 +18,7 @@
 #include "vqf_st.h"
 #include "vqf_format.h"
 #include "vqf_vision.h"
+#include "vllm_crypto.h"   /* VQF-Enc（SM4-CTR+HMAC-SM3）/ SM2 供应链签名 */
 #include <stdio.h>
 #include <string.h>
 
@@ -247,6 +249,52 @@ static uint16_t f2h(float x) {
     return (uint16_t)(s | (e << 10) | (m & 0x3FF));
 }
 
+/* ---- VQF-Enc / SM2 供应链签名（与引擎 vqf.c vqf_write 同口径） ----
+ * 口径必须与引擎加载侧逐字节一致，否则 HMAC / 验签会拒绝加载：
+ *   - 加密：数据区 [data_offset..file_len) SM4-CTR 连续计数器；尾部 HMAC-SM3
+ *     tag(32B) 覆盖 头部 canonical(file_len=0, sig 全 0) + 目录 + 密文；
+ *     密钥 = SM3(口令)，前 16B 作 SM4 key、后 16B 作 HMAC key；IV 随机入
+ *     header.enc_iv（加载侧复用）。
+ *   - 签名：D = SM3(头部 canonical(file_len=0, sig 全 0, flags 含 SIGNED)
+ *     ‖ 目录 ‖ 明文数据区)，SM2 签 D（ID_A = VQF_SM2_ID）。签的是明文、
+ *     与加密正交（任意口令加密都不破坏签名）。
+ * 开关（env，与引擎/离线工具一致）：VLLM_VQF_KEY 非空 → 加密；
+ * VLLM_VQF_SIGN_PRIV（64 hex）非空 → 签名。 */
+
+static int vq_enc_derive(const char *pass, uint8_t sm4key[16], uint8_t hmackey[16]) {
+    if (!pass || !pass[0]) return 0;
+    uint8_t mat[32];
+    vc_sm3(pass, strlen(pass), mat);
+    memcpy(sm4key, mat, 16);
+    memcpy(hmackey, mat + 16, 16);
+    return 1;
+}
+
+/* 16B 随机 IV（加载侧从 header.enc_iv 复用；CSPRNG，失败即拒绝）。 */
+static int vq_enc_iv(uint8_t iv[16]) {
+    uint8_t r[32];
+    if (vc_secure_rand(r) != 0) return -1;
+    memcpy(iv, r, 16);
+    return 0;
+}
+
+/* 加密写出：明文 ——SM4-CTR——→ 密文落盘，并同步喂 HMAC（密文）。1MB 分块流式。
+ * 缓冲取 static（单线程转换工具）：调用方 write_vqf 已有 1MB 栈缓冲，
+ * 再叠 1MB 会触发 Windows 默认 1MB 栈溢出。 */
+static int vq_emit_enc(FILE *f, const uint8_t *src, size_t len,
+                       const vc_sm4_ctx *sm4, uint8_t ctr[16],
+                       vc_hmac_ctx *hc) {
+    static uint8_t buf[1 << 20];
+    while (len) {
+        size_t k = len > sizeof(buf) ? sizeof(buf) : len;
+        vc_sm4_ctr_crypt(sm4, ctr, src, buf, k);
+        vc_hmac_update(hc, buf, k);
+        if (fwrite(buf, 1, k, f) != k) return -1;
+        src += k; len -= k;
+    }
+    return 0;
+}
+
 static int write_vqf(const char *path, const STModelWeights *w,
                      const STModelConfig *cfg, uint32_t flags) {
     VQ_ENT d[96];
@@ -297,6 +345,31 @@ static int write_vqf(const char *path, const STModelWeights *w,
     h.arch.moe_ffn = (uint32_t)cfg->moe_ffn;
     h.arch.top_k = (uint32_t)cfg->top_k;
     h.arch.shared_experts = (uint32_t)cfg->shared_experts;
+    /* VQF-Enc / SM2 签名决策：必须在写头与喂 canonical 之前完成，
+     * 因为 flags（ENC/SIGNED）与 header.enc_iv 都参与加载侧校验。 */
+    uint8_t sm4key[16], hmackey[16];
+    int enc = vq_enc_derive(getenv("VLLM_VQF_KEY"), sm4key, hmackey);
+    if (enc) flags |= VQF_FLAG_ENC;
+    uint8_t priv[32];
+    int sign = 0;
+    const char *sp = getenv("VLLM_VQF_SIGN_PRIV");
+    if (sp && sp[0] && vc_hex_decode(sp, priv, 32) == 32) {
+        sign = 1;
+        flags |= VQF_FLAG_SIGNED;
+    }
+    vc_sm4_ctx sm4ctx; uint8_t ctr[16];
+    vc_hmac_ctx hmacc;
+    vc_sm3_ctx dig;
+    if (enc) {
+        if (vq_enc_iv(h.enc_iv) != 0) {
+            fprintf(stderr, "[conv] secure random IV failed\n");
+            fclose(f); return -1;
+        }
+        vc_sm4_setkey_enc(&sm4ctx, sm4key);
+        memcpy(ctr, h.enc_iv, 16);
+    }
+    if (sign) vc_sm3_init(&dig);
+
     h.flags = flags; h.data_offset = data_off;
 
     size_t head_sz = dir_off + (size_t)n * sizeof(VQFTensor);
@@ -307,6 +380,17 @@ static int write_vqf(const char *path, const STModelWeights *w,
         snprintf(t->name, sizeof(t->name), "%s", d[i].name);
         t->qtype = d[i].qtype; t->rows = d[i].rows; t->cols = d[i].cols;
         t->offset = d[i].off; t->bytes = d[i].bytes;
+    }
+    /* canonical 前缀（此时 h.file_len=0 且 h.sig 全 0，与加载侧复算口径一致）：
+     * HMAC 喂 头+目录（密文数据后续边加密边喂）；签名摘要喂 头+目录。 */
+    if (enc) {
+        vc_hmac_init(&hmacc, hmackey, 16);
+        vc_hmac_update(&hmacc, &h, sizeof(h));
+        vc_hmac_update(&hmacc, buf + dir_off, (size_t)n * sizeof(VQFTensor));
+    }
+    if (sign) {
+        vc_sm3_update(&dig, &h, sizeof(h));
+        vc_sm3_update(&dig, buf + dir_off, (size_t)n * sizeof(VQFTensor));
     }
     if (fwrite(buf, 1, head_sz, f) != head_sz) { free(buf); fclose(f); return -1; }
     free(buf);
@@ -336,7 +420,12 @@ static int write_vqf(const char *path, const STModelWeights *w,
                     uint16_t *d16 = (uint16_t *)chunk;
                     for (size_t j = 0; j < k; j++) d16[j] = f2h(src[done + j]);
                     size_t wb = k * 2;
-                    if (fwrite(chunk, 1, wb, f) != wb) { fclose(f); return -1; }
+                    if (sign) vc_sm3_update(&dig, chunk, wb);      /* 明文摘要 */
+                    if (enc) {
+                        if (vq_emit_enc(f, chunk, wb, &sm4ctx, ctr, &hmacc) != 0) {
+                            fclose(f); return -1;
+                        }
+                    } else if (fwrite(chunk, 1, wb, f) != wb) { fclose(f); return -1; }
                     done += k;
                 }
             } else {
@@ -344,7 +433,12 @@ static int write_vqf(const char *path, const STModelWeights *w,
                 size_t left = (size_t)e->bytes;
                 while (left) {
                     size_t k = left > sizeof(chunk) ? sizeof(chunk) : left;
-                    if (fwrite(p, 1, k, f) != k) { fclose(f); return -1; }
+                    if (sign) vc_sm3_update(&dig, p, k);           /* 明文摘要 */
+                    if (enc) {
+                        if (vq_emit_enc(f, p, k, &sm4ctx, ctr, &hmacc) != 0) {
+                            fclose(f); return -1;
+                        }
+                    } else if (fwrite(p, 1, k, f) != k) { fclose(f); return -1; }
                     p += k; left -= k;
                 }
             }
@@ -352,18 +446,54 @@ static int write_vqf(const char *path, const STModelWeights *w,
             while (rem) {
                 uint8_t zp[64] = {0};
                 size_t wb = rem > 64 ? 64 : rem;
-                if (fwrite(zp, 1, wb, f) != wb) { fclose(f); return -1; }
+                if (sign) vc_sm3_update(&dig, zp, wb);             /* 明文 padding 也参与摘要 */
+                if (enc) {
+                    if (vq_emit_enc(f, zp, wb, &sm4ctx, ctr, &hmacc) != 0) {
+                        fclose(f); return -1;
+                    }
+                } else if (fwrite(zp, 1, wb, f) != wb) { fclose(f); return -1; }
                 rem -= wb;
             }
         }
     }
     h.file_len = data_end;
-    if (fseek(f, 0, SEEK_SET) == 0) {
-        uint8_t hdrb[sizeof(VQFHeader)];
-        memcpy(hdrb, &h, sizeof(h));
-        if (fwrite(hdrb, 1, sizeof(h), f) != sizeof(h)) { fclose(f); return -1; }
+    /* SM2 签名收尾：D 已含 header_canonical(file_len=0) + 目录 + 明文数据区，
+     * 此处 final 并回填 sig 块（头部不在 HMAC 范围内，可安全回填）。 */
+    if (sign) {
+        uint8_t D[32], k[32], r[32], s[32], pub[64];
+        vc_sm3_final(&dig, D);
+        if (vc_secure_rand(k) != 0) {
+            fprintf(stderr, "[conv] secure random k failed\n");
+            fclose(f); return -1;
+        }
+        size_t idlen = strlen(VQF_SM2_ID);
+        if (vc_sm2_sign(priv, D, 32, (const uint8_t *)VQF_SM2_ID, idlen,
+                        k, r, s) != 0) {
+            fprintf(stderr, "[conv] SM2 sign failed (bad VLLM_VQF_SIGN_PRIV)\n");
+            fclose(f); return -1;
+        }
+        if (vc_sm2_pub_from_priv(priv, pub) != 0) { fclose(f); return -1; }
+        memcpy(h.sig.pub, pub, 64);
+        memcpy(h.sig.r, r, 32);
+        memcpy(h.sig.s, s, 32);
+        memcpy(h.sig.digest, D, 32);
+        memset(h.sig.id, 0, sizeof(h.sig.id));
+        memcpy(h.sig.id, VQF_SM2_ID, idlen);
+        h.sig.id_len = (uint32_t)idlen;
+        h.sig.rsvd = 0;
     }
+    if (fseek(f, 0, SEEK_SET) != 0 ||
+        fwrite(&h, 1, sizeof(h), f) != sizeof(h)) { fclose(f); return -1; }
+
     uint64_t wsum = 0;
+    if (enc) {
+        /* 尾部 HMAC-SM3 tag（32B）：覆盖 头部 canonical + 目录 + 密文，已边写边算。 */
+        uint8_t tag[32];
+        vc_hmac_final(&hmacc, tag);
+        if (fseek(f, 0, SEEK_END) != 0 || fwrite(tag, 1, 32, f) != 32) {
+            fclose(f); return -1;
+        }
+    } else {
     /* 尾部 FNV-1a（8B）：引擎规则 = FNV(dir) 续 FNV(data[data_off..file_len))，
      * 数据写完后从磁盘流式重算（绑定实际字节，与引擎 vqf_load 自检同规）。 */
     {
@@ -392,11 +522,13 @@ static int write_vqf(const char *path, const STModelWeights *w,
             if (fwrite(&sum, 1, 8, f) != 8) { fclose(f); return -1; }
         }
     }
+    }
     fclose(f);
-    fclose(f);
-    fprintf(stderr, "[conv] wrote %s: %d tensors, %.1f MB flags=0x%x sum=%016llx\n",
+    fprintf(stderr, "[conv] wrote %s: %d tensors, %.1f MB flags=0x%x%s%s",
             path, n, (double)data_end / 1048576.0, flags,
-            (unsigned long long)wsum);
+            enc ? " ENC=SM4-CTR+HMAC-SM3" : "", sign ? " SIGNED=SM2" : "");
+    if (!enc) fprintf(stderr, " sum=%016llx", (unsigned long long)wsum);
+    fprintf(stderr, "\n");
     return 0;
 }
 
@@ -692,6 +824,15 @@ static void *s_v_field(STVisionWeights *v, const char *nm) {
 }
 
 static int run_convert_stream(const char *model_dir, const char *out) {
+    /* --stream 走 mmap 直写路径，尚未接入 VQF-Enc/SM2 收尾；显式拒绝以免
+     * 静默产出"看似加密但无 tag"的文件。去掉 --stream 用全量路径即可。 */
+    const char *ek = getenv("VLLM_VQF_KEY");
+    const char *sk = getenv("VLLM_VQF_SIGN_PRIV");
+    if ((ek && ek[0]) || (sk && sk[0])) {
+        fprintf(stderr, "[conv-stream] VQF-Enc/SM2 签名暂不支持 --stream；"
+                        "请去掉 --stream 走全量路径\n");
+        return 1;
+    }
     STModelConfig cfg; memset(&cfg, 0, sizeof(cfg));
     if (st_parse_config(model_dir, &cfg) != 0) {
         fprintf(stderr, "[conv-stream] config parse failed\n");
@@ -1005,7 +1146,11 @@ int main(int argc, char **argv) {
             else { fprintf(stderr, "[conv] bad --wmode %s\n", m); return 2; }
         } else if (!strcmp(argv[i], "--help")) {
             printf("vqf_convert --model <dir> --convert-vqf <out.vqf> "
-                   "[--stream] [--wmode dual|q4|q8|q4i|g256]\n");
+                   "[--stream] [--wmode dual|q4|q8|q4i|g256]\n"
+                   "  env: VLLM_VQF_KEY=<pass>         输出 VQF-Enc 加密文件"
+                   "（SM4-CTR + HMAC-SM3）\n"
+                   "       VLLM_VQF_SIGN_PRIV=<64hex>  内嵌 SM2 供应链签名"
+                   "（可与加密并用）\n");
             return 0;
         }
     }

@@ -11,6 +11,7 @@ echo "[build] vqf_convert (x86_64) -O2 ..."
 $CC -O2 -Wall -Wextra -I src \
     src/conv_main.c src/model_cfgio.c src/model_layers.c \
     src/quant_kernels.c src/qk_repack.c src/vqf_vision.c \
+    src/vllm_crypto.c \
     -o vqf_conv -lm
 
 echo "[ok] 产物: $(pwd)/vqf_conv"
