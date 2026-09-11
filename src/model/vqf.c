@@ -12,6 +12,7 @@
  * ================================================================ */
 #include "vqf.h"
 #include "vllm_platform.h"
+#include "vllm_util.h"     /* st_fopen：Windows 下的 UTF-8 路径打开 */
 #include "vllm_vision.h"   /* STVisionWeights: VQF vision 张量收集/挂载 */
 #include "vllm_crypto.h"   /* VQF-Enc: SM4-CTR + HMAC-SM3；SM2 签名 */
 #include "vllm_sign_keys.h" /* SM2 验签信任公钥（编译期内嵌） */
@@ -100,7 +101,7 @@ static int vqf_trusted_pub(uint8_t pub[64]) {
 
 /* ---------------- 加载 ---------------- */
 int vqf_is_file(const char *path) {
-    FILE *f = fopen(path, "rb");
+    FILE *f = st_fopen(path, "rb");
     if (!f) return 0;
     uint32_t m = 0;
     int ok = (fread(&m, 1, 4, f) == 4);

@@ -1980,16 +1980,20 @@ static int app_text_tok(int *buf, int cap, int *n, QwenTokenizer *tok, const cha
  *   prompt_tokens (0 = text row; non-zero = image/video byte hash on the KV
  *   rows replaced by that media's visual tokens). Caller zero-fills it; only
  *   media pad rows are written. NULL disables (batch/legacy callers).
+ * last_user_vis: optional out — visual tokens emitted for the LAST user
+ *   message (0 when it carries no media). Lets the metric report the full
+ *   "上一问长度" (text + image/video tokens) instead of text only.
  * Returns 0 ok, -1 media/decode failure, -2 prompt exceeds max_tok. */
 static int build_multimodal_prompt(VLLMServerCtx *ctx, const VJson *messages,
                                    int *prompt_tokens, int max_tok, int *pn,
                                    float **vis_all, int *vis_total, int *vis_cap,
                                    int *grids, int *n_regions, DSAccum *dsa,
                                    unsigned long long *marks, int mark_cap,
-                                   int thinking) {
+                                   int thinking, int *last_user_vis) {
     QwenTokenizer *tok = ctx->tok;
     STModelConfig *cfg = ctx->cfg;
     size_t n = vjson_array_len(messages);
+    if (last_user_vis) *last_user_vis = 0;
 
     for (size_t m = 0; m < n; m++) {
         const VJson *msg = vjson_array_get(messages, m);
@@ -1998,6 +2002,7 @@ static int build_multimodal_prompt(VLLMServerCtx *ctx, const VJson *messages,
         const VJson *content = vjson_obj_get(msg, "content");
         if (!content) continue;
         if (!role) role = "user";
+        int msg_vis = 0;   /* 本条消息的视觉 token 数 */
 
         if (app_text_tok(prompt_tokens, max_tok, pn, tok, "<|im_start|>") < 0) return -2;
         if (app_text_tok(prompt_tokens, max_tok, pn, tok, role) < 0) return -2;
@@ -2032,12 +2037,14 @@ static int build_multimodal_prompt(VLLMServerCtx *ctx, const VJson *messages,
                         if (marks && ps + i < mark_cap) marks[ps + i] = mh;
                     }
                     if (app_tok(prompt_tokens, max_tok, pn, cfg->vision_end_id) < 0) return -2;
+                    msg_vis += npads;
                 } else {
                     /* Unknown part type: ignore. */
                 }
             }
         }
         if (app_text_tok(prompt_tokens, max_tok, pn, tok, "<|im_end|>\n") < 0) return -2;
+        if (last_user_vis && strcmp(role, "user") == 0) *last_user_vis = msg_vis;
     }
     if (app_text_tok(prompt_tokens, max_tok, pn, tok, "<|im_start|>assistant\n") < 0) return -2;
     if (!thinking &&
@@ -2047,8 +2054,9 @@ static int build_multimodal_prompt(VLLMServerCtx *ctx, const VJson *messages,
 }
 
 /* Token count of the LAST user message's text content (the question just
- * asked). Used for the "上一问长度" metric. Media parts are not counted
- * here (visual tokens are folded into prompt_tokens). */
+ * asked). Used for the "上一问长度" metric. 图文轮的视觉 token 不在此处计入
+ * （本函数只见文本），由多模态路径把该消息的视觉 token 数（last_user_vis）
+ * 补加到调用点，使指标反映"上一问"的真实输入量。 */
 static int last_user_text_tokens(VLLMServerCtx *ctx, const VJson *messages) {
     QwenTokenizer *tok = ctx->tok;
     size_t n = vjson_array_len(messages);
@@ -2370,12 +2378,16 @@ static void handle_chat(VLLMServerCtx *ctx, const VHttpRequest *req,
             mm_marks = (unsigned long long *)calloc((size_t)max_ids + 16,
                                                     sizeof(unsigned long long));
         int rc;
+        int last_user_vis = 0;
         if (batch_mode) vllm_batch_engine_lock(ctx->batch);
         rc = build_multimodal_prompt(ctx, messages, pt, max_ids + 8, &pn,
                                      &vis_all, &vis_total, &vis_cap,
                                      grids, &n_regions, &dsa,
-                                     mm_marks, (int)(max_ids + 16), thinking);
+                                     mm_marks, (int)(max_ids + 16), thinking,
+                                     &last_user_vis);
         if (batch_mode) vllm_batch_engine_unlock(ctx->batch);
+        /* "上一问长度"补视觉 token：图文轮只报文本会显著偏小 */
+        if (rc == 0) last_user_tokens += last_user_vis;
 
         if (batch_mode) {
             /* ---- continuous-batching multimodal path ---- */

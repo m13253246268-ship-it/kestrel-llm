@@ -167,15 +167,43 @@ def build_env(cfg):
     return env
 
 
+def _pid_alive(pid):
+    """PID 存在且不是僵尸进程。"""
+    try:
+        with open("/proc/%d/stat" % pid, "r") as f:
+            st = f.read().rsplit(")", 1)[1].split()[0]
+        return st != "Z"
+    except Exception:
+        return False
+
+
+def _is_engine_proc(pid):
+    """核对 /proc/<pid>/cmdline 是否确为引擎的 --serve 调用。
+
+    pgrep -f 是正则匹配整条命令行，可能命中恰好含该串的其它进程（shell、
+    编辑器、tail 日志等），从而在引擎并未运行时误报 "engine already running"。
+    cmdline 读不到（权限）时保守视为匹配。"""
+    try:
+        with open("/proc/%d/cmdline" % pid, "rb") as f:
+            argv = [a.decode("utf-8", "replace") for a in f.read().split(b"\x00") if a]
+    except Exception:
+        return True
+    if not argv:
+        return False
+    return os.path.basename(argv[0]).startswith("vllm") and "--serve" in argv
+
+
 def engine_pids():
     """PIDs of the running engine (pgrep on the --serve command line)."""
     try:
         out = subprocess.check_output(
             ["pgrep", "-f", "vllm_kestrel --serve"],
             stderr=subprocess.DEVNULL, text=True)
-        return [int(x) for x in out.split() if x.strip().isdigit()]
+        pids = [int(x) for x in out.split() if x.strip().isdigit()]
     except Exception:
         return []
+    # 过滤僵尸与 pgrep 误匹配（陈旧记录是 "already running" 误报的来源）
+    return [p for p in pids if _pid_alive(p) and _is_engine_proc(p)]
 
 
 def start_engine():
@@ -183,8 +211,9 @@ def start_engine():
     if cfg is None:
         return {"ok": False,
                 "error": "no config at %s - save it from the admin page first" % path}
-    if engine_pids():
-        return {"ok": False, "error": "engine already running"}
+    pids = engine_pids()
+    if pids:
+        return {"ok": False, "error": "engine already running", "pids": pids}
     bin_ = find_bin()
     if not os.path.isfile(bin_):
         return {"ok": False, "error": "engine binary not found: %s" % bin_}

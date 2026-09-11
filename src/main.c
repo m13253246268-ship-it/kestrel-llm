@@ -3397,6 +3397,14 @@ done:
 static void fill_model_name(VLLMServerCtx *ctx, const STModelConfig *c) {
     int d  = c ? c->dim : 0;
     int nl = c ? c->n_layers : 0;
+    /* MoE（qwen3_moe 系）的 dim/layers 与稠密 2B 同形，须按专家结构单独标识，
+     * 否则会被下面的尺寸启发式误判成 "Qwen3-VL-2B"。 */
+    if (c && c->is_moe) {
+        snprintf(ctx->model_name, sizeof(ctx->model_name),
+                 "Qwen3-MoE (dim=%d, layers=%d, experts=%d, top_k=%d)",
+                 d, nl, c->n_experts, c->top_k);
+        return;
+    }
     const char *fam = (d >= 4096 && nl >= 36) ? "Qwen3-VL-8B"
                     : (d >= 2048 && nl >= 28) ? "Qwen3-VL-2B"
                     : (d > 0)                 ? "Qwen3-VL"
