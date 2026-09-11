@@ -7,6 +7,7 @@
 #include <math.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <errno.h>    /* errno（glibc 不再间接引入；MinGW 下曾侥幸可用） */
 #include <dirent.h>   /* shard glob (model-N-of-N.safetensors) */
 
 #include "conv_platform.h"
