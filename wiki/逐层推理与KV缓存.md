@@ -43,6 +43,20 @@ VQF 单文件仍以 mmap 直挂，但不一次性把全部权重触入内存：�
 
 30B 全层档峰值 14.2 GB 已顶到 16 GB 板的上限；逐层档把同一模型压到 1.11 GB，留出全部 KV 与进程余量。**逐层真正解耦的是权重，KV 由 KV v2 惰性分配另管。**
 
+**推荐档是 8B**（2026-09-12 实测，`--threads 4`、权重在 SanDisk microSD）：
+
+| 口径 | 数据 |
+|---|---|
+| 权重常驻（`--stream-test`，冷页缓存 A/B） | 4,189,912 kB → **480,348 kB（8.7×）**；rss_end 487,912 kB |
+| serve 逐层峰值（`enable_thinking=false`、96 token 预算） | **824,192 kB**（0.80 GB） |
+| serve 逐层热态（连续 5 次同请求） | **TTFT 1.95 s、tpot 376.6 ms**，70 token 端到端 27.9 s；波动 **±1.8% / ±0.13%** |
+| 冷态（`drop_caches` 后首次） | TTFT 73.1 s / 端到端 99.7 s（一次性成本，∝ 权重体积 ÷ 介质带宽） |
+
+**为什么是 8B**：它的权重 6.15 GiB **小于 15.6 GB 物理内存**，页缓存装得下，热态稳定性有物理
+保障；而 30B 的 16.4 GiB 装不进，热态需赌运气。**务必用 `--threads 4`**——`--threads 8` 会把
+4 个 A55 小核拉进 GEMM，8B 全层 decode 从 186 ms/tok 退化到 431 ms/tok。一键复现：
+`sh tools/bench_value.sh`。
+
 ### 1.4 语义不变与代价
 
 驱逐只丢弃干净文件页，内容由文件重建，不改数值：`--stream-test` 的贪心 TOKIDS 序列在「全层 / 逐层」两档下**逐位一致**，序列 md5 前 12 位 2B `1a5d48906a4c`、8B `efb5a00c5803`、30B-A3B `d4996200fcf2`（同一模型两档取值相同）。
@@ -143,7 +157,7 @@ L3 驱逐（`--l3-evict`）默认与内存前缀复用**互斥**（L3 释放前�
 
 ## 五、可复现命令与环境变量
 
-以下命令与环境变量均来自 README「性能」一节与 KV v2 源文档；README 复现口径为 `--stream-test` 用 `--threads 8`，serve 用 `--serve --port 18080 --device arm-rk3588-opi5 --auto-load`。
+以下命令与环境变量均来自 README「性能」一节与 KV v2 源文档；README 复现口径为 `--stream-test` 用 `--threads 8`，serve 用 `--serve --port 18080 --device arm-rk3588-opi5 --auto-load`。**8B 推荐档（§1.3）用 `--threads 4`**，一键复现见下方 `bench_value.sh`。
 
 ```bash
 # serve 基线（组合⑧）
@@ -156,6 +170,13 @@ VLLM_L3_PREFIX_REUSE=1          # P3：L3 驱逐 × 内存前缀复用共存
 VLLM_VQF_STREAM=1               # 逐层推理（权重驻留）
 VLLM_KV_NOF32=1                 # 去 f32 正典（q8 单份）
 VLLM_ACTQ=1 VLLM_MOE_BATCH=1    # 组合⑤：MoE 专家激活量化 + 专家批量（仅 q4 权重，30B-A3B）
+```
+
+8B 推荐档一键复现（A/B 内存 + 热态稳定度 + 页缓存证据；仅依赖 Python 3 标准库）：
+
+```bash
+sh tools/bench_value.sh
+# 可覆盖：MODEL_DIR / MODEL_FILE / N_WARM=5 / MAXTOK=96 / THREADS=4 / PORT=18092 / OUT
 ```
 
 KV v2 逐层档复现（源文档 §5 原文口径，模型 `/mnt/emmc/day25_fixed`）：

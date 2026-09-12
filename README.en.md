@@ -46,8 +46,8 @@ OpenAI-compatible HTTP API is available immediately.
 
 | Strength | One-line metric |
 |---|---|
-| **Per-layer residency** (new in v1) | Resident memory decoupled from model size: **a 17.66 GB 30B-A3B serves on a 16 GB board**, per-layer peak **1.11 GB** (14.2 GB fully resident) |
-| **Multi-turn long context** | Combo ① (L3 eviction × prefix reuse) cuts follow-up-turn prefill by **−80% ~ −96%**; with MoE combo ⑤ the 30B reaches **4.7 s / 3.2 s** for t2/t3 |
+| **Per-layer residency** (new in v1) | Resident memory decoupled from model size: **8B resident weights 4.19 GB → 0.48 GB (8.7×)**, serve peak **0.80 GB**; warm **TTFT 1.95 s / tpot 377 ms**, spread over 5 samples **±1.8% / ±0.13%** |
+| **Long text and multi-turn** | Combo ① (L3 eviction × prefix reuse) cuts follow-up-turn prefill by **−80% ~ −96%**; with MoE combo ⑤ the 30B reaches **4.7 s / 3.2 s** for t2/t3 |
 | **In-house format and kernels** | Only the in-house VQF v2 single file; single ~0.8 MB binary, zero third-party runtime; hand-written NEON quantized GEMM/GEMV, own thread pool, own SM2/SM3/SM4 |
 | **Verifiable inference** | SM2 supply-chain signature protects weights + per-request attestation proof (schema 3), verified in-browser or offline with zero dependencies |
 
@@ -73,6 +73,12 @@ and stable serving.** The 2B case is even more direct: resident weights of just 
 less than full residency, at the cost of warm-state tpot rising from 113.0 ms to 156.7 ms
 (+38.7%).
 
+**The recommended tier is 8B** (measured 2026-09-12, see "Performance" §4): resident weights
+4.19 GB → **0.48 GB (8.7×)**, serve peak **0.80 GB**, warm **TTFT 1.95 s / tpot 377 ms**
+(27.9 s end-to-end for 70 tokens), with a **±0.13% tpot spread over 5 samples**. Its 6.15 GiB of
+weights are **smaller than physical RAM**, so the page cache holds them and warm-state stability
+is guaranteed by physics — something the 30B cannot claim (see "Performance" §4 and §5).
+
 **Semantics unchanged**: eviction only drops clean file pages, and content is rebuilt from the
 file — the greedy TOKIDS sequence produced by `--stream-test` is **bit-identical** between the
 two residency tiers (see the md5 comparison under "Performance").
@@ -80,6 +86,9 @@ two residency tiers (see the md5 comparison under "Performance").
 > Limits: per-layer residency **supports plaintext VQF only** (VQF-Enc / SM2-signed weights are
 > explicitly rejected and must stay fully resident), and it does not coexist with expert windows
 > (`VLLM_EW*`). Full definitions, costs and matrices are under "Performance".
+> **The 30B is the capability-ceiling tier, not the recommended tier**: its 16.4 GiB of weights
+> do not fit in the 15.6 GB page cache, and with thinking on by default a single Q&A needs
+> 3~4 minutes (see "Performance" §5).
 
 ---
 
@@ -148,7 +157,7 @@ plus the environment variable `VLLM_L3_PREFIX_REUSE=1`, combo ⑤ added
 >
 > **Storage medium (measured 2026-09-12)**: the v1 8B/30B weights live on a **SanDisk microSD
 > card** (`/mnt/VQF` sits on the rootfs, and the rootfs is on the SD card), while the 2B weights
-> and the L3 directory are on eMMC. The two differ by 3.8× in measured bandwidth (see §4), so
+> and the L3 directory are on eMMC. The two differ by 3.8× in measured bandwidth (see §5), so
 > the 8B/30B cold-read cost in this section is priced at **62.7 MB/s (SD card)**.
 >
 > The difference from "4.6×~21.8× saved, prefill +11~25% / decode +121~259%" in
@@ -278,7 +287,7 @@ seconds — which is exactly how per-layer residency fits a 17.66 GB model onto 
 > the SD card's 62.7 MB/s; **moving the weights to eMMC (240 MB/s) would, by bandwidth ratio,
 > bring first token down to roughly 56 s — this is an extrapolation, not a measurement.**
 
-#### 5) Honest boundaries
+#### 6) Honest boundaries
 
 - **Per-layer residency is plaintext-only**: VQF-Enc / SM2-signed weights are explicitly
   rejected (they must stay fully resident).
@@ -293,7 +302,7 @@ seconds — which is exactly how per-layer residency fits a 17.66 GB model onto 
   (tpot 2,240 ms, ≈0.45 tok/s), and the full tier's 14.2 GB peak already sits at the memory
   ceiling. The practical configuration is "per-layer residency (1.11 GB) + combo ① + combo ⑤"
   — combo ⑤ MoE brings the first turn down to 23 s and follow-ups to 3~5 s, which is what makes
-  the 30B actually usable. **See §4 for the short-request measurement** — note that the usable
+  the 30B actually usable. **See §5 for the short-request measurement** — note that the usable
   tier requires **thinking off**: with it disabled, a complete short answer comes back in 24.5 s
   at a 0.91 GB peak; with the default thinking on, 256 tokens do not finish the reasoning block.
 - Per-layer residency compresses **weight residency**; the KV base is constrained separately by
@@ -499,6 +508,10 @@ attestation**:
 - Reproduction methods, corpora and driver locations for the benchmark data are in the appendix
   of [docs/RK3588_性能基准报告.md](docs/RK3588_性能基准报告.md) (**v0 measurements**); the
   reproduction basis for v1 measurements is under "Performance" above.
+- **One-command v1 reproduction**: `sh tools/bench_value.sh` — produces the per-layer vs full
+  A/B memory comparison, the warm-state 5-sample stability and the page-cache evidence
+  (parameters are overridable via environment variables, see the script header; its only
+  dependency is the Python 3 standard library).
 
 ---
 
@@ -562,7 +575,9 @@ third-party project runtime is ever shipped with the engine.
 │   ├── vllm_vqf_sign.c        # VQF SM2 supply-chain signing / key management tool
 │   ├── vllm_mgr.py            # engine process supervisor (start/stop/restart/status page)
 │   ├── build_x64.ps1          # x86_64 (MinGW) native build script (not a baseline, consistency only)
-│   └── check_x64.ps1          # x86 build + self-test in one command (exit code 0/1)
+│   ├── check_x64.ps1          # x86 build + self-test in one command (exit code 0/1)
+│   ├── bench_value.sh         # per-layer value bench: A/B memory + warm stability + page-cache evidence (see Performance §4)
+│   └── bench_http_probe.py    # zero-dependency streaming HTTP latency probe (TTFT/tpot/peak VmHWM), called by the above
 ├── vqf_convert/               # standalone conversion tool (safetensors/GGUF → VQF v2)
 └── docs/                      # technical docs / benchmark reports / security specs (Chinese)
 ```
