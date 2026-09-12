@@ -46,7 +46,7 @@ OpenAI-compatible HTTP API is available immediately.
 
 | Strength | One-line metric |
 |---|---|
-| **Per-layer residency** (new in v1) | Resident memory decoupled from model size: **8B resident weights 4.19 GB → 0.48 GB (8.7×)**, serve peak **0.80 GB**; warm **TTFT 1.95 s / tpot 377 ms**, spread over 5 samples **±1.8% / ±0.13%** |
+| **Per-layer residency** (new in v1) | Resident memory decoupled from model size: **8B resident weights 4.19 GB → 0.48 GB (8.7×)**, serve peak **0.82 GB**; warm **TTFT 1.95 s / tpot 377 ms**, spread over 5 samples **±1.8% / ±0.13%** |
 | **Long text and multi-turn** | Combo ① (L3 eviction × prefix reuse) cuts follow-up-turn prefill by **−80% ~ −96%**; with MoE combo ⑤ the 30B reaches **4.7 s / 3.2 s** for t2/t3 |
 | **In-house format and kernels** | Only the in-house VQF v2 single file; single ~0.8 MB binary, zero third-party runtime; hand-written NEON quantized GEMM/GEMV, own thread pool, own SM2/SM3/SM4 |
 | **Verifiable inference** | SM2 supply-chain signature protects weights + per-request attestation proof (schema 3), verified in-browser or offline with zero dependencies |
@@ -61,20 +61,20 @@ Three real models (`--stream-test`, cold page cache, weight-only figures):
 
 | Model (single-file VQF) | Full: resident / peak | **Per-layer: resident / peak** | Resident-memory ratio |
 |---|---|---|---|
-| 2B Qwen3-VL (4.16 GB) | 1.72 GB / 2.63 GB | **0.38 GB / 0.60 GB** | **4.6×** |
+| 2B Qwen3-VL (4.16 GB) | 1.81 GB / 2.76 GB | **0.39 GB / 0.63 GB** | **4.6×** |
 | 8B Qwen3-VL (6.60 GB) | 4.18 GB / 4.22 GB | **0.47 GB / 0.59 GB** | **8.9×** |
 | 30B-A3B MoE (17.66 GB) | 11.73 GB / 12.70 GB | **0.51 GB / 0.71 GB** | **23.2×** |
 
-**The canonical example**: an RK3588 board has only 16 GB RAM (MemTotal 15.6 GB), while the
+**The canonical example**: an RK3588 board has only 16 GB RAM (MemTotal 15.6 GiB), while the
 Qwen3-30B-A3B-q4 weight file alone is 17.66 GB — the full-residency tier does barely run, but
 its serve peak reaches 14.2 GB, leaving almost no headroom for KV or the process itself.
 **Per-layer residency brings the same model down to a 1.11 GB serve peak, with ample headroom
-and stable serving.** The 2B case is even more direct: resident weights of just 0.38 GB, 4.6×
+and stable serving.** The 2B case is even more direct: resident weights of just 0.39 GB, 4.6×
 less than full residency, at the cost of warm-state tpot rising from 113.0 ms to 156.7 ms
 (+38.7%).
 
 **The recommended tier is 8B** (measured 2026-09-12, see "Performance" §4): resident weights
-4.19 GB → **0.48 GB (8.7×)**, serve peak **0.80 GB**, warm **TTFT 1.95 s / tpot 377 ms**
+4.19 GB → **0.48 GB (8.7×)**, serve peak **0.82 GB**, warm **TTFT 1.95 s / tpot 377 ms**
 (27.9 s end-to-end for 70 tokens), with a **±0.13% tpot spread over 5 samples**. Its 6.15 GiB of
 weights are **smaller than physical RAM**, so the page cache holds them and warm-state stability
 is guaranteed by physics — something the 30B cannot claim (see "Performance" §4 and §5).
@@ -87,7 +87,7 @@ two residency tiers (see the md5 comparison under "Performance").
 > explicitly rejected and must stay fully resident), and it does not coexist with expert windows
 > (`VLLM_EW*`). Full definitions, costs and matrices are under "Performance".
 > **The 30B is the capability-ceiling tier, not the recommended tier**: its 16.4 GiB of weights
-> do not fit in the 15.6 GB page cache, and with thinking on by default a single Q&A needs
+> do not fit in the 15.6 GiB page cache, and with thinking on by default a single Q&A needs
 > 3~4 minutes (see "Performance" §5).
 
 ---
@@ -110,7 +110,7 @@ numbers below.
 file is still mmap-mounted, but each layer's weights establish file pages only while that layer
 computes, then release them immediately with `MADV_DONTNEED`, keeping only the `keep` layers
 (1 by default) resident. Together with v1.0's KV v2 lazy allocation (the KV base grows on
-demand), **resident memory is decoupled from model size and layer count** — a 17.7 GB
+demand), **resident memory is decoupled from model size and layer count** — a 17.66 GB
 Qwen3-30B-A3B-q4 can be served on a 16 GB RK3588, where the same model fully resident needs a
 12.7 GB peak (`--stream-test`) / 14.2 GB peak (serve, including KV). This section covers two
 measurement methods (`--stream-test` same-basis A/B, and serve cold/warm plus 3 follow-up
@@ -184,7 +184,7 @@ precisely the marginal cost of trading time for memory.
 > Peaks in this table include the KV cache, so the ratios are smaller than the "weight-only
 > RSS" ratios in §1 (30B: 12.8× vs 23.2×): what per-layer residency truly decouples is the
 > **weights**, while KV is managed separately by KV v2 lazy allocation. The 30B full-residency
-> peak of 14.2 GB already hits the ceiling of a 16 GB board (MemTotal 15.6 GB), whereas the
+> peak of 14.2 GB already hits the ceiling of a 16 GB board (MemTotal 15.6 GiB), whereas the
 > per-layer tier compresses the same model to 1.11 GB, leaving all the headroom for KV and the
 > process itself.
 
@@ -228,7 +228,61 @@ required) cuts the second/third follow-up prefill from the ⑧ baseline's 722 s 
 2,240 ms to 504 ms — all measured in this round; the same tier also holds under **per-layer
 residency** (t2/t3 = 5.3 s / 3.7 s), i.e. "memory-efficient" and "fast" can be had at once.
 
-#### 4) 30B-A3B on a short request: how far it actually goes (thinking switch measured)
+#### 4) 8B: the recommended tier delivers (measured 2026-09-12)
+
+§1/§2 above cover all three tiers (2B/8B/30B). This section answers one question: **where does
+per-layer residency pay off best — the answer is 8B.**
+
+Configuration: `--threads 4` (`OMP_NUM_THREADS=4 VLLM_THREADS=4`); **weights on a SanDisk
+microSD card (62.7 MB/s)**. Memory basis as in §1 (`--stream-test`, 32-token prefill + 32-token
+decode, cold page cache A/B). The prefill and decode below come **from the same cold-page-cache
+run** (hence decode is slower than the warm-page-cache thread A/B table further down):
+
+| Tier | Weight RSS (after prefill) | rss_end | prefill 32tok | decode |
+|---|---|---|---|---|
+| full | 4,189,912 kB | 4,202,988 kB | 67.9 s | 207 ms/tok (4.84 tok/s) |
+| **per-layer** | **480,348 kB (8.7×)** | **487,912 kB** | 63.2 s | 385 ms/tok (2.60 tok/s) |
+
+Serve in per-layer mode + short request (`enable_thinking=false`, `max_tokens=96`; finished
+naturally at 70 tokens):
+
+| Tier | TTFT | End-to-end | tpot | Peak VmHWM |
+|---|---|---|---|---|
+| Cold (first after `drop_caches`) | 73.1 s | 99.7 s | 385.3 ms | 611,880 kB |
+| **Warm (5 identical consecutive requests)** | **1.95 s** (1.899~1.966) | **27.9 s** | **376.6 ms** (376.4~377.4) | 824,192 kB |
+
+> The warm VmHWM is the **high-water mark accumulated over 5 runs** (656,144 → 698,228 → 740,088
+> → 782,236 → 824,192 kB, about +42 MB per run); see the VmHWM note in §5 for the basis and the
+> open item.
+
+**Why 8B is the recommended tier (three reasons, all reproducible)**:
+
+1. **You capture the full memory win at a controllable cost**: resident weights 4.19 GB →
+   **0.48 GB (8.7×)**, serve peak **0.82 GB**.
+2. **Warm-state stability is backed by physics**: the 6.15 GiB of weights **fit in the 15.6 GiB
+   page cache**, so warm behaviour is not a gamble — the measured spread over 5 samples is
+   **TTFT ±1.8%, tpot ±0.13%**.
+3. **The one-off cold-start cost is low**: 73 s (vs 195~211 s for the 30B), because the cost is
+   proportional to weight size ÷ medium bandwidth.
+
+**The hidden 2×: you must use `--threads 4`** (same board, same model, A/B, 2 repeats each,
+warm page cache):
+
+| Tier | `--threads 4` | `--threads 8` | Ratio |
+|---|---|---|---|
+| full decode | **186 / 189 ms/tok** | 431 / 433 ms/tok | 4 threads **2.3× faster** |
+| per-layer decode | **370 / 378 ms/tok** | 580 / 582 ms/tok | 4 threads **1.56× faster** |
+
+> The RK3588 is 4×A76 + 4×A55, and `--threads 8` pulls the four A55 little cores into the GEMM
+> parallel region. The 8B figures in §1 (full 429 / per-layer 586 ms/tok) are exactly the
+> **`--threads 8`** basis and match the right-hand column above; **switching to 4 threads brings
+> 8B full-residency decode to 5.4 tok/s**.
+
+**One-command reproduction**: `sh tools/bench_value.sh` (parameters are overridable via
+environment variables; see the header comment in the script) — it produces the A/B memory
+comparison, warm-state stability and page-cache evidence, and writes `http.json`.
+
+#### 5) 30B-A3B on a short request: how far it actually goes (thinking switch measured)
 
 > Additional measurement (2026-09-12, same board, same engine sha256 `e1484740…a8f8e8`).
 > The question it answers: is the 30B on a 16 GB board merely *barely runnable*, or genuinely
@@ -242,10 +296,18 @@ Request = 22-token context + 32 generated tokens (greedy, streaming).
 
 | Tier | TTFT | End-to-end | tpot | Peak VmHWM |
 |---|---|---|---|---|
-| Cold (first request after `drop_caches`) | 211.5 s | 258.8 s | 1,524.5 ms | 933,656 kB |
-| **Warm (same request sent immediately after)** | **3.3 s** | **20.8 s** | **564.8 ms** | 933,656 kB |
+| Cold (first request after `drop_caches`) | 211.5 s | 258.8 s | 1,524.5 ms | 666,468 kB |
+| **Warm (same request sent immediately after)** | **3.3 s** | **20.8 s** | **564.8 ms** | 918,300 kB |
 
-Cross-checked with the same request in non-streaming mode: 20.7 s (consistent with 20.8 s streaming).
+Cross-checked with the same request in non-streaming mode: 20.7 s (consistent with 20.8 s
+streaming); after that run the process high-water mark had accumulated to 933,656 kB.
+
+> **On VmHWM**: it is the process's **historical high-water mark** (monotonically non-decreasing),
+> not the steady-state footprint of a single request, so a rising value across runs is expected.
+> The two rows above are the marks measured at their respective points; the same applies to the
+> 8B five-sample warm run (611,880 → 656,144 → 698,228 → 740,088 → 782,236 → 824,192 kB, about
+> +42 MB per run). Whether the per-request footprint falls back would require sampling `VmRSS`
+> per run — **we have not done that sampling; it is recorded as an open item**.
 
 **Critical precondition: `enable_thinking` defaults to on** (the engine matches HF
 `apply_chat_template`; see `resolve_thinking` in `src/serve/vllm_server.c`). Those 32 tokens
@@ -271,8 +333,9 @@ The thinking-off output *is* the answer:
 short context".** With thinking disabled it returns a complete one-sentence answer in 24.5 s at
 a 0.91 GB peak — that is the real "usable" figure. With thinking on (the default), 256 tokens
 are not enough to finish the reasoning block; a single Q&A actually needs 300+ tokens, i.e.
-roughly 3~4 minutes. The 258.8 s cold figure is the one-off cost of reading all 16.8 GB of
-weights from the SD card on first touch; once the weights sit in the page cache it returns to
+roughly 3~4 minutes. The 258.8 s cold figure is the one-off cost of reading all 17.66 GB of
+weights (16.8 GB of which is the weight data segments) from the SD card on first touch; once the
+weights sit in the page cache it returns to
 seconds — which is exactly how per-layer residency fits a 17.66 GB model onto a 16 GB board.
 
 **Storage medium measured** (same board, `dd iflag=direct`, 1 GiB, bypassing the page cache):
@@ -615,7 +678,7 @@ third-party project runtime is ever shipped with the engine.
 
 - **Per-layer residency made deliverable** (`VLLM_VQF_STREAM=1` tiered residency + KV v2 lazy
   allocation) — measured resident weight RSS is **4.6× / 8.9× / 23.2×** smaller
-  (2B / 8B / 30B-A3B), letting a 17.7 GB 30B-A3B serve on a 16 GB board; TOKIDS stay
+  (2B / 8B / 30B-A3B), letting a 17.66 GB 30B-A3B serve on a 16 GB board; TOKIDS stay
   **bit-identical** to the full tier (semantics unchanged). Definitions and the full comparison
   are under "Performance".
 - **P3: L3 eviction × prefix reuse coexisting** (`--l3-evict` + `VLLM_L3_PREFIX_REUSE=1`) —

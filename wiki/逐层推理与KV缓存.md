@@ -13,7 +13,7 @@
 
 ### 1.1 机理与作用域
 
-VQF 单文件仍以 mmap 直挂，但不一次性把全部权重触入内存：每层只在参与计算时建立文件页，算完立即 `MADV_DONTNEED` 释放，仅 keep 层（缺省 1 层）常驻。实现位于 `src/model/vqf.c` 的 `vqf_stream_*`（层切片表 + madvise/fadvise + RSS 采样 + 加密拒绝），`src/main.c` 的 `--stream-test` 为验证 harness。效果是**权重常驻 RSS 不再随模型体积线性增长**：17.66 GB 的 Qwen3-30B-A3B-q4 可在 16 GB RAM 的 RK3588（MemTotal 15.6 GB）上服务。
+VQF 单文件仍以 mmap 直挂，但不一次性把全部权重触入内存：每层只在参与计算时建立文件页，算完立即 `MADV_DONTNEED` 释放，仅 keep 层（缺省 1 层）常驻。实现位于 `src/model/vqf.c` 的 `vqf_stream_*`（层切片表 + madvise/fadvise + RSS 采样 + 加密拒绝），`src/main.c` 的 `--stream-test` 为验证 harness。效果是**权重常驻 RSS 不再随模型体积线性增长**：17.66 GB 的 Qwen3-30B-A3B-q4 可在 16 GB RAM 的 RK3588（MemTotal 15.6 GiB）上服务。
 
 生效自证（板端日志原文）：
 
@@ -44,15 +44,17 @@ VQF 单文件仍以 mmap 直挂，但不一次性把全部权重触入内存：�
 30B 全层档峰值 14.2 GB 已顶到 16 GB 板的上限；逐层档把同一模型压到 1.11 GB，留出全部 KV 与进程余量。**逐层真正解耦的是权重，KV 由 KV v2 惰性分配另管。**
 
 **推荐档是 8B**（2026-09-12 实测，`--threads 4`、权重在 SanDisk microSD）：
+> §1.2 表里 8B 的 4,183,048 / 471,800 kB 与下表 4,189,912 / 480,348 kB 是**两次独立冷页缓存
+> A/B 跑**（前者 `--threads 8`、后者 `--threads 4`），差异为逐次抖动，非口径冲突。
 
 | 口径 | 数据 |
 |---|---|
 | 权重常驻（`--stream-test`，冷页缓存 A/B） | 4,189,912 kB → **480,348 kB（8.7×）**；rss_end 487,912 kB |
-| serve 逐层峰值（`enable_thinking=false`、96 token 预算） | **824,192 kB**（0.80 GB） |
+| serve 逐层峰值（`enable_thinking=false`、96 token 预算） | **824,192 kB**（0.82 GB，5 次累计高水位） |
 | serve 逐层热态（连续 5 次同请求） | **TTFT 1.95 s、tpot 376.6 ms**，70 token 端到端 27.9 s；波动 **±1.8% / ±0.13%** |
 | 冷态（`drop_caches` 后首次） | TTFT 73.1 s / 端到端 99.7 s（一次性成本，∝ 权重体积 ÷ 介质带宽） |
 
-**为什么是 8B**：它的权重 6.15 GiB **小于 15.6 GB 物理内存**，页缓存装得下，热态稳定性有物理
+**为什么是 8B**：它的权重 6.15 GiB **小于 15.6 GiB 物理内存**，页缓存装得下，热态稳定性有物理
 保障；而 30B 的 16.4 GiB 装不进，热态需赌运气。**务必用 `--threads 4`**——`--threads 8` 会把
 4 个 A55 小核拉进 GEMM，8B 全层 decode 从 186 ms/tok 退化到 431 ms/tok。一键复现：
 `sh tools/bench_value.sh`。
