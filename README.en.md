@@ -141,10 +141,16 @@ plus the environment variable `VLLM_L3_PREFIX_REUSE=1`, combo ⑤ added
 
 > Method: each configuration is preceded by `sync; echo 3 > /proc/sys/vm/drop_caches`, so this
 > is the **first forward pass on a cold page cache** (including the full cost of reading
-> GB-scale weights from eMMC/rootfs). The 8B/30B prefill times above are therefore dominated
+> GB-scale weights from storage). The 8B/30B prefill times above are therefore dominated
 > by weight reads and must not be compared with "warm-cache steady state" (see §2); the 30B's
 > 17.66 GB of weights exceed 16 GB of RAM, so the full-residency tier sits right at the memory
 > ceiling.
+>
+> **Storage medium (measured 2026-09-12)**: the v1 8B/30B weights live on a **SanDisk microSD
+> card** (`/mnt/VQF` sits on the rootfs, and the rootfs is on the SD card), while the 2B weights
+> and the L3 directory are on eMMC. The two differ by 3.8× in measured bandwidth (see §4), so
+> the 8B/30B cold-read cost in this section is priced at **62.7 MB/s (SD card)**.
+>
 > The difference from "4.6×~21.8× saved, prefill +11~25% / decode +121~259%" in
 > `docs/优化配置与边界说明.md` comes from the **measurement basis**: that set is **v0-era**
 > warm-cache (weights already in RAM/page cache) steady state and **is not a v1 conclusion**.
@@ -213,7 +219,44 @@ required) cuts the second/third follow-up prefill from the ⑧ baseline's 722 s 
 2,240 ms to 504 ms — all measured in this round; the same tier also holds under **per-layer
 residency** (t2/t3 = 5.3 s / 3.7 s), i.e. "memory-efficient" and "fast" can be had at once.
 
-#### 4) Honest boundaries
+#### 4) 30B-A3B on a short request: not merely runnable, but usable (22-token context + 32 generated tokens)
+
+> Additional measurement (2026-09-12, same board, same engine sha256 `e1484740…a8f8e8`).
+> The question it answers: is the 30B on a 16 GB board merely *barely runnable*, or genuinely
+> usable? **The weights sit on a SanDisk microSD card.**
+
+Configuration: per-layer `VLLM_VQF_STREAM=1` + combo ⑤ `VLLM_ACTQ=1 VLLM_MOE_BATCH=1` +
+combo ① flags (with only a 22-token context the log shows `[L3] skipped: seq=22 <
+l3-min-seq=128`, i.e. **L3 and prefix reuse did not engage**, so this table reflects the
+"per-layer + MoE" tier without combo ①'s KV-side gain); `OMP_NUM_THREADS=4 VLLM_THREADS=4`.
+Request = 22-token context + 32 generated tokens (greedy, streaming).
+
+| Tier | TTFT | End-to-end | tpot | Peak VmHWM |
+|---|---|---|---|---|
+| Cold (first request after `drop_caches`) | 211.5 s | 258.8 s | 1,524.5 ms | 933,656 kB |
+| **Warm (same request sent immediately after)** | **3.3 s** | **20.8 s** | **564.8 ms** | 933,656 kB |
+
+Cross-checked with the same request in non-streaming mode: 20.7 s (consistent with 20.8 s streaming).
+
+**Conclusion: for a short request on this 16 GB board, the warm 30B-A3B completes 32 output
+tokens in 20.8 s with a 0.91 GB peak.** The 258.8 s cold figure is the one-off cost of reading
+all 16.8 GB of weights from the SD card on first touch; once the weights sit in the page cache
+it returns to seconds — which is exactly how per-layer residency fits a 17.66 GB model onto a
+16 GB board.
+
+**Storage medium measured** (same board, `dd iflag=direct`, 1 GiB, bypassing the page cache):
+
+| Medium | Role / mount | Device | Measured sequential read |
+|---|---|---|---|
+| **SanDisk microSD** | 8B/30B weights (`/mnt/VQF`) | `/dev/mmcblk1` (`name=SD64G`, `type=SD`, `manfid=0x000003`) | **62.7 MB/s** |
+| eMMC | 2B weights, L3 directory (`/mnt/emmc`) | `/dev/mmcblk0` (`name=BJTD4R`, `type=MMC`) | **240 MB/s** |
+
+> This explains the cold-read magnitude in §1: in the per-layer tier's "trade time for memory",
+> **the time is proportional to weight size ÷ medium bandwidth**. The 211.5 s above is priced at
+> the SD card's 62.7 MB/s; **moving the weights to eMMC (240 MB/s) would, by bandwidth ratio,
+> bring first token down to roughly 56 s — this is an extrapolation, not a measurement.**
+
+#### 5) Honest boundaries
 
 - **Per-layer residency is plaintext-only**: VQF-Enc / SM2-signed weights are explicitly
   rejected (they must stay fully resident).
@@ -228,7 +271,8 @@ residency** (t2/t3 = 5.3 s / 3.7 s), i.e. "memory-efficient" and "fast" can be h
   (tpot 2,240 ms, ≈0.45 tok/s), and the full tier's 14.2 GB peak already sits at the memory
   ceiling. The practical configuration is "per-layer residency (1.11 GB) + combo ① + combo ⑤"
   — combo ⑤ MoE brings the first turn down to 23 s and follow-ups to 3~5 s, which is what makes
-  the 30B actually usable.
+  the 30B actually usable. **See §4 for the short-request measurement**
+  (22-token context → 32 output tokens: 20.8 s warm, 0.91 GB peak).
 - Per-layer residency compresses **weight residency**; the KV base is constrained separately by
   v1.0's KV v2 lazy allocation (with `VLLM_KV_NOF32=1` the 2B can be pushed further to the
   ~222 MB range — see
