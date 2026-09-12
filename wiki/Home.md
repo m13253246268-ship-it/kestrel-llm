@@ -24,7 +24,7 @@ v1 已移除引擎内置的 GGUF / safetensors 加载与引擎内转换、引入
 **冷启动、常驻内存、长上下文与多轮 prefill 的口径都已变化**。凡出现「（v0 测点）」标注的数字，
 一律只作历史参考，**不得用于 v1 的任何结论**。
 
-详见 [术语与数据口径](术语与数据口径.md)。
+详见 [术语与数据口径](https://gitee.com/pei-xiaoguang/kestrel-llm/wikis/术语与数据口径)。
 
 ---
 
@@ -51,13 +51,13 @@ v1 已移除引擎内置的 GGUF / safetensors 加载与引擎内转换、引入
 
 | 你现在的状态 | 建议入口 |
 |---|---|
-| 想尽快跑起来 | [快速上手](快速上手.md) —— 从裸板到 HTTP 就绪 4 步 |
-| 手边没板子，只有一台 x86 开发机 | [构建与复现](构建与复现.md) —— x86 分支只作功能自检与位级一致性对照 |
-| 想知道它为什么省内存 | [逐层推理与 KV 缓存](逐层推理与KV缓存.md) |
-| 要核对/引用性能数字 | [性能与基准](性能与基准.md) —— 先读「测量纪律与口径」 |
-| 要调优 | [优化配置与边界](优化配置与边界.md) —— 每个开关的机制、收益与代价 |
-| 关心权重与推理可信 | [权重保护与可验证推理](权重保护与可验证推理.md) |
-| 想读代码结构 | [架构总览](架构总览.md) |
+| 想尽快跑起来 | [快速上手](https://gitee.com/pei-xiaoguang/kestrel-llm/wikis/快速上手) —— 从裸板到 HTTP 就绪 4 步 |
+| 手边没板子，只有一台 x86 开发机 | [构建与复现](https://gitee.com/pei-xiaoguang/kestrel-llm/wikis/构建与复现) —— x86 分支只作功能自检与位级一致性对照 |
+| 想知道它为什么省内存 | [逐层推理与 KV 缓存](https://gitee.com/pei-xiaoguang/kestrel-llm/wikis/逐层推理与KV缓存) |
+| 要核对/引用性能数字 | [性能与基准](https://gitee.com/pei-xiaoguang/kestrel-llm/wikis/性能与基准) —— 先读「测量纪律与口径」 |
+| 要调优 | [优化配置与边界](https://gitee.com/pei-xiaoguang/kestrel-llm/wikis/优化配置与边界) —— 每个开关的机制、收益与代价 |
+| 关心权重与推理可信 | [权重保护与可验证推理](https://gitee.com/pei-xiaoguang/kestrel-llm/wikis/权重保护与可验证推理) |
+| 想读代码结构 | [架构总览](https://gitee.com/pei-xiaoguang/kestrel-llm/wikis/架构总览) |
 
 ---
 
@@ -88,12 +88,12 @@ v1 已移除引擎内置的 GGUF / safetensors 加载与引擎内转换、引入
 
 ## 相关页面
 
-- [快速上手](快速上手.md)
-- [构建与复现](构建与复现.md)
-- [架构总览](架构总览.md)
-- [逐层推理与 KV 缓存](逐层推理与KV缓存.md)
-- [性能与基准](性能与基准.md)
-- [优化配置与边界](优化配置与边界.md)
-- [权重保护与可验证推理](权重保护与可验证推理.md)
-- [常见问题](常见问题.md)
-- [术语与数据口径](术语与数据口径.md)
+- [快速上手](https://gitee.com/pei-xiaoguang/kestrel-llm/wikis/快速上手)
+- [构建与复现](https://gitee.com/pei-xiaoguang/kestrel-llm/wikis/构建与复现)
+- [架构总览](https://gitee.com/pei-xiaoguang/kestrel-llm/wikis/架构总览)
+- [逐层推理与 KV 缓存](https://gitee.com/pei-xiaoguang/kestrel-llm/wikis/逐层推理与KV缓存)
+- [性能与基准](https://gitee.com/pei-xiaoguang/kestrel-llm/wikis/性能与基准)
+- [优化配置与边界](https://gitee.com/pei-xiaoguang/kestrel-llm/wikis/优化配置与边界)
+- [权重保护与可验证推理](https://gitee.com/pei-xiaoguang/kestrel-llm/wikis/权重保护与可验证推理)
+- [常见问题](https://gitee.com/pei-xiaoguang/kestrel-llm/wikis/常见问题)
+- [术语与数据口径](https://gitee.com/pei-xiaoguang/kestrel-llm/wikis/术语与数据口径)

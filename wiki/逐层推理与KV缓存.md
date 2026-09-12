@@ -182,14 +182,14 @@ VLLM_VQF_STREAM=1 VLLM_KV_MAXSEQ=512 ./vllm_kestrel --stream-test --model /mnt/e
 
 ## 相关页面
 
-- [Home](Home.md)
-- [快速上手](快速上手.md)
-- [构建与复现](构建与复现.md)
-- [架构总览](架构总览.md)
-- [性能与基准](性能与基准.md)
-- [优化配置与边界](优化配置与边界.md)
-- [权重保护与可验证推理](权重保护与可验证推理.md)
-- [常见问题](常见问题.md)
-- [术语与数据口径](术语与数据口径.md)
+- [Home](https://gitee.com/pei-xiaoguang/kestrel-llm/wikis/Home)
+- [快速上手](https://gitee.com/pei-xiaoguang/kestrel-llm/wikis/快速上手)
+- [构建与复现](https://gitee.com/pei-xiaoguang/kestrel-llm/wikis/构建与复现)
+- [架构总览](https://gitee.com/pei-xiaoguang/kestrel-llm/wikis/架构总览)
+- [性能与基准](https://gitee.com/pei-xiaoguang/kestrel-llm/wikis/性能与基准)
+- [优化配置与边界](https://gitee.com/pei-xiaoguang/kestrel-llm/wikis/优化配置与边界)
+- [权重保护与可验证推理](https://gitee.com/pei-xiaoguang/kestrel-llm/wikis/权重保护与可验证推理)
+- [常见问题](https://gitee.com/pei-xiaoguang/kestrel-llm/wikis/常见问题)
+- [术语与数据口径](https://gitee.com/pei-xiaoguang/kestrel-llm/wikis/术语与数据口径)
 
 > 源文档：[docs/KV缓存v2-惰性分配与分层驻留方案.md](../docs/KV缓存v2-惰性分配与分层驻留方案.md)

@@ -447,9 +447,10 @@ VLLM_VQF_SIGN_PRIV='<64hex>' ./vqf_conv --model <safetensors-dir> --convert-vqf 
 | [docs/KV缓存v2-惰性分配与分层驻留方案.md](docs/KV缓存v2-惰性分配与分层驻留方案.md) | KV 惰性分配、L3 分层驻留与 P3 前缀复用共存（L3 驱逐 + 前缀复用） |
 | [docs/权重保护与可验证推理方案.md](docs/权重保护与可验证推理方案.md) | 三道安全防线：VQF 存储态加密、SM2 供应链签名、推理出证（attestation schema=3，含请求原文绑定），含相互关系、端到端用法与统一安全边界 |
 
-> 不想逐篇翻文档？从 **[wiki/Home.md](wiki/Home.md)** 进——按「上手 → 原理 → 数据与调优 → 安全」
-> 组织的导航页，并统一了**术语与数据口径**（版本分区、冷/热页缓存、纯权重 RSS vs serve 峰值）。
-> Wiki 为中文，由上述 `docs/` 提炼，细节以原文为准。
+> 不想逐篇翻文档？直接看 **[项目 Wiki](https://gitee.com/pei-xiaoguang/kestrel-llm/wikis/Home)**——
+> 按「上手 → 原理 → 数据与调优 → 安全」组织的导航页，并统一了**术语与数据口径**
+> （版本分区、冷/热页缓存、纯权重 RSS vs serve 峰值）。Wiki 为中文，由上述 `docs/` 提炼，
+> 细节以原文为准；同一套内容也随仓库分发在 [`wiki/`](wiki/Home.md)（克隆后离线可读）。
 
 ---
 
