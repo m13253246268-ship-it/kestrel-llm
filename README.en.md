@@ -219,7 +219,7 @@ required) cuts the second/third follow-up prefill from the ⑧ baseline's 722 s 
 2,240 ms to 504 ms — all measured in this round; the same tier also holds under **per-layer
 residency** (t2/t3 = 5.3 s / 3.7 s), i.e. "memory-efficient" and "fast" can be had at once.
 
-#### 4) 30B-A3B on a short request: not merely runnable, but usable (22-token context + 32 generated tokens)
+#### 4) 30B-A3B on a short request: how far it actually goes (thinking switch measured)
 
 > Additional measurement (2026-09-12, same board, same engine sha256 `e1484740…a8f8e8`).
 > The question it answers: is the 30B on a 16 GB board merely *barely runnable*, or genuinely
@@ -238,11 +238,33 @@ Request = 22-token context + 32 generated tokens (greedy, streaming).
 
 Cross-checked with the same request in non-streaming mode: 20.7 s (consistent with 20.8 s streaming).
 
-**Conclusion: for a short request on this 16 GB board, the warm 30B-A3B completes 32 output
-tokens in 20.8 s with a 0.91 GB peak.** The 258.8 s cold figure is the one-off cost of reading
-all 16.8 GB of weights from the SD card on first touch; once the weights sit in the page cache
-it returns to seconds — which is exactly how per-layer residency fits a 17.66 GB model onto a
-16 GB board.
+**Critical precondition: `enable_thinking` defaults to on** (the engine matches HF
+`apply_chat_template`; see `resolve_thinking` in `src/serve/vllm_server.c`). Those 32 tokens
+**were all spent inside the thinking block and produced no answer** — measuring only "how long
+does it take to emit 32 tokens" yields an over-optimistic usability verdict. Hence the switch
+comparison below:
+
+| Tier (max_tokens=256) | TTFT | End-to-end | Actual output | Result |
+|---|---|---|---|---|
+| thinking **on** (default) | 29.5 s | 221.9 s | **256 (budget exhausted)** | **`</think>` never appears; no answer** |
+| **thinking off** (request body `"enable_thinking": false`) | **3.1 s** | **24.5 s** | **40 (natural EOS)** | **complete answer delivered** |
+
+The thinking-off output *is* the answer:
+「边缘计算是在数据产生地附近进行数据处理和分析的计算模式，而云计算则是在远程数据中心进行集中式数据处理，两者的主要区别在于数据处理的位置和实时性需求。」
+
+> Note: both requests followed a cold warm-up request. The thinking-off run was the 3rd request
+> with the warmest page cache (TTFT 3.1 s), while the thinking-on run was the 2nd (TTFT 29.5 s
+> reflects a still-warming page cache) — **the TTFT gap comes mainly from page-cache state, not
+> from the thinking switch itself**. The thinking-on run took longer because it never finished
+> reasoning within its 256-token budget.
+
+**Revised conclusion: the usable tier for the 30B-A3B on this 16 GB board is "thinking off +
+short context".** With thinking disabled it returns a complete one-sentence answer in 24.5 s at
+a 0.91 GB peak — that is the real "usable" figure. With thinking on (the default), 256 tokens
+are not enough to finish the reasoning block; a single Q&A actually needs 300+ tokens, i.e.
+roughly 3~4 minutes. The 258.8 s cold figure is the one-off cost of reading all 16.8 GB of
+weights from the SD card on first touch; once the weights sit in the page cache it returns to
+seconds — which is exactly how per-layer residency fits a 17.66 GB model onto a 16 GB board.
 
 **Storage medium measured** (same board, `dd iflag=direct`, 1 GiB, bypassing the page cache):
 
@@ -271,8 +293,9 @@ it returns to seconds — which is exactly how per-layer residency fits a 17.66 
   (tpot 2,240 ms, ≈0.45 tok/s), and the full tier's 14.2 GB peak already sits at the memory
   ceiling. The practical configuration is "per-layer residency (1.11 GB) + combo ① + combo ⑤"
   — combo ⑤ MoE brings the first turn down to 23 s and follow-ups to 3~5 s, which is what makes
-  the 30B actually usable. **See §4 for the short-request measurement**
-  (22-token context → 32 output tokens: 20.8 s warm, 0.91 GB peak).
+  the 30B actually usable. **See §4 for the short-request measurement** — note that the usable
+  tier requires **thinking off**: with it disabled, a complete short answer comes back in 24.5 s
+  at a 0.91 GB peak; with the default thinking on, 256 tokens do not finish the reasoning block.
 - Per-layer residency compresses **weight residency**; the KV base is constrained separately by
   v1.0's KV v2 lazy allocation (with `VLLM_KV_NOF32=1` the 2B can be pushed further to the
   ~222 MB range — see
