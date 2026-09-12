@@ -3,34 +3,55 @@
 **纯 C11、零第三方运行时依赖的 ARM（aarch64）CPU LLM 推理引擎。**
 
 > **版本：v1.0（测试版 / test release）**。相对上一个公开版本（v0）的主要变化见文末
-> 「v1.0 变更摘要」。文中性能/体积数字为**板端实测口径**（测点版本已就近标注）；
-> 换板或换版本复现请以 `./build_rk3588.sh --run-tests` 的当前自检与产物为准。
+> 「v1.0 变更摘要」。文中性能/体积数字按版本分区：**未标注版本的数字为 v1.0 板端实测
+> （2026-09-12）**；标注 `（v0 测点）` 的取自文末「附录 A」，是在 v0 上测得、v1 未复测，
+> **不得用于 v1 的任何结论**。换板复现请以 `./build_rk3588.sh --run-tests` 的当前自检与
+> 产物为准。
+
+**v0 / v1 能力对照（本 README 的数字按此分区）**
+
+| 能力 | v0（上一公开版本） | **v1.0（本版本）** |
+|---|---|---|
+| 权重加载 | 支持 GGUF / safetensors 加载，且**引擎内置转换**（`vllm_gguf.c`、`convert.html`） | **纯 VQF 运行时：只认自研 VQF v2 单文件（mmap 直挂）**；内置 GGUF/safetensors 加载与引擎内转换已删除，转换职责移交随版工具 `vqf_convert/` |
+| 权重驻留 | 全量常驻（全层） | 新增**逐层推理**（`VLLM_VQF_STREAM=1` 分层驻留）：权重常驻 RSS 与模型体积/层数解耦；但**只对明文 VQF 生效**——VQF-Enc / 内嵌 SM2 签名的权重会被显式拒绝（须全层驻留） |
+| KV 与长上下文 | KV v1 | **KV v2 惰性分配** + L3 分层驻留 + P3（L3 驱逐 × 前缀复用共存） |
+| 安全与合规 | VQF 存储态加密（SM4-CTR + HMAC-SM3）、SM2 供应链签名 | 追加**可验证推理 attestation（schema 3，含请求原文绑定）**，浏览器内 / 离线零依赖验签 |
+| x86-64 | 无 | 随版提供 x86-64 移植层（`tools/build_x64.ps1` / `check_x64.ps1`），**仅功能自检与位级一致性对照，不作性能基准** |
+| 基准测点 | 2026-09-05：冷启动 / 8K 长上下文 / KV 恢复（含 llama.cpp 同机对照） | **2026-09-12**：逐层 vs 全层 × {2B / 8B / 30B-A3B} × {组合⑧基线, 组合①, 组合①+⑤}，14 个 serve 配置点 |
+
+> 为什么不能混用：v1 移除了 GGUF/safetensors 加载路径并引入逐层推理与 KV v2，
+> **冷启动、常驻内存、长上下文与多轮 prefill 的口径都已变化**。v0 的绝对值只作历史参考，
+> 需要 v1 数字的场合一律以本正文（2026-09-12 测点）为准。
 
 > 平台口径：引擎本质是**面向 ARM 架构 CPU 的推理**（ARMv8.2-A + NEON dotprod/fp16，
 > 不依赖 GPU/NPU 与特定开发板）；**RK3588** 是当前开发、优化与基准测试平台，
 > 并非唯一可运行设备——同类 aarch64 Linux 设备可尝试编译运行（跨设备验证状态见「构建」节平台约束）。
 
-一块 ARM 开发板（示例：RK3588 / Orange Pi 5 Plus）+ 一个约 **0.8 MB** 的单文件可执行程序 = 原生 LLM 推理服务：
-**2 秒冷启动**，原生跑 Qwen3-VL 2B/8B 纯文本与图片/视频多模态，OpenAI 兼容 HTTP API 即刻可用
-（以下数据均为板端实测，方法学见 [docs/RK3588_性能基准报告.md](docs/RK3588_性能基准报告.md)）。
+一块 ARM 开发板（示例：RK3588 / Orange Pi 5 Plus）+ 一个约 **0.8 MB** 的单文件可执行程序
+= 原生 LLM 推理服务：**自研 VQF v2 权重单文件 mmap 直挂、按需建页**，原生跑 Qwen3-VL 2B/8B
+纯文本与图片/视频多模态，OpenAI 兼容 HTTP API 即刻可用。v1.0 的两个关键变化是**纯 VQF 运行时
+（只认自研格式）**与**逐层推理（权重常驻与模型体积解耦）**——后者让 17.7 GB 的 Qwen3-30B-A3B
+也能在 16 GB 板上服务（2026-09-12 板端实测，见下文「逐层推理」一节）。
 
-**核心亮点**
+**核心亮点**（`（v0 测点）` = 历史版本数据，不作 v1 结论；其余为 v1.0 实测）
 
 | 亮点 | 说明 |
 |---|---|
-| 单文件约 0.8 MB | 28 个 C 文件 → 单产物 **818,872 B**（Release 实测）；全静态约 1.5 MB、零 .so，拷贝即跑 |
-| 冷启动 2.0 s | spawn→HTTP ready **2.01 s**（对比 llama.cpp 5.0 s）；VQF v2 预量化 + mmap 直挂，加载 ≈1.2 s |
-| 零第三方依赖 | 手写 NEON 量化 GEMM/GEMV + 自研线程池（替代 OpenMP）+ 自研国密 SM3/SM4/SM2；标准构建仅需 gcc + libm |
-| 长上下文更快 | 8K decode **3.0×**（136.7 vs 411.6 ms/词）；磁盘 KV 跨进程恢复 **13.1×**（重启不丢会话） |
-| Qwen3-VL 多模态 | 2B/8B 纯文本 + 图片/视频帧；纯 CPU 即可运行，NPU 直驱为可选透明加速 |
+| v1 纯 VQF 运行时 | **只加载自研 VQF v2 单文件**（mmap 直挂，权重即格式）；v0 的 GGUF / safetensors 加载与引擎内转换已移除，转换交随版 `vqf_convert/` |
 | 逐层推理省内存 | `VLLM_VQF_STREAM=1` 分层驻留：权重常驻 RSS 省 **4.6×/8.9×/23.2×**（2B/8B/30B-A3B），30B-A3B serve 峰值 14.2 GB → **1.11 GB**；17.7 GB 的 30B-A3B 在 16 GB 板上可服务；TOKIDS 与全层**逐位一致** |
 | 可验证推理 | SM2 供应链签名护权重 + 逐请求 attestation 密码学凭证、离线验签（医疗/法务级合规场景） |
+| 单文件约 0.8 MB | 28 个 C 文件 → 单产物 **818,872 B**（Release 实测，v0 测点）；全静态约 1.5 MB、零 .so，拷贝即跑 |
+| 零第三方依赖 | 手写 NEON 量化 GEMM/GEMV + 自研线程池（替代 OpenMP）+ 自研国密 SM3/SM4/SM2；标准构建仅需 gcc + libm |
+| Qwen3-VL 多模态 | 2B/8B 纯文本 + 图片/视频帧；纯 CPU 即可运行，NPU 直驱为可选透明加速 |
+| 冷启动 2.0 s（v0 测点） | spawn→HTTP ready **2.01 s**（对比 llama.cpp 5.0 s）；VQF v2 预量化 + mmap 直挂，加载 ≈1.2 s —— v1 未复测，详见附录 A |
+| 长上下文更快（v0 测点） | 8K decode **3.0×**（136.7 vs 411.6 ms/词）；磁盘 KV 跨进程恢复 **13.1×**（重启不丢会话）—— v1 未复测，详见附录 A |
 
 > 品牌命名：**Kestrel（红隼）** 为品牌/对外名（取义：最小猛禽、俯冲精确——边缘小模型 + 可验证推理）；
 > 工程名与可执行文件为 `vllm_kestrel`，下文命令、日志与代码中的 `vllm_kestrel` / `vllm` 均指本引擎。
 
 引擎从零自研、面向边缘设备（RK3588 / 4×Cortex-A76 + 4×Cortex-A55），
-**针对 Qwen3-VL 系列（2B/8B）开发并实测**（支持范围诚实声明见「模型与复现」一节）；
+**针对 Qwen3-VL 系列（2B/8B）与 Qwen3-MoE（如 30B-A3B）开发并实测**
+（支持范围诚实声明见「模型与复现」一节）；
 配套长上下文工程（sparse-attention / 前缀 KV 复用 / 磁盘 KV / 推测解码 / 连续批处理）与
 **同态加密推理研究内核**（RNS-CKKS，`src/core/vllm_ckks.c` 等，与明文引擎共享工程基础设施，见 [docs](docs/)）。
 
@@ -40,15 +61,16 @@
 
 | 项 | 数值 / 口径 |
 |---|---|
-| 可执行文件 | `vllm_kestrel` ≈ **0.8 MB**（RK3588 Release, `-O2 -s`，板端实测 818,872 B）；`-DVLLM_STATIC=ON` 全静态 ≈ 1.5 MB，`ldd` 零 .so 依赖 |
+| 可执行文件 | `vllm_kestrel` ≈ **0.8 MB**（RK3588 Release, `-O2 -s`，板端实测 818,872 B，v0 测点）；`-DVLLM_STATIC=ON` 全静态 ≈ 1.5 MB，`ldd` 零 .so 依赖 |
 | 源码 | **28 个 C 文件**（main + core 11 + common 2 + serve 6 + model 6 + npu 2），C11，单工程单产物 |
 | 运行时依赖 | **无第三方运行时**——标准构建仅需 gcc + libm（`-fopenmp` 仅 NPU pack 并行区使用 libgomp，系 gcc 自带；全静态构建一并内联，零 .so） |
 | 代码内第三方 | 仅 `stb_image.h`（MIT, Sean Barrett）与 llama.cpp 派生 4x4 asm 内核（MIT, The ggml authors），见 [LICENSE](LICENSE) 第三节 |
 | 自研件 | NEON 量化 GEMM/GEMV、线程池 `vllm_tp`（替代 OpenMP）、国密 SM3/SM4/SM2、VQF v2 mmap 格式、NPU 直驱 `/dev/rknpu` |
-| 部署 | 单文件 + 可选 `vocab.bin`，拷贝即运行；VQF mmap 冷启动 **2.0 s** |
+| 部署 | 单文件 + 可选 `vocab.bin`，拷贝即运行；VQF mmap 冷启动 **2.0 s**（v0 测点） |
 
-同机对照（板端实测口径）：冷启动 2.0 s vs llama.cpp 5.0 s、峰值 RSS 2.47 GB vs 3.03 GB、
-长上下文 decode 与 KV 恢复优势，见 [RK3588_性能基准报告.md](docs/RK3588_性能基准报告.md)。
+同机对照（**v0 测点**，v1 未复测）：冷启动 2.0 s vs llama.cpp 5.0 s、峰值 RSS 2.47 GB vs 3.03 GB、
+长上下文 decode 与 KV 恢复优势，原始数据与口径见文末附录 A 与
+[docs/RK3588_性能基准报告.md](docs/RK3588_性能基准报告.md)。
 > 诚实边界：二进制体积仅列本引擎自身（llama.cpp 动态/静态构建口径不同，未做同口径对比，
 > 不作跨框架体积比较）。
 
@@ -70,44 +92,18 @@
 
 ---
 
-## 最近实测数据（RK3588，2026-09-05）
+## 性能数据分区说明
 
-平台：Orange Pi 5 Plus（RK3588，8 核，15GB RAM，eMMC，无 GPU/NPU 参与）。
-模型：Qwen3-VL-2B-Instruct（vllm_kestrel VQF q4 全优化档 vs llama.cpp GGUF Q4_0）。
-完整方法学、口径与原始数据见 [docs/RK3588_性能基准报告.md](docs/RK3588_性能基准报告.md)。
+本 README 正文只使用 **v1.0（2026-09-12）测点**：即下文「逐层推理（per-layer residency）」
+一节的 3 模型（2B / 8B / 30B-A3B）× {全层, 逐层} × {组合⑧基线, 组合①, 组合①+⑤} 成矩阵实测。
 
-### 冷启动
-| 引擎 | spawn→HTTP ready | 峰值 RSS (VmHWM) |
-|---|---|---|
-| vllm_kestrel（VQF mmap） | **2.01 s** | ~2465 MB |
-| llama.cpp (GGUF mmap) | 5.02 s | ~3027 MB |
-
-### 长上下文（内容 token 1K/2K/4K/8K，生成 64 token）
-| 档 | vllm decode (TPOT) | llama decode (TPOT) | decode 比 |
-|---|---|---|---|
-| 1K | 73.4 ms | 102 ms | vllm 1.4× |
-| 2K | 84.6 ms | 126 ms | vllm 1.5× |
-| 4K | 102 ms | 218 ms | vllm 2.1× |
-| **8K** | **136.7 ms** | **411.6 ms** | **vllm 3.0×** |
-
-- prefill：1K–4K llama 快 1.4–1.6×（ggml NEON Q4 更成熟），**8K 拉平**
-  （vllm 40.0 vs llama 38.3 tok/s）；vllm 预填吞吐 4K→8K 不降，llama 每档下降 20%+
-  （sparse-attn 的 O(n·k) 效果）。
-- decode 随上下文放大是架构级差异：llama f16-KV 每词全扫 8K、2K→8K 劣化 3.3×；
-  vllm q8-KV + 稀疏 decode 仅 1.6×。
-
-### KV 缓存恢复（同进程前缀复用 vs 跨进程磁盘恢复）
-- 同进程第二轮（29 token 增量 prefill，8K 上下文）：**vllm 2.0s vs llama 6.63s（3.3×）**。
-- 跨进程磁盘 KV 恢复（`--disk-kv`，8K 会话 F32 快照 1.87GB，重启后 15.4s 恢复 vs
-  全量 prefill 202s）：**vllm 13.1×**；llama.cpp 无等价物（重启即失）。
-
-> 诚实口径：本报告为板内单引擎串行测量、权重同源（Qwen3-VL-2B safetensors）但量化
-> 格与算子不同（非位级同一权重），数值为各自引擎原始字段对齐后的并列展示。
-> 复现方法与数据文件见报告附录。
+**v0（2026-09-05）的冷启动 / 8K 长上下文 / KV 恢复数据已整段移入文末「附录 A」**——
+那组数据是在 v0 上测得、v1 未复测（v1 已移除 GGUF/safetensors 加载路径并引入逐层推理与
+KV v2，口径已变），**不得用于 v1 的任何结论**，也不要与下文 v1 数字混比。
 
 ---
 
-## 逐层推理（per-layer residency）：常驻内存与模型体积解耦（RK3588，2026-09-12 实测）
+## 逐层推理（per-layer residency）：常驻内存与模型体积解耦（RK3588，**v1.0 测点**，2026-09-12 实测）
 
 `VLLM_VQF_STREAM=1` 让引擎进入**分层驻留（逐层加载）**模式：VQF 单文件仍以 mmap 直挂，
 但每层权重只在参与计算时建立文件页，算完立即 `MADV_DONTNEED` 释放，仅 keep 层
@@ -153,7 +149,8 @@
 > 主要由权重读入决定，与「热缓存稳态」不可混比（稳态见第 2 节）；30B 的 17.66 GB 权重
 > 超过 16 GB RAM，全层档已接近内存上限。
 > 与 `docs/优化配置与边界说明.md` 中「省 4.6×~21.8×、prefill +11~25% / decode
-> +121~259%」的差别来自**口径**：那组是热缓存（全层权重已在 RAM/页缓存）稳态数字。
+> +121~259%」的差别来自**口径**：那组是 **v0 时期**的热缓存（全层权重已在 RAM/页缓存）
+> 稳态数字，**不作 v1 结论**。
 
 ### 2) 稳态口径（serve，同进程「冷 → 热」两次同问；组合⑧基线 `--no-prefix-kv`）
 
@@ -301,7 +298,8 @@ powershell -ExecutionPolicy Bypass -File tools\build_x64.ps1 -Gcc D:\tools\mingw
 # 2) 启动 OpenAI 兼容 HTTP 服务（默认端口 8080）
 ./vllm_kestrel --serve --port 8080 --model <model-dir> --auto-load --wmode q4
 
-#    长上下文优化档（对应上文 8K 基准，全部可选；prefix-kv 前缀复用默认开启）：
+#    长上下文优化档（全部可选；prefix-kv 前缀复用默认开启）：
+#    注：8K 长上下文基准是 v0 测点（见附录 A），v1 未复测；下列开关为 v1 口径。
 #    --l3-evict 需配合环境变量 VLLM_L3_PREFIX_REUSE=1，二者共存才有 P3 收益
 #    （否则 L3 驱逐会静默打掉 prefix-kv，多轮追问将全量重算 prefill）。
 VLLM_L3_PREFIX_REUSE=1 ./vllm_kestrel --serve --port 8080 --model <model-dir> --auto-load \
@@ -319,7 +317,8 @@ curl http://<board>:8080/v1/chat/completions \
 #   针对 RAM / x86 是否有效；保存配置后需重启引擎生效）
 ```
 
-权重格式转换：本引擎**只加载 VQF v2**，不再内置 safetensors/GGUF 转换路径；
+权重格式转换：**v1 起引擎只加载 VQF v2（只认自研格式）**，不再内置 safetensors/GGUF
+加载与引擎内转换路径（v0 曾支持，见「v0 / v1 能力对照」）；
 转换由随版发布的独立工具 **`vqf_convert/`** 完成（safetensors / GGUF → 单文件 mmap 的 VQF）。
 
 ```bash
@@ -355,21 +354,25 @@ NPU 加速（可选）：默认后端为**零第三方依赖直驱**（自研写
 >   （`--moe-batch` / `VLLM_ACTQ` 等加速，见管理页「MoE 模型服务」组合）。
 >
 > **其他架构（Llama、旧版 Qwen / Qwen2 纯文本等）未经适配与验证**：转换可能报错或
-> 输出不可用，请勿据此推定为通用推理引擎。文中性能与安全数据均基于 Qwen3-VL-2B
-> （RK3588 板端）与 Qwen3-VL-8B（x86 基准机）实测，MoE 路线为功能打通与机制验证口径。
+> 输出不可用，请勿据此推定为通用推理引擎。
+>
+> **文中性能数据的模型与测点**：v1.0（2026-09-12）为 Qwen3-VL-2B / Qwen3-VL-8B /
+> Qwen3-30B-A3B（均 RK3588 板端，逐层 vs 全层 × 组合⑧/①/①+⑤）；v0（2026-09-05，
+> 见附录 A）为 Qwen3-VL-2B 板端与 Qwen3-VL-8B x86 基准机，**不得用于 v1 结论**。
 
 - 模型权重不随仓库分发。Qwen 系列权重遵循其原始开源许可（Qwen 社区许可），
   下载后可用 `vqf_convert/` 转换为 VQF 后加载（见上文「权重格式转换」）。
 - 基准数据复现方法、语料与驱动位置见
-  [docs/RK3588_性能基准报告.md](docs/RK3588_性能基准报告.md) 附录。
+  [docs/RK3588_性能基准报告.md](docs/RK3588_性能基准报告.md) 附录（**v0 测点**）；
+  v1 测点的复现口径见上文「逐层推理」一节。
 
 ## 文档（docs/，中文）
 
 | 文档 | 内容 |
 |---|---|
 | [docs/技术文档.md](docs/技术文档.md) | 架构、模块、权重格式 VQF、内核、服务层、多模态、上下文管理、位级确定性、NPU、性能、调试、版本演进 |
-| [docs/RK3588_性能基准报告.md](docs/RK3588_性能基准报告.md) | vllm_kestrel vs llama.cpp 冷启动 / 长上下文 / KV 恢复全矩阵 |
-| [docs/优化配置与边界说明.md](docs/优化配置与边界说明.md) | 各优化档机制、收益与诚实边界（含有效组合与 x86 复核口径） |
+| [docs/RK3588_性能基准报告.md](docs/RK3588_性能基准报告.md) | vllm_kestrel vs llama.cpp 冷启动 / 长上下文 / KV 恢复全矩阵（**v0 测点，对应附录 A，不适用于 v1**） |
+| [docs/优化配置与边界说明.md](docs/优化配置与边界说明.md) | 各优化档机制、收益与诚实边界（含有效组合与 x86 复核口径；**部分数字为 v0/热缓存口径**） |
 | [docs/KV缓存v2-惰性分配与分层驻留方案.md](docs/KV缓存v2-惰性分配与分层驻留方案.md) | KV 惰性分配、L3 分层驻留与 P3 前缀复用共存（L3 驱逐 + 前缀复用） |
 | [docs/权重保护与可验证推理方案.md](docs/权重保护与可验证推理方案.md) | 三道安全防线：VQF 存储态加密、SM2 供应链签名、推理出证（attestation schema=3，含请求原文绑定），含相互关系、端到端用法与统一安全边界 |
 
@@ -392,9 +395,10 @@ NPU 加速（可选）：默认后端为**零第三方依赖直驱**（自研写
   16 GB 板上服务；TOKIDS 与全层档**逐位一致**（语义不变）。口径与完整对照见
   「逐层推理（per-layer residency）」一节。
 - **P3：L3 驱逐 × 前缀复用共存**（`--l3-evict` + `VLLM_L3_PREFIX_REUSE=1`）——多轮
-  追问轮 prefill 实测 **−93%~−97%**（历史口径）/ 2026-09-12 同口径成矩阵复测
-  **−80% ~ −96%**（2B/8B/30B-A3B × 全层/逐层，300 token 上文），为 v1.0 收益最大的
-  单项优化；30B-A3B 再叠加 MoE 组合⑤后追问轮 prefill 降到 **3.2~5.3 s**（相对基线 −99.3%）。
+  追问轮 prefill 实测 **−93%~−97%**（v0 时期口径，热缓存稳态）/ 2026-09-12 v1 同口径
+  成矩阵复测 **−80% ~ −96%**（2B/8B/30B-A3B × 全层/逐层，300 token 上文），为 v1.0
+  收益最大的单项优化；30B-A3B 再叠加 MoE 组合⑤后追问轮 prefill 降到 **3.2~5.3 s**
+  （相对基线 −99.3%）。
 - **L3 紧凑布局**：按驱逐顺序连续分配 `disk_off`（`wcursor`），文件 / RAM mirror
   尺寸跟踪真实载荷而非全 KV 窗。
 - **P1/P2 内存分页**：mirror 跨轮复用 + `MADV_DONTNEED`；arena 化 + `imp_sum`
@@ -418,6 +422,51 @@ NPU 加速（可选）：默认后端为**零第三方依赖直驱**（自研写
 - **注释编码修复**：修正历史遗留的若干源码注释乱码（`vqf_convert/src/conv_main.c`、
   `src/serve/vllm_server.c`、`src/serve/vllm_batch.c`）。
 
+
+---
+
+## 附录 A：v0（历史版本）实测数据（2026-09-05，**不适用于 v1**）
+
+> **警告：以下数据全部在 v0 上测得，v1 未复测，不得用于 v1 的任何结论。**
+> v1 已移除 GGUF / safetensors 加载与引擎内转换（改为只认自研 VQF v2 单文件），并引入
+> **逐层推理**与 **KV v2**，因此**冷启动、常驻内存、长上下文与多轮 prefill 的口径都已变化**。
+> 本附录只作版本演进对照与历史参考；v1 的性能主张一律以正文
+> 「逐层推理（per-layer residency）」（2026-09-12 测点）为准。
+
+平台：Orange Pi 5 Plus（RK3588，8 核，15GB RAM，eMMC，无 GPU/NPU 参与）。
+模型：Qwen3-VL-2B-Instruct（vllm_kestrel VQF q4 全优化档 vs llama.cpp GGUF Q4_0）。
+完整方法学、口径与原始数据见 [docs/RK3588_性能基准报告.md](docs/RK3588_性能基准报告.md)。
+
+### A.1 冷启动
+| 引擎 | spawn→HTTP ready | 峰值 RSS (VmHWM) |
+|---|---|---|
+| vllm_kestrel（VQF mmap） | **2.01 s** | ~2465 MB |
+| llama.cpp (GGUF mmap) | 5.02 s | ~3027 MB |
+
+### A.2 长上下文（内容 token 1K/2K/4K/8K，生成 64 token）
+| 档 | vllm decode (TPOT) | llama decode (TPOT) | decode 比 |
+|---|---|---|---|
+| 1K | 73.4 ms | 102 ms | vllm 1.4× |
+| 2K | 84.6 ms | 126 ms | vllm 1.5× |
+| 4K | 102 ms | 218 ms | vllm 2.1× |
+| **8K** | **136.7 ms** | **411.6 ms** | **vllm 3.0×** |
+
+- prefill：1K–4K llama 快 1.4–1.6×（ggml NEON Q4 更成熟），**8K 拉平**
+  （vllm 40.0 vs llama 38.3 tok/s）；vllm 预填吞吐 4K→8K 不降，llama 每档下降 20%+
+  （sparse-attn 的 O(n·k) 效果）。
+- decode 随上下文放大是架构级差异：llama f16-KV 每词全扫 8K、2K→8K 劣化 3.3×；
+  vllm q8-KV + 稀疏 decode 仅 1.6×。
+
+### A.3 KV 缓存恢复（同进程前缀复用 vs 跨进程磁盘恢复）
+- 同进程第二轮（29 token 增量 prefill，8K 上下文）：**vllm 2.0s vs llama 6.63s（3.3×）**。
+- 跨进程磁盘 KV 恢复（`--disk-kv`，8K 会话 F32 快照 1.87GB，重启后 15.4s 恢复 vs
+  全量 prefill 202s）：**vllm 13.1×**；llama.cpp 无等价物（重启即失）。
+
+> 诚实口径：本报告为板内单引擎串行测量、权重同源（Qwen3-VL-2B safetensors）但量化
+> 格与算子不同（非位级同一权重），数值为各自引擎原始字段对齐后的并列展示。
+> 复现方法与数据文件见报告附录。
+
+---
 
 ## 许可与合规
 
