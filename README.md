@@ -1,187 +1,217 @@
-# Kestrel（红隼）— ARM(aarch64) 边缘 LLM 推理引擎（RK3588 开发基准）
+# Kestrel — ARM (aarch64) Edge LLM Inference Engine (RK3588 Development Baseline)
+[简体中文](README.zh-CN.md) | **English**
 
-[English](README.en.md) | **简体中文**
+**A pure-C11, zero-third-party-runtime LLM inference engine for ARM (aarch64) CPUs.**
 
-**纯 C11、零第三方运行时依赖的 ARM（aarch64）CPU LLM 推理引擎。**
+> **Version: v1.0 (test release).** For the diff against the previous public version (v0), see
+> "v1.0 Change Summary" at the end. Performance/size figures in this document are partitioned
+> by version: **figures without a version tag are v1.0 board measurements (2026-09-12)**;
+> figures tagged `(v0 measurement)` come from "Appendix A" at the end — they were measured on
+> v0 and **have not been re-measured on v1, so they must not be used for any v1 conclusion**.
+> When reproducing on another board, take `./build_rk3588.sh --run-tests` (current self-test
+> and artifacts) as the source of truth.
 
-> **版本：v1.0（测试版 / test release）**。相对上一个公开版本（v0）的主要变化见文末
-> 「v1.0 变更摘要」。文中性能/体积数字按版本分区：**未标注版本的数字为 v1.0 板端实测
-> （2026-09-12）**；标注 `（v0 测点）` 的取自文末「附录 A」，是在 v0 上测得、v1 未复测，
-> **不得用于 v1 的任何结论**。换板复现请以 `./build_rk3588.sh --run-tests` 的当前自检与
-> 产物为准。
+**v0 / v1 capability comparison (the partition used by this README)**
 
-**v0 / v1 能力对照（本 README 的数字按此分区）**
-
-| 能力 | v0（上一公开版本） | **v1.0（本版本）** |
+| Capability | v0 (previous public release) | **v1.0 (this release)** |
 |---|---|---|
-| 权重加载 | 支持 GGUF / safetensors 加载，且**引擎内置转换**（`vllm_gguf.c`、`convert.html`） | **纯 VQF 运行时：只认自研 VQF v2 单文件（mmap 直挂）**；内置 GGUF/safetensors 加载与引擎内转换已删除，转换职责移交随版工具 `vqf_convert/` |
-| 权重驻留 | 全量常驻（全层） | 新增**逐层推理**（`VLLM_VQF_STREAM=1` 分层驻留）：权重常驻 RSS 与模型体积/层数解耦；但**只对明文 VQF 生效**——VQF-Enc / 内嵌 SM2 签名的权重会被显式拒绝（须全层驻留） |
-| KV 与长上下文 | KV v1 | **KV v2 惰性分配** + L3 分层驻留 + P3（L3 驱逐 × 前缀复用共存） |
-| 安全与合规 | VQF 存储态加密（SM4-CTR + HMAC-SM3）、SM2 供应链签名 | 追加**可验证推理 attestation（schema 3，含请求原文绑定）**，浏览器内 / 离线零依赖验签 |
-| x86-64 | 无 | 随版提供 x86-64 移植层（`tools/build_x64.ps1` / `check_x64.ps1`），**仅功能自检与位级一致性对照，不作性能基准** |
-| 基准测点 | 2026-09-05：冷启动 / 8K 长上下文 / KV 恢复（含 llama.cpp 同机对照） | **2026-09-12**：逐层 vs 全层 × {2B / 8B / 30B-A3B} × {组合⑧基线, 组合①, 组合①+⑤}，14 个 serve 配置点 |
+| Weight loading | GGUF / safetensors loading, plus **in-engine conversion** (`vllm_gguf.c`, `convert.html`) | **Pure-VQF runtime: only the in-house VQF v2 single file (mmap-mounted)**; in-engine GGUF/safetensors loading and conversion removed — conversion moved to the shipped `vqf_convert/` tool |
+| Weight residency | Fully resident (all layers) | New **per-layer residency** (`VLLM_VQF_STREAM=1`): resident weight RSS decoupled from model size / layer count; **plaintext VQF only** — VQF-Enc / SM2-signed weights are explicitly rejected (must stay fully resident) |
+| KV & long context | KV v1 | **KV v2 lazy allocation** + L3 tiered residency + P3 (L3 eviction × prefix reuse coexisting) |
+| Security & compliance | VQF at-rest encryption (SM4-CTR + HMAC-SM3), SM2 supply-chain signature | Adds **verifiable-inference attestation (schema 3, bound to the raw request body)**, verified in-browser or offline with zero dependencies |
+| x86-64 | none | Shipped x86-64 portability layer (`tools/build_x64.ps1` / `check_x64.ps1`), **for functional self-test and bit-exactness comparison only — never a performance baseline** |
+| Benchmark points | 2026-09-05: cold start / 8K long context / KV restore (with llama.cpp side-by-side) | **2026-09-12**: per-layer vs full residency × {2B / 8B / 30B-A3B} × {combo ⑧ baseline, combo ①, combo ①+⑤}, 14 serve configurations |
 
-> 为什么不能混用：v1 移除了 GGUF/safetensors 加载路径并引入逐层推理与 KV v2，
-> **冷启动、常驻内存、长上下文与多轮 prefill 的口径都已变化**。v0 的绝对值只作历史参考，
-> 需要 v1 数字的场合一律以本正文（2026-09-12 测点）为准。
+> Why they must not be mixed: v1 removed the GGUF/safetensors loading path and introduced
+> per-layer residency and KV v2, so **the definitions behind cold start, resident memory,
+> long context and multi-turn prefill have all changed**. v0 absolute values are historical
+> reference only; anything requiring v1 numbers must use the main body of this document
+> (2026-09-12 measurements).
 
-> 平台口径：引擎本质是**面向 ARM 架构 CPU 的推理**（ARMv8.2-A + NEON dotprod/fp16，
-> 不依赖 GPU/NPU 与特定开发板）；**RK3588** 是当前开发、优化与基准测试平台，
-> 并非唯一可运行设备——同类 aarch64 Linux 设备可尝试编译运行（跨设备验证状态见「启动流程」节平台约束）。
+> Platform scope: this engine is fundamentally an **ARM-CPU inference engine**
+> (ARMv8.2-A + NEON dotprod/fp16, no GPU/NPU and no particular board required); **RK3588** is
+> the current development, optimization and benchmarking platform, not the only supported
+> device — comparable aarch64 Linux devices can be built and tried (cross-device validation
+> status is in the "Quickstart" section).
 
 ---
 
-## 核心优势
+## Core Strengths
 
-一块 ARM 开发板（示例：RK3588 / Orange Pi 5 Plus）+ 一个约 **0.8 MB** 的单文件可执行程序
-= 原生 LLM 推理服务：**自研 VQF v2 权重单文件 mmap 直挂、按需建页**，原生跑 Qwen3-VL
-2B/8B 纯文本与图片/视频多模态，OpenAI 兼容 HTTP API 即刻可用。
+One ARM board (e.g. RK3588 / Orange Pi 5 Plus) + one ~**0.8 MB** single-binary executable
+= a native LLM inference service: **the in-house VQF v2 weight file is mmap-mounted and paged
+in on demand**, Qwen3-VL 2B/8B run natively for text plus image/video input, and an
+OpenAI-compatible HTTP API is available immediately.
 
-| 核心优势 | 一句话指标 |
+| Strength | One-line metric |
 |---|---|
-| **逐层推理**（v1 新增） | 权重常驻与模型体积解耦：**8B 权重常驻 4.19 GB → 0.48 GB（8.7×）**，serve 峰值 **0.82 GB**；热态 **TTFT 1.95 s / tpot 377 ms**，5 次采样波动 **±1.8% / ±0.13%** |
-| **长文本与多轮** | 组合①（L3 驱逐 × 前缀复用）追问轮 prefill **−80% ~ −96%**；30B 再叠 MoE 组合⑤后 t2/t3 仅 **4.7 s / 3.2 s** |
-| **纯自研格式与内核** | 只认自研 VQF v2 单文件；单产物 **≈0.8 MB**，零第三方运行时；手写 NEON 量化 GEMM/GEMV、自研线程池、自研国密 |
-| **可验证推理** | SM2 供应链签名护权重 + 逐请求 attestation 凭证（schema 3），浏览器内 / 离线零依赖验签 |
+| **Per-layer residency** (new in v1) | Resident memory decoupled from model size: **8B resident weights 4.19 GB → 0.48 GB (8.7×)**, serve peak **0.82 GB**; warm **TTFT 1.95 s / tpot 377 ms**, spread over 5 samples **±1.8% / ±0.13%** |
+| **Long text and multi-turn** | Combo ① (L3 eviction × prefix reuse) cuts follow-up-turn prefill by **−80% ~ −96%**; with MoE combo ⑤ the 30B reaches **4.7 s / 3.2 s** for t2/t3 |
+| **In-house format and kernels** | Only the in-house VQF v2 single file; single ~0.8 MB binary, zero third-party runtime; hand-written NEON quantized GEMM/GEMV, own thread pool, own SM2/SM3/SM4 |
+| **Verifiable inference** | SM2 supply-chain signature protects weights + per-request attestation proof (schema 3), verified in-browser or offline with zero dependencies |
 
-### 逐层推理内存优势（举例）
+### The memory advantage of per-layer residency (worked example)
 
-`VLLM_VQF_STREAM=1` 让每层权重只在参与计算时建立文件页，算完立即 `MADV_DONTNEED`，
-仅 keep 层（缺省 1 层）常驻——**权重常驻 RSS 不再随模型体积线性增长**。
+`VLLM_VQF_STREAM=1` makes each layer's weights establish file pages only while that layer
+computes, then release them immediately with `MADV_DONTNEED`, keeping only the `keep` layers
+(1 by default) resident — **resident weight RSS no longer grows linearly with model size**.
 
-以三个真实模型为例（`--stream-test` 冷页缓存，纯权重口径）：
+Three real models (`--stream-test`, cold page cache, weight-only figures):
 
-| 模型（单文件 VQF） | 全层：权重常驻 / 峰值 | **逐层：权重常驻 / 峰值** | 常驻内存倍率 |
+| Model (single-file VQF) | Full: resident / peak | **Per-layer: resident / peak** | Resident-memory ratio |
 |---|---|---|---|
-| 2B Qwen3-VL（4.16 GB） | 1.81 GB / 2.76 GB | **0.39 GB / 0.63 GB** | **4.6×** |
-| 8B Qwen3-VL（6.60 GB） | 4.18 GB / 4.22 GB | **0.47 GB / 0.59 GB** | **8.9×** |
-| 30B-A3B MoE（17.66 GB） | 11.73 GB / 12.70 GB | **0.51 GB / 0.71 GB** | **23.2×** |
+| 2B Qwen3-VL (4.16 GB) | 1.81 GB / 2.76 GB | **0.39 GB / 0.63 GB** | **4.6×** |
+| 8B Qwen3-VL (6.60 GB) | 4.18 GB / 4.22 GB | **0.47 GB / 0.59 GB** | **8.9×** |
+| 30B-A3B MoE (17.66 GB) | 11.73 GB / 12.70 GB | **0.51 GB / 0.71 GB** | **23.2×** |
 
-**典型例子**：RK3588 板只有 16 GB RAM（MemTotal 15.6 GiB），Qwen3-30B-A3B-q4 的权重单文件
-就有 17.66 GB —— 全层档虽能勉强跑起来，但 serve 峰值已到 14.2 GB，几乎不留 KV 与进程余量；
-**逐层档把同一模型的 serve 峰值压到 1.11 GB，余量充足、可稳定服务**。2B 更直观：常驻权重只有
-0.39 GB，比全层省 4.6×，代价是热态 tpot 从 113.0 ms 升到 156.7 ms（+38.7%）。
+**The canonical example**: an RK3588 board has only 16 GB RAM (MemTotal 15.6 GiB), while the
+Qwen3-30B-A3B-q4 weight file alone is 17.66 GB — the full-residency tier does barely run, but
+its serve peak reaches 14.2 GB, leaving almost no headroom for KV or the process itself.
+**Per-layer residency brings the same model down to a 1.11 GB serve peak, with ample headroom
+and stable serving.** The 2B case is even more direct: resident weights of just 0.39 GB, 4.6×
+less than full residency, at the cost of warm-state tpot rising from 113.0 ms to 156.7 ms
+(+38.7%).
 
-**推荐档是 8B**（2026-09-12 实测，见「性能」§4）：权重常驻 4.19 GB → **0.48 GB（8.7×）**，
-serve 峰值 **0.82 GB**；热态 **TTFT 1.95 s、tpot 377 ms**（70 token 端到端 27.9 s），
-且 **5 次采样 tpot 波动仅 ±0.13%**。它的权重 6.15 GiB **小于物理内存**，页缓存装得下，
-所以热态稳定是有保障的——这一点 30B 做不到（详见「性能」§4 与 §5）。
+**The recommended tier is 8B** (measured 2026-09-12, see "Performance" §4): resident weights
+4.19 GB → **0.48 GB (8.7×)**, serve peak **0.82 GB**, warm **TTFT 1.95 s / tpot 377 ms**
+(27.9 s end-to-end for 70 tokens), with a **±0.13% tpot spread over 5 samples**. Its 6.15 GiB of
+weights are **smaller than physical RAM**, so the page cache holds them and warm-state stability
+is guaranteed by physics — something the 30B cannot claim (see "Performance" §4 and §5).
 
-**语义不变**：驱逐只丢弃干净文件页，内容由文件重建——`--stream-test` 的贪心 TOKIDS 序列
-在两种驻留档下**逐位一致**（详见「性能」一节的 md5 对照）。
+**Semantics unchanged**: eviction only drops clean file pages, and content is rebuilt from the
+file — the greedy TOKIDS sequence produced by `--stream-test` is **bit-identical** between the
+two residency tiers (see the md5 comparison under "Performance").
 
-> 边界：逐层推理**只支持明文 VQF**（VQF-Enc / 内嵌 SM2 签名的权重会被显式拒绝，须全层驻留），
-> 且与专家窗口 `VLLM_EW*` 不并存。完整口径、代价与矩阵见下文「性能」。
-> **30B 是能力上限档，不是推荐档**：16.4 GiB 权重装不进 15.6 GiB 页缓存，且默认 thinking 下
-> 一轮问答需 3~4 分钟（见「性能」§5）。
+> Limits: per-layer residency **supports plaintext VQF only** (VQF-Enc / SM2-signed weights are
+> explicitly rejected and must stay fully resident), and it does not coexist with expert windows
+> (`VLLM_EW*`). Full definitions, costs and matrices are under "Performance".
+> **The 30B is the capability-ceiling tier, not the recommended tier**: its 16.4 GiB of weights
+> do not fit in the 15.6 GiB page cache, and with thinking on by default a single Q&A needs
+> 3~4 minutes (see "Performance" §5).
 
 ---
 
-## 性能
+## Performance
 
-### 性能数据分区说明
+### How performance figures are partitioned
 
-正文只使用 **v1.0（2026-09-12）测点**：3 模型（2B / 8B / 30B-A3B）× {全层, 逐层} ×
-{组合⑧基线, 组合①, 组合①+⑤} 成矩阵实测。**v0（2026-09-05）的冷启动 / 8K 长上下文 /
-KV 恢复数据已整段移入文末「附录 A」**——那组数据在 v0 上测得、v1 未复测（v1 已移除
-GGUF/safetensors 加载路径并引入逐层推理与 KV v2，口径已变），**不得用于 v1 的任何结论**，
-也不要与下文 v1 数字混比。
+The main body uses **v1.0 (2026-09-12) measurements only**: 3 models (2B / 8B / 30B-A3B) ×
+{full residency, per-layer residency} × {combo ⑧ baseline, combo ①, combo ①+⑤} as a full
+matrix. **The v0 (2026-09-05) cold start / 8K long context / KV restore data was moved
+wholesale to "Appendix A"** — it was measured on v0 and not re-measured on v1 (v1 removed the
+GGUF/safetensors loading path and introduced per-layer residency and KV v2, so the definitions
+changed). **It must not be used for any v1 conclusion**, and must not be mixed with the v1
+numbers below.
 
-### 逐层推理 vs 全层（RK3588，v1.0 测点，2026-09-12 实测）
+### Per-layer vs full residency (RK3588, v1.0 measurement, 2026-09-12)
 
-`VLLM_VQF_STREAM=1` 让引擎进入**分层驻留（逐层加载）**模式：VQF 单文件仍以 mmap 直挂，
-但每层权重只在参与计算时建立文件页，算完立即 `MADV_DONTNEED` 释放，仅 keep 层
-（缺省 1 层）常驻。配合 v1.0 的 KV v2 惰性分配（KV 底座随用随长），**常驻内存与模型
-体积、与层数解耦**——17.66 GB 的 Qwen3-30B-A3B-q4 可以在 16 GB RAM 的 RK3588 上服务，
-而全层档同一模型峰值要 12.7 GB（`--stream-test`）/ 14.2 GB（serve，含 KV）。本节为
-两套口径（`--stream-test` 同口径 A/B、serve 冷/热 + 3 轮追问）共 14 个 serve 配置点，
-全程无 OOM、无失败、无回退。
+`VLLM_VQF_STREAM=1` puts the engine into **tiered (per-layer) residency** mode: the VQF single
+file is still mmap-mounted, but each layer's weights establish file pages only while that layer
+computes, then release them immediately with `MADV_DONTNEED`, keeping only the `keep` layers
+(1 by default) resident. Together with v1.0's KV v2 lazy allocation (the KV base grows on
+demand), **resident memory is decoupled from model size and layer count** — a 17.66 GB
+Qwen3-30B-A3B-q4 can be served on a 16 GB RK3588, where the same model fully resident needs a
+12.7 GB peak (`--stream-test`) / 14.2 GB peak (serve, including KV). This section covers two
+measurement methods (`--stream-test` same-basis A/B, and serve cold/warm plus 3 follow-up
+turns) over 14 serve configurations, with no OOM, no failure and no fallback throughout.
 
-生效自证（板端日志原文）：
+Self-evidence from the board log:
 
 ```
 [VQF-STREAM] enabled keep=1 nl=48 segs=11 per-layer=334.1MB data=16847.2MB resident~808.4MB rss=988kB
 ```
 
-**语义不变**：`--stream-test` 的贪心 TOKIDS 序列在两种驻留档下**逐位一致**——下表最后一列
-是该序列的 md5 前 12 位，同一模型的「全层 / 逐层」两行取值相同（三个模型各自内部一致）；
-驱逐只丢弃干净文件页，内容由文件重建，不改数值。
+**Semantics unchanged**: the greedy TOKIDS sequence from `--stream-test` is **bit-identical**
+between the two residency tiers — the last column below is the first 12 hex digits of the md5
+of that sequence, and the "full" / "per-layer" rows of the same model carry the same value
+(each of the three models agrees internally); eviction only drops clean file pages and content
+is rebuilt from the file, so no value changes.
 
-复现口径（板端 `vllm_shs`，sha256 `e1484740…a8f8e8`）：模型为
-`/mnt/emmc/Modl/Qwen3-VL-2B-Instruct/qwen3vl2b.dual.vqf`（4.16 GB）、
-`/mnt/VQF/8b/qwen3vl8b.q4.vqf`（6.60 GB）、`/mnt/VQF/qwen3-30B-A3B-q4`（17.66 GB）；
-`--stream-test` 用 `--threads 8`；serve 用 `--serve --port 18080 --device arm-rk3588-opi5
---auto-load`，基线加 `--no-prefix-kv`，组合①加
+Reproduction basis (board binary `vllm_shs`, sha256 `e1484740…a8f8e8`): models were
+`/mnt/emmc/Modl/Qwen3-VL-2B-Instruct/qwen3vl2b.dual.vqf` (4.16 GB),
+`/mnt/VQF/8b/qwen3vl8b.q4.vqf` (6.60 GB) and `/mnt/VQF/qwen3-30B-A3B-q4` (17.66 GB);
+`--stream-test` used `--threads 8`; serve used `--serve --port 18080 --device arm-rk3588-opi5
+--auto-load`, the baseline added `--no-prefix-kv`, combo ① added
 `--sparse-attn --sparse-k 32 --l3-evict --l3-ratio 0.75 --l3-min-seq 128 --l3-path /mnt/emmc/l3bench`
-与环境变量 `VLLM_L3_PREFIX_REUSE=1`，组合⑤另加 `VLLM_ACTQ=1 VLLM_MOE_BATCH=1`；
-逐层档为环境变量 `VLLM_VQF_STREAM=1`。
+plus the environment variable `VLLM_L3_PREFIX_REUSE=1`, combo ⑤ added
+`VLLM_ACTQ=1 VLLM_MOE_BATCH=1`; per-layer mode is the environment variable `VLLM_VQF_STREAM=1`.
 
-#### 1) 同口径 A/B（`--stream-test`：32 token prefill + 32 token 贪心 decode，冷页缓存）
+#### 1) Same-basis A/B (`--stream-test`: 32-token prefill + 32-token greedy decode, cold page cache)
 
-| 模型（单文件 VQF） | 驻留 | 权重 RSS（prefill 后） | 峰值 VmHWM | prefill 32tok | decode | TOKIDS |
+| Model (single-file VQF) | Residency | Weight RSS (after prefill) | Peak VmHWM | prefill 32tok | decode | TOKIDS |
 |---|---|---|---|---|---|---|
-| 2B（Qwen3-VL-2B，dual，4.16 GB） | 全层 | 1,806,732 kB | 2,761,732 kB | 7.14 s | 221 ms/tok | `1a5d48906a4c` |
-| 2B | **逐层** | **394,464 kB（4.6×）** | **631,428 kB（4.4×）** | 8.02 s（+12%） | 257 ms/tok（+16%） | `1a5d48906a4c` |
-| 8B（Qwen3-VL-8B，q4，6.60 GB） | 全层 | 4,183,048 kB | 4,224,032 kB | 73.39 s | 429 ms/tok | `efb5a00c5803` |
-| 8B | **逐层** | **471,800 kB（8.9×）** | **593,172 kB（7.1×）** | 72.48 s（−1%） | 586 ms/tok（+37%） | `efb5a00c5803` |
-| 30B-A3B（MoE，q4，17.66 GB） | 全层 | 11,728,860 kB | 12,703,020 kB | 273.6 s | 2442 ms/tok | `d4996200fcf2` |
-| 30B-A3B | **逐层** | **506,368 kB（23.2×）** | **713,240 kB（17.8×）** | 273.3 s（−0.1%） | 2840 ms/tok（+16%） | `d4996200fcf2` |
+| 2B (Qwen3-VL-2B, dual, 4.16 GB) | full | 1,806,732 kB | 2,761,732 kB | 7.14 s | 221 ms/tok | `1a5d48906a4c` |
+| 2B | **per-layer** | **394,464 kB (4.6×)** | **631,428 kB (4.4×)** | 8.02 s (+12%) | 257 ms/tok (+16%) | `1a5d48906a4c` |
+| 8B (Qwen3-VL-8B, q4, 6.60 GB) | full | 4,183,048 kB | 4,224,032 kB | 73.39 s | 429 ms/tok | `efb5a00c5803` |
+| 8B | **per-layer** | **471,800 kB (8.9×)** | **593,172 kB (7.1×)** | 72.48 s (−1%) | 586 ms/tok (+37%) | `efb5a00c5803` |
+| 30B-A3B (MoE, q4, 17.66 GB) | full | 11,728,860 kB | 12,703,020 kB | 273.6 s | 2442 ms/tok | `d4996200fcf2` |
+| 30B-A3B | **per-layer** | **506,368 kB (23.2×)** | **713,240 kB (17.8×)** | 273.3 s (−0.1%) | 2840 ms/tok (+16%) | `d4996200fcf2` |
 
-> 口径：每个配置点先 `sync; echo 3 > /proc/sys/vm/drop_caches` 再跑，为**冷页缓存首次
-> 前向**（含从存储读入 GB 级权重的全部开销）。因此上表 8B/30B 的 prefill 时间
-> 主要由权重读入决定，与「热缓存稳态」不可混比（稳态见第 2 节）；30B 的 17.66 GB 权重
-> 超过 16 GB RAM，全层档已接近内存上限。
+> Method: each configuration is preceded by `sync; echo 3 > /proc/sys/vm/drop_caches`, so this
+> is the **first forward pass on a cold page cache** (including the full cost of reading
+> GB-scale weights from storage). The 8B/30B prefill times above are therefore dominated
+> by weight reads and must not be compared with "warm-cache steady state" (see §2); the 30B's
+> 17.66 GB of weights exceed 16 GB of RAM, so the full-residency tier sits right at the memory
+> ceiling.
 >
-> **介质口径（2026-09-12 实测）**：本文 v1 的 8B/30B 权重位于 **SanDisk microSD 卡**
-> （`/mnt/VQF` 落在 rootfs，rootfs 在 SD 卡上），2B 权重与 L3 目录在 eMMC。两者实测
-> 带宽差 3.8×（见第 5 节），因此本节的 8B/30B 冷读代价按 **SD 卡 62.7 MB/s** 计。
-> 与 `docs/优化配置与边界说明.md` 中「省 4.6×~21.8×、prefill +11~25% / decode
-> +121~259%」的差别来自**口径**：那组是 **v0 时期**的热缓存（全层权重已在 RAM/页缓存）
-> 稳态数字，**不作 v1 结论**。
+> **Storage medium (measured 2026-09-12)**: the v1 8B/30B weights live on a **SanDisk microSD
+> card** (`/mnt/VQF` sits on the rootfs, and the rootfs is on the SD card), while the 2B weights
+> and the L3 directory are on eMMC. The two differ by 3.8× in measured bandwidth (see §5), so
+> the 8B/30B cold-read cost in this section is priced at **62.7 MB/s (SD card)**.
+>
+> The difference from "4.6×~21.8× saved, prefill +11~25% / decode +121~259%" in
+> `docs/优化配置与边界说明.md` comes from the **measurement basis**: that set is **v0-era**
+> warm-cache (weights already in RAM/page cache) steady state and **is not a v1 conclusion**.
 
-#### 2) 稳态口径（serve，同进程「冷 → 热」两次同问；组合⑧基线 `--no-prefix-kv`）
+#### 2) Steady-state basis (serve, "cold → warm" same question in one process; combo ⑧ baseline `--no-prefix-kv`)
 
-| 模型 | 驻留 | 峰值 VmHWM | 冷 prefill | 热 prefill | 热 TTFT | 热 tpot |
+| Model | Residency | Peak VmHWM | Cold prefill | Warm prefill | Warm TTFT | Warm tpot |
 |---|---|---|---|---|---|---|
-| 2B | 全层 | 2,968,920 kB | 13,993 ms | 5,267 ms | 5,267 ms | 113.0 ms |
-| 2B | **逐层** | **854,476 kB（3.5×）** | 14,882 ms | 5,441 ms | 5,441 ms | 156.7 ms |
-| 8B | 全层 | 4,523,240 kB | 87,459 ms | 16,035 ms | 16,035 ms | 458.4 ms |
-| 8B | **逐层** | **914,448 kB（4.9×）** | 86,375 ms | 16,463 ms | 16,463 ms | 617.2 ms |
-| 30B-A3B | 全层 | 14,228,868 kB | 841,365 ms | 620,774 ms | 620,775 ms | 2,240.4 ms |
-| 30B-A3B | **逐层** | **1,112,500 kB（12.8×）** | 841,969 ms | 623,125 ms | 623,126 ms | 2,647.7 ms |
+| 2B | full | 2,968,920 kB | 13,993 ms | 5,267 ms | 5,267 ms | 113.0 ms |
+| 2B | **per-layer** | **854,476 kB (3.5×)** | 14,882 ms | 5,441 ms | 5,441 ms | 156.7 ms |
+| 8B | full | 4,523,240 kB | 87,459 ms | 16,035 ms | 16,035 ms | 458.4 ms |
+| 8B | **per-layer** | **914,448 kB (4.9×)** | 86,375 ms | 16,463 ms | 16,463 ms | 617.2 ms |
+| 30B-A3B | full | 14,228,868 kB | 841,365 ms | 620,774 ms | 620,775 ms | 2,240.4 ms |
+| 30B-A3B | **per-layer** | **1,112,500 kB (12.8×)** | 841,969 ms | 623,125 ms | 623,126 ms | 2,647.7 ms |
 
-单请求 = 300 token 上文 + 32 token 生成（greedy）。冷 = `drop_caches` 后第一次；
-热 = 紧接着重发同一请求：全层档权重已常驻 RAM（热档只付算力），逐层档每轮重新触碰
-权重页（热档仍受存储带宽约束）——这正是「用时间换内存」的边际成本。
+One request = 300-token context + 32 generated tokens (greedy). Cold = the first request after
+`drop_caches`; warm = the same request sent immediately afterwards: the full tier already has
+its weights resident in RAM (the warm pass pays compute only), while the per-layer tier touches
+the weight pages again every pass (the warm pass is still bound by storage bandwidth) — this is
+precisely the marginal cost of trading time for memory.
 
-> 本表峰值含 KV 缓存，因此倍率小于第 1 节的「纯权重 RSS」倍率（30B：12.8× vs 23.2×）：
-> 逐层真正解耦的是**权重**，KV 由 KV v2 惰性分配另管。表中 30B 全层档峰值
-> 14.2 GB 已顶到 16 GB 板（MemTotal 15.6 GiB）的上限，逐层档把同一模型压到 1.11 GB，
-> 留出全部 KV 与进程余量。
+> Peaks in this table include the KV cache, so the ratios are smaller than the "weight-only
+> RSS" ratios in §1 (30B: 12.8× vs 23.2×): what per-layer residency truly decouples is the
+> **weights**, while KV is managed separately by KV v2 lazy allocation. The 30B full-residency
+> peak of 14.2 GB already hits the ceiling of a 16 GB board (MemTotal 15.6 GiB), whereas the
+> per-layer tier compresses the same model to 1.11 GB, leaving all the headroom for KV and the
+> process itself.
 
-#### 3) 与「有效优化组合」叠加（serve 多轮追问，组合① = `--sparse-attn --sparse-k 32 --l3-evict --l3-min-seq 128` + `VLLM_L3_PREFIX_REUSE=1`）
+#### 3) Stacking with the "effective optimization combos" (serve multi-turn follow-ups; combo ① = `--sparse-attn --sparse-k 32 --l3-evict --l3-min-seq 128` + `VLLM_L3_PREFIX_REUSE=1`)
 
-| 模型 | 驻留 | 配置 | t2 prefill | t3 prefill | 相对基线 |
+| Model | Residency | Config | t2 prefill | t3 prefill | vs baseline |
 |---|---|---|---|---|---|
-| 2B | 全层 | ⑧ base | 5,882 ms | 6,545 ms | — |
-| 2B | 全层 | ① P3 | **952 ms** | **972 ms** | **−83.8% / −85.1%** |
-| 2B | 逐层 | ⑧ base | 6,057 ms | 6,706 ms | — |
-| 2B | 逐层 | ① P3 | **1,189 ms** | **1,130 ms** | **−80.4% / −83.1%** |
-| 8B | 全层 | ⑧ base | 19,251 ms | 21,193 ms | — |
-| 8B | 全层 | ① P3 | **1,885 ms** | **2,008 ms** | **−90.2% / −90.5%** |
-| 8B | 逐层 | ⑧ base | 19,579 ms | 21,545 ms | — |
-| 8B | 逐层 | ① P3 | **2,048 ms** | **2,203 ms** | **−89.5% / −89.8%** |
-| 30B-A3B | 全层 | ⑧ base | 722,394 ms | 822,409 ms | — |
-| 30B-A3B | 全层 | ① P3 | **28,633 ms** | **32,140 ms** | **−96.0% / −96.1%** |
-| 30B-A3B | 全层 | ①+⑤ P3+MoE | **4,727 ms** | **3,157 ms** | **−99.3% / −99.6%** |
-| 30B-A3B | 逐层 | ⑧ base | 724,367 ms | 824,535 ms | — |
-| 30B-A3B | 逐层 | ① P3 | **29,368 ms** | **32,820 ms** | **−95.9% / −96.0%** |
-| 30B-A3B | 逐层 | ①+⑤ P3+MoE | **5,269 ms** | **3,695 ms** | **−99.3% / −99.6%** |
+| 2B | full | ⑧ base | 5,882 ms | 6,545 ms | — |
+| 2B | full | ① P3 | **952 ms** | **972 ms** | **−83.8% / −85.1%** |
+| 2B | per-layer | ⑧ base | 6,057 ms | 6,706 ms | — |
+| 2B | per-layer | ① P3 | **1,189 ms** | **1,130 ms** | **−80.4% / −83.1%** |
+| 8B | full | ⑧ base | 19,251 ms | 21,193 ms | — |
+| 8B | full | ① P3 | **1,885 ms** | **2,008 ms** | **−90.2% / −90.5%** |
+| 8B | per-layer | ⑧ base | 19,579 ms | 21,545 ms | — |
+| 8B | per-layer | ① P3 | **2,048 ms** | **2,203 ms** | **−89.5% / −89.8%** |
+| 30B-A3B | full | ⑧ base | 722,394 ms | 822,409 ms | — |
+| 30B-A3B | full | ① P3 | **28,633 ms** | **32,140 ms** | **−96.0% / −96.1%** |
+| 30B-A3B | full | ①+⑤ P3+MoE | **4,727 ms** | **3,157 ms** | **−99.3% / −99.6%** |
+| 30B-A3B | per-layer | ⑧ base | 724,367 ms | 824,535 ms | — |
+| 30B-A3B | per-layer | ① P3 | **29,368 ms** | **32,820 ms** | **−95.9% / −96.0%** |
+| 30B-A3B | per-layer | ①+⑤ P3+MoE | **5,269 ms** | **3,695 ms** | **−99.3% / −99.6%** |
 
-组合⑤ = `VLLM_ACTQ=1 VLLM_MOE_BATCH=1`（MoE 专家激活量化 + 专家批量），只对 MoE 权重
-（q4）有意义，与组合①、与逐层驻留三者正交可叠加。
+Combo ⑤ = `VLLM_ACTQ=1 VLLM_MOE_BATCH=1` (MoE expert activation quantization + expert
+batching). It only applies to MoE weights (q4) and stacks orthogonally with combo ① and with
+per-layer residency.
 
-组合①生效自证（2B 全层档板端日志原文，L3 落盘 + 回填 + 前缀复用三段可见）：
+Self-evidence for combo ① (raw board log, 2B full tier; all three stages — L3 spill, restore,
+prefix reuse — are visible):
 
 ```
 [L3] evicted 252 blocks -> /mnt/emmc/l3bench_u65bbfe41 (cursor=9.84 MB, seq=345, keep=332, ratio=0.75, ...), freed 78.8 MB from RAM
@@ -189,498 +219,570 @@ GGUF/safetensors 加载路径并引入逐层推理与 KV v2，口径已变），
 [KV-PREFIX] reuse 377-token KV prefix, prefill rest
 ```
 
-同一组合在两种驻留档下收益同量级（2B −80% ~ −83%、8B −89% ~ −90%、30B −96%），说明
-**权重驻留轴与 KV 分页轴正交**。30B-A3B 再叠加组合⑤ MoE 档（`VLLM_ACTQ=1
-VLLM_MOE_BATCH=1`，须 q4 权重）后，第二/三轮追问的 prefill 从 ⑧ 基线的 722 s / 822 s 降到
-**4.7 s / 3.2 s（全层）**，首轮也从 620 s 降到 23 s，tpot 2,240 ms → 504 ms——本轮实测；
-该档在**逐层驻留**下同样成立（t2/t3 = 5.3 s / 3.7 s），即「省内存」与「快」可以同时拿到。
+The same combo yields gains of the same order in both residency tiers (2B −80% ~ −83%,
+8B −89% ~ −90%, 30B −96%), showing that the **weight-residency axis and the KV-paging axis are
+orthogonal**. Adding combo ⑤ (MoE) on the 30B-A3B (`VLLM_ACTQ=1 VLLM_MOE_BATCH=1`, q4 weights
+required) cuts the second/third follow-up prefill from the ⑧ baseline's 722 s / 822 s down to
+**4.7 s / 3.2 s (full tier)**, and the first turn from 620 s to 23 s, with tpot going from
+2,240 ms to 504 ms — all measured in this round; the same tier also holds under **per-layer
+residency** (t2/t3 = 5.3 s / 3.7 s), i.e. "memory-efficient" and "fast" can be had at once.
 
-#### 4) 8B：推荐档的价值兑现（2026-09-12 实测）
+#### 4) 8B: the recommended tier delivers (measured 2026-09-12)
 
-上文 §1/§2 覆盖 2B/8B/30B 三档。这一节回答一个问题：**逐层推理最划算的落点在哪——答案是 8B。**
+§1/§2 above cover all three tiers (2B/8B/30B). This section answers one question: **where does
+per-layer residency pay off best — the answer is 8B.**
 
-配置：`--threads 4`（`OMP_NUM_THREADS=4 VLLM_THREADS=4`）；**权重在 SanDisk microSD（62.7 MB/s）**。
-内存口径与 §1 一致（`--stream-test`，32 token prefill + 32 token decode，冷页缓存 A/B）。
-下表 prefill 与 decode **取自同一次冷页缓存运行**（故 decode 数值高于后面「热页缓存」的线程 A/B 表）：
+Configuration: `--threads 4` (`OMP_NUM_THREADS=4 VLLM_THREADS=4`); **weights on a SanDisk
+microSD card (62.7 MB/s)**. Memory basis as in §1 (`--stream-test`, 32-token prefill + 32-token
+decode, cold page cache A/B). The prefill and decode below come **from the same cold-page-cache
+run** (hence decode is slower than the warm-page-cache thread A/B table further down):
 
-| 档 | 权重常驻 RSS（prefill 后） | rss_end | prefill 32tok | decode |
+| Tier | Weight RSS (after prefill) | rss_end | prefill 32tok | decode |
 |---|---|---|---|---|
-| 全层 | 4,189,912 kB | 4,202,988 kB | 67.9 s | 207 ms/tok（4.84 tok/s） |
-| **逐层** | **480,348 kB（8.7×）** | **487,912 kB** | 63.2 s | 385 ms/tok（2.60 tok/s） |
+| full | 4,189,912 kB | 4,202,988 kB | 67.9 s | 207 ms/tok (4.84 tok/s) |
+| **per-layer** | **480,348 kB (8.7×)** | **487,912 kB** | 63.2 s | 385 ms/tok (2.60 tok/s) |
 
-serve 逐层档 + 短请求（`enable_thinking=false`、`max_tokens=96`；实测自然结束于 70 token）：
+Serve in per-layer mode + short request (`enable_thinking=false`, `max_tokens=96`; finished
+naturally at 70 tokens):
 
-| 档 | TTFT | 端到端 | tpot | 峰值 VmHWM |
+| Tier | TTFT | End-to-end | tpot | Peak VmHWM |
 |---|---|---|---|---|
-| 冷（`drop_caches` 后首次） | 73.1 s | 99.7 s | 385.3 ms | 611,880 kB |
-| **热（连续 5 次同请求）** | **1.95 s**（1.899~1.966） | **27.9 s** | **376.6 ms**（376.4~377.4） | 824,192 kB |
+| Cold (first after `drop_caches`) | 73.1 s | 99.7 s | 385.3 ms | 611,880 kB |
+| **Warm (5 identical consecutive requests)** | **1.95 s** (1.899~1.966) | **27.9 s** | **376.6 ms** (376.4~377.4) | 824,192 kB |
 
-> 热档 VmHWM 为 5 次累计后的**高水位**（逐轮 656,144 → 698,228 → 740,088 → 782,236 → 824,192 kB，
-> 每轮约 +42 MB）；口径说明与开放项见 §5 的 VmHWM 注。
+> The warm VmHWM is the **high-water mark accumulated over 5 runs** (656,144 → 698,228 → 740,088
+> → 782,236 → 824,192 kB, about +42 MB per run); see the VmHWM note in §5 for the basis and the
+> open item.
 
-**8B 为什么是推荐档（三条，均可复现）**：
+**Why 8B is the recommended tier (three reasons, all reproducible)**:
 
-1. **省内存的收益拿满，代价可控**：权重常驻 4.19 GB → **0.48 GB（8.7×）**，serve 峰值 **0.82 GB**。
-2. **热态稳定有物理保障**：权重 6.15 GiB **装得进 15.6 GiB 页缓存**，所以热态不必赌运气——
-   实测 5 次采样的离散度是 **TTFT ±1.8%、tpot ±0.13%**。
-3. **冷启动一次性成本低**：73 s（对比 30B 的 195~211 s），因为成本 ∝ 权重体积 ÷ 介质带宽。
+1. **You capture the full memory win at a controllable cost**: resident weights 4.19 GB →
+   **0.48 GB (8.7×)**, serve peak **0.82 GB**.
+2. **Warm-state stability is backed by physics**: the 6.15 GiB of weights **fit in the 15.6 GiB
+   page cache**, so warm behaviour is not a gamble — the measured spread over 5 samples is
+   **TTFT ±1.8%, tpot ±0.13%**.
+3. **The one-off cold-start cost is low**: 73 s (vs 195~211 s for the 30B), because the cost is
+   proportional to weight size ÷ medium bandwidth.
 
-**隐藏的 2×：必须用 `--threads 4`**（同机同模型 A/B，各 2 次重复，热页缓存）：
+**The hidden 2×: you must use `--threads 4`** (same board, same model, A/B, 2 repeats each,
+warm page cache):
 
-| 档 | `--threads 4` | `--threads 8` | 比值 |
+| Tier | `--threads 4` | `--threads 8` | Ratio |
 |---|---|---|---|
-| 全层 decode | **186 / 189 ms/tok** | 431 / 433 ms/tok | 4 线程快 **2.3×** |
-| 逐层 decode | **370 / 378 ms/tok** | 580 / 582 ms/tok | 4 线程快 **1.56×** |
+| full decode | **186 / 189 ms/tok** | 431 / 433 ms/tok | 4 threads **2.3× faster** |
+| per-layer decode | **370 / 378 ms/tok** | 580 / 582 ms/tok | 4 threads **1.56× faster** |
 
-> RK3588 是 4×A76 + 4×A55，`--threads 8` 会把 4 个 A55 小核拉进 GEMM 并行区。
-> §1 的 8B 数字（全层 429 / 逐层 586 ms/tok）正是 **`--threads 8`** 口径，与上表右列吻合；
-> **换到 4 线程后 8B 全层 decode 达 5.4 tok/s**。
+> The RK3588 is 4×A76 + 4×A55, and `--threads 8` pulls the four A55 little cores into the GEMM
+> parallel region. The 8B figures in §1 (full 429 / per-layer 586 ms/tok) are exactly the
+> **`--threads 8`** basis and match the right-hand column above; **switching to 4 threads brings
+> 8B full-residency decode to 5.4 tok/s**.
 
-**一键复现**：`sh tools/bench_value.sh`（参数可用环境变量覆盖，用法见脚本头部注释）
-——产出 A/B 内存对照、热态稳定度、页缓存证据三部分，并写出 `http.json`。
+**One-command reproduction**: `sh tools/bench_value.sh` (parameters are overridable via
+environment variables; see the header comment in the script) — it produces the A/B memory
+comparison, warm-state stability and page-cache evidence, and writes `http.json`.
 
-#### 5) 30B-A3B 短请求：能跑到什么程度（thinking 开关实测）
+#### 5) 30B-A3B on a short request: how far it actually goes (thinking switch measured)
 
-> 补充测点（2026-09-12，同机同引擎 sha256 `e1484740…a8f8e8`）。目的：回答
-> 「30B 在 16 GB 板上只是勉强跑得起来，还是真有使用价值」。**权重在 SanDisk microSD 卡上**。
+> Additional measurement (2026-09-12, same board, same engine sha256 `e1484740…a8f8e8`).
+> The question it answers: is the 30B on a 16 GB board merely *barely runnable*, or genuinely
+> usable? **The weights sit on a SanDisk microSD card.**
 
-配置：逐层 `VLLM_VQF_STREAM=1` + 组合⑤ `VLLM_ACTQ=1 VLLM_MOE_BATCH=1` + 组合①参数
-（本例上文仅 22 token，日志 `[L3] skipped: seq=22 < l3-min-seq=128`——**L3 与前缀复用
-未介入**，故本表反映的是「逐层 + MoE 档」，不含组合①的 KV 侧收益）；
-`OMP_NUM_THREADS=4 VLLM_THREADS=4`。请求 = 22 token 上文 + 32 token 生成（greedy，流式）。
+Configuration: per-layer `VLLM_VQF_STREAM=1` + combo ⑤ `VLLM_ACTQ=1 VLLM_MOE_BATCH=1` +
+combo ① flags (with only a 22-token context the log shows `[L3] skipped: seq=22 <
+l3-min-seq=128`, i.e. **L3 and prefix reuse did not engage**, so this table reflects the
+"per-layer + MoE" tier without combo ①'s KV-side gain); `OMP_NUM_THREADS=4 VLLM_THREADS=4`.
+Request = 22-token context + 32 generated tokens (greedy, streaming).
 
-| 档 | TTFT | 端到端 | tpot | 峰值 VmHWM |
+| Tier | TTFT | End-to-end | tpot | Peak VmHWM |
 |---|---|---|---|---|
-| 冷（`drop_caches` 后首次） | 211.5 s | 258.8 s | 1,524.5 ms | 666,468 kB |
-| **热（紧接着重发同一请求）** | **3.3 s** | **20.8 s** | **564.8 ms** | 918,300 kB |
+| Cold (first request after `drop_caches`) | 211.5 s | 258.8 s | 1,524.5 ms | 666,468 kB |
+| **Warm (same request sent immediately after)** | **3.3 s** | **20.8 s** | **564.8 ms** | 918,300 kB |
 
-非流式同请求交叉验证 20.7 s（与流式 20.8 s 一致），该次收尾后进程高水位累计到 933,656 kB。
+Cross-checked with the same request in non-streaming mode: 20.7 s (consistent with 20.8 s
+streaming); after that run the process high-water mark had accumulated to 933,656 kB.
 
-> **VmHWM 口径**：它是进程**历史最高水位**（单调不减），不是单次请求的稳态占用，因此逐轮上升
-> 属正常记录方式。上表两行分别是各自实测时刻的水位；8B 的 5 次热态采样同理（611,880 →
-> 656,144 → 698,228 → 740,088 → 782,236 → 824,192 kB，每轮约 +42 MB）。单轮稳态占用的
-> 回落情况需 `VmRSS` 逐轮采样，**本项目尚未做该采样，列为开放项**。
+> **On VmHWM**: it is the process's **historical high-water mark** (monotonically non-decreasing),
+> not the steady-state footprint of a single request, so a rising value across runs is expected.
+> The two rows above are the marks measured at their respective points; the same applies to the
+> 8B five-sample warm run (611,880 → 656,144 → 698,228 → 740,088 → 782,236 → 824,192 kB, about
+> +42 MB per run). Whether the per-request footprint falls back would require sampling `VmRSS`
+> per run — **we have not done that sampling; it is recorded as an open item**.
 
-**关键前提：`enable_thinking` 默认为开**（引擎与 HF `apply_chat_template` 一致，见
-`src/serve/vllm_server.c` 的 `resolve_thinking`）。上表那 32 个 token **全部落在思考段内，
-并未产出答案**——只测「输出 32 token 要多久」会得出偏乐观的可用性结论。因此补测了开关对照：
+**Critical precondition: `enable_thinking` defaults to on** (the engine matches HF
+`apply_chat_template`; see `resolve_thinking` in `src/serve/vllm_server.c`). Those 32 tokens
+**were all spent inside the thinking block and produced no answer** — measuring only "how long
+does it take to emit 32 tokens" yields an over-optimistic usability verdict. Hence the switch
+comparison below:
 
-| 档（max_tokens=256） | TTFT | 端到端 | 实际输出 | 结果 |
+| Tier (max_tokens=256) | TTFT | End-to-end | Actual output | Result |
 |---|---|---|---|---|
-| thinking **开**（默认） | 29.5 s | 221.9 s | **256（打满预算）** | **`</think>` 始终未出现，无答案** |
-| **thinking 关**（请求体 `"enable_thinking": false`） | **3.1 s** | **24.5 s** | **40（自然 EOS 结束）** | **给出完整答案** |
+| thinking **on** (default) | 29.5 s | 221.9 s | **256 (budget exhausted)** | **`</think>` never appears; no answer** |
+| **thinking off** (request body `"enable_thinking": false`) | **3.1 s** | **24.5 s** | **40 (natural EOS)** | **complete answer delivered** |
 
-thinking 关档的原文输出即答案本身：
+The thinking-off output *is* the answer:
 「边缘计算是在数据产生地附近进行数据处理和分析的计算模式，而云计算则是在远程数据中心进行集中式数据处理，两者的主要区别在于数据处理的位置和实时性需求。」
 
-> 说明：这两次请求都紧跟在一个冷预热请求之后。thinking 关那次是第 3 个请求、页缓存最热，
-> 故 TTFT 3.1 s；thinking 开那次为第 2 个请求，TTFT 29.5 s 反映的是页缓存尚在回温——
-> **两者 TTFT 差异主要来自页缓存状态，不是 thinking 开关本身**。thinking 开档耗时更长，
-> 是因为它在 256 token 预算内一直没结束思考。
+> Note: both requests followed a cold warm-up request. The thinking-off run was the 3rd request
+> with the warmest page cache (TTFT 3.1 s), while the thinking-on run was the 2nd (TTFT 29.5 s
+> reflects a still-warming page cache) — **the TTFT gap comes mainly from page-cache state, not
+> from the thinking switch itself**. The thinking-on run took longer because it never finished
+> reasoning within its 256-token budget.
 
-**结论（修订）：30B-A3B 在这块 16 GB 板上的可用档 = 关 thinking + 短上下文。**
-关掉思考后 24.5 s 拿到完整的一句话答案，峰值内存 0.91 GB——这才是"能用"的真实数字。
-默认（thinking 开）下 256 token 走不完思考段，一次问答实际要预留 300+ token、约 3~4 分钟。
-冷态 258.8 s 的代价来自首次从 SD 卡读入全部 17.66 GB 权重（其中权重数据段 16.8 GB），
-是一次性成本；权重驻留页缓存后回到秒级——这正是「逐层推理」把 17.66 GB 模型装进 16 GB 板的方式。
+**Revised conclusion: the usable tier for the 30B-A3B on this 16 GB board is "thinking off +
+short context".** With thinking disabled it returns a complete one-sentence answer in 24.5 s at
+a 0.91 GB peak — that is the real "usable" figure. With thinking on (the default), 256 tokens
+are not enough to finish the reasoning block; a single Q&A actually needs 300+ tokens, i.e.
+roughly 3~4 minutes. The 258.8 s cold figure is the one-off cost of reading all 17.66 GB of
+weights (16.8 GB of which is the weight data segments) from the SD card on first touch; once the
+weights sit in the page cache it returns to
+seconds — which is exactly how per-layer residency fits a 17.66 GB model onto a 16 GB board.
 
-**存储介质实测**（同机 `dd iflag=direct`，1 GiB，绕过页缓存）：
+**Storage medium measured** (same board, `dd iflag=direct`, 1 GiB, bypassing the page cache):
 
-| 介质 | 用途 / 挂载点 | 设备 | 顺序读实测 |
+| Medium | Role / mount | Device | Measured sequential read |
 |---|---|---|---|
-| **SanDisk microSD** | 8B/30B 权重（`/mnt/VQF`） | `/dev/mmcblk1`（`name=SD64G`、`type=SD`、`manfid=0x000003`） | **62.7 MB/s** |
-| eMMC | 2B 权重、L3 目录（`/mnt/emmc`） | `/dev/mmcblk0`（`name=BJTD4R`、`type=MMC`） | **240 MB/s** |
+| **SanDisk microSD** | 8B/30B weights (`/mnt/VQF`) | `/dev/mmcblk1` (`name=SD64G`, `type=SD`, `manfid=0x000003`) | **62.7 MB/s** |
+| eMMC | 2B weights, L3 directory (`/mnt/emmc`) | `/dev/mmcblk0` (`name=BJTD4R`, `type=MMC`) | **240 MB/s** |
 
-> 该对照解释了第 1 节 8B/30B 的冷读量级：**逐层档的"用时间换内存"里，时间正比于
-> 权重体积 ÷ 介质带宽**。上表冷态 211.5 s 对应 62.7 MB/s 的 SD 卡；**若把权重放到
-> eMMC（240 MB/s），按带宽比推算首 token 约可降到 56 s 量级——此为换算推算，未实测**。
+> This explains the cold-read magnitude in §1: in the per-layer tier's "trade time for memory",
+> **the time is proportional to weight size ÷ medium bandwidth**. The 211.5 s above is priced at
+> the SD card's 62.7 MB/s; **moving the weights to eMMC (240 MB/s) would, by bandwidth ratio,
+> bring first token down to roughly 56 s — this is an extrapolation, not a measurement.**
 
-#### 6) 诚实边界
+#### 6) Honest boundaries
 
-- **逐层只支持明文 VQF**：VQF-Enc / 内嵌 SM2 签名的权重会被显式拒绝（需全层驻留）。
-- 与专家窗口 `VLLM_EW*` 不并存（EW 接管层入口钩子）。
-- 速度代价随「权重体积 ÷ 存储带宽」上升：`--stream-test` 冷页缓存下 prefill +12%（2B）/
-  −1%（8B）/ −0.1%（30B），decode +16% / +37% / +16%；serve 稳态（第 2 节）下热档 tpot
-  +38.7%（2B）/ +34.6%（8B）/ +18.2%（30B），热档 prefill 只 +3.3% / +2.7% / +0.4%。
-  换来的常驻内存倍数是 4.6× / 8.9× / 23.2×（纯权重 RSS）。
-- **30B-A3B 在 16 GB 板上的绝对速度很低，这是硬件边界而非实现缺陷**：无优化基线一轮
-  300 token 上文要 620 s（tpot 2,240 ms，≈0.45 tok/s），全层档峰值 14.2 GB 已顶到内存上限；
-  实用做法是「逐层驻留（1.11 GB）+ 组合① + 组合⑤」——组合⑤ MoE 把首轮降到 23 s、
-  追问降到 3~5 s，是 30B 能被真正用起来的前提。**短请求实测见第 5 节**——注意可用档
-  需**关掉 thinking**：关思考后 24.5 s 给出完整短答、峰值内存 0.91 GB；默认 thinking 开时
-  256 token 走不完思考段。
-- 逐层压缩的是**权重驻留**；KV 底座另由 v1.0 的 KV v2 惰性分配约束（配合
-  `VLLM_KV_NOF32=1` 可把 2B 常驻进一步压到 ~222 MB 量级，见
-  [docs/KV缓存v2-惰性分配与分层驻留方案.md](docs/KV缓存v2-惰性分配与分层驻留方案.md)）。
+- **Per-layer residency is plaintext-only**: VQF-Enc / SM2-signed weights are explicitly
+  rejected (they must stay fully resident).
+- It does not coexist with expert windows (`VLLM_EW*`; EW owns the layer entry hook).
+- The speed cost grows with "weight size ÷ storage bandwidth": under `--stream-test` cold page
+  cache, prefill +12% (2B) / −1% (8B) / −0.1% (30B) and decode +16% / +37% / +16%; in serve
+  steady state (§2) warm tpot is +38.7% (2B) / +34.6% (8B) / +18.2% (30B) while warm prefill is
+  only +3.3% / +2.7% / +0.4%. What you get in return is 4.6× / 8.9× / 23.2× resident-memory
+  reduction (weight-only RSS).
+- **The absolute speed of the 30B-A3B on a 16 GB board is low — that is a hardware boundary,
+  not an implementation defect**: an unoptimized baseline needs 620 s for a 300-token context
+  (tpot 2,240 ms, ≈0.45 tok/s), and the full tier's 14.2 GB peak already sits at the memory
+  ceiling. The practical configuration is "per-layer residency (1.11 GB) + combo ① + combo ⑤"
+  — combo ⑤ MoE brings the first turn down to 23 s and follow-ups to 3~5 s, which is what makes
+  the 30B actually usable. **See §5 for the short-request measurement** — note that the usable
+  tier requires **thinking off**: with it disabled, a complete short answer comes back in 24.5 s
+  at a 0.91 GB peak; with the default thinking on, 256 tokens do not finish the reasoning block.
+- Per-layer residency compresses **weight residency**; the KV base is constrained separately by
+  v1.0's KV v2 lazy allocation (with `VLLM_KV_NOF32=1` the 2B can be pushed further to the
+  ~222 MB range — see
+  [docs/KV缓存v2-惰性分配与分层驻留方案.md](docs/KV缓存v2-惰性分配与分层驻留方案.md)).
 
 ---
 
-## 启动流程
+## Quickstart
 
-从裸板到 HTTP 就绪共 4 步：**构建 → 权重就位 → 启动 → 验证**。
+From a bare board to HTTP-ready in 4 steps: **build → weights in place → start → verify**.
 
-### 1) 构建（RK3588 / aarch64 Linux）
+### 1) Build (RK3588 / aarch64 Linux)
 
 ```bash
-# 板上原生构建（需 gcc + cmake）
-./build_rk3588.sh                    # 构建 + 复制到 ./vllm_kestrel
-./build_rk3588.sh --run-tests        # 构建 + 运行 PASS/FAIL 自检
-./build_rk3588.sh --static           # 全静态（零 .so 依赖）
+# Native build on the board (needs gcc + cmake)
+./build_rk3588.sh                    # build + copy to ./vllm_kestrel
+./build_rk3588.sh --run-tests        # build + run PASS/FAIL self-tests
+./build_rk3588.sh --static           # fully static (zero .so dependencies)
 
-# 或直接在板上：
+# Or directly on the board:
 cmake -B build-rk3588 && cmake --build build-rk3588 -j8
 
-# x86_64 Linux 主机交叉编译（需要 gcc-aarch64-linux-gnu）
+# Cross-compile from an x86_64 Linux host (needs gcc-aarch64-linux-gnu)
 ./build_rk3588.sh --cross
 ```
 
-#### x86_64 原生构建（Windows / MinGW，用于功能与一致性自检）
+#### x86_64 native build (Windows / MinGW, for functional and consistency self-tests)
 
-引擎的**一级目标平台是 aarch64**；x86-64 分支（`vllm_platform.h`）仅用于**功能自检与
-位级一致性对照**，**不作为性能基准**——x86 上跑的绝对吞吐/加速比不能外推到板端。
+The engine's **primary target is aarch64**; the x86-64 branch (`vllm_platform.h`) exists only
+for **functional self-tests and bit-exactness comparison** and is **never a performance
+baseline** — absolute throughput or speedups measured on x86 must not be extrapolated to the
+board.
 
 ```powershell
-# Windows / MinGW-w64（gcc 需在 PATH，或用 -Gcc 显式指定）
+# Windows / MinGW-w64 (gcc must be on PATH, or pass -Gcc explicitly)
 powershell -ExecutionPolicy Bypass -File tools\check_x64.ps1
-#   → 编译 + 跑 --test-l3 / --test-sparse 自检，退出码 0/1
+#   → compiles + runs --test-l3 / --test-sparse self-tests, exit code 0/1
 powershell -ExecutionPolicy Bypass -File tools\build_x64.ps1 -Gcc D:\tools\mingw64\bin\gcc.exe
-#   → 仅构建，产物 build-x64\vllm_kestrel_x64.exe
+#   → build only; artifact build-x64\vllm_kestrel_x64.exe
 ```
 
-环境变量口径：`VLLM_GCC`（gcc 路径）、`VLLM_X64_OUTDIR`（输出目录）可替代命令行参数。
+Environment overrides: `VLLM_GCC` (gcc path) and `VLLM_X64_OUTDIR` (output directory) replace
+the corresponding command-line arguments.
 
-> 平台约束与说明：引擎本质是 **ARM（aarch64，ARMv8.2-A + dotprod/fp16）CPU 推理引擎**，
-> **RK3588（4×A76 + 4×A55）是开发与基准测试平台**，并非唯一可运行设备。同类 aarch64
-> Linux 设备可尝试编译运行，但设备画像（如 A76 集群线程绑定、核心数）与性能档按 RK3588
-> 验证——**换板运行请先跑 `--test-l3` / `--bench-mixed` 自检**并以自检结果为准。运行建议
-> `export OMP_NUM_THREADS=8`（RK3588：4×A76 + 4×A55）。非 aarch64 / 非 x86-64 架构会在
-> `vllm_platform.h` 编译期报错退出。
+> Platform constraints: the engine is fundamentally an **ARM (aarch64, ARMv8.2-A +
+> dotprod/fp16) CPU inference engine**, and **RK3588 (4×A76 + 4×A55) is the development and
+> benchmarking platform**, not the only supported device. Comparable aarch64 Linux devices can
+> be built and tried, but the device profile (e.g. A76 cluster thread affinity, core count) and
+> performance tiers are validated on RK3588 — **on a different board, run `--test-l3` /
+> `--bench-mixed` first and trust the self-test results**. Threads are recommended as
+> `export OMP_NUM_THREADS=8` (RK3588: 4×A76 + 4×A55). Non-aarch64 / non-x86-64 architectures
+> fail at compile time in `vllm_platform.h`.
 
-### 2) 权重就位
+### 2) Weights in place
 
-引擎**只加载 VQF v2 单文件**（见「模型转换工具」得到 `model.vqf`）。模型目录需含：
+The engine **only loads a VQF v2 single file** (`model.vqf`, produced by the "Conversion Tool"
+section). The model directory must contain:
 
 ```bash
-# config.json + model.vqf（单文件 VQF v2，mmap 直挂）
-# + 可选 vocab.bin（由 tools/build_vocab_bin.py 从 tokenizer.json 生成；
-#   缺失时引擎回落到内嵌 vocab，功能可用但体积/词表以模型自带为准）：
+# config.json + model.vqf (VQF v2 single file, mmap-mounted)
+# + optional vocab.bin (generated from tokenizer.json by tools/build_vocab_bin.py;
+#   if absent the engine falls back to the embedded vocab — functional, but size/vocab
+#   then follow the model's own):
 python tools/build_vocab_bin.py <tokenizer.json> <vocab.bin> <vocab.bin>
 ```
 
-### 3) 启动服务
+### 3) Start the service
 
 ```bash
-# 基础启动：OpenAI 兼容 HTTP 服务（默认端口 8080）
+# Basic start: OpenAI-compatible HTTP service (default port 8080)
 ./vllm_kestrel --serve --port 8080 --model <model-dir> --auto-load --wmode q4
 
-# 长上下文优化档（全部可选；prefix-kv 前缀复用默认开启）：
-# 注：8K 长上下文基准是 v0 测点（见附录 A），v1 未复测；下列开关为 v1 口径。
-# --l3-evict 需配合环境变量 VLLM_L3_PREFIX_REUSE=1，二者共存才有 P3 收益
-# （否则 L3 驱逐会静默打掉 prefix-kv，多轮追问将全量重算 prefill）。
+# Long-context optimization tier (all optional; prefix-kv prefix reuse is on by default):
+# Note: the 8K long-context benchmark is a v0 measurement (see Appendix A) and was not
+# re-measured on v1; the switches below are the v1 basis.
+# --l3-evict requires the environment variable VLLM_L3_PREFIX_REUSE=1; P3 gains only exist
+# when both are present (otherwise L3 eviction silently disables prefix-kv and every
+# follow-up turn recomputes the full prefill).
 VLLM_L3_PREFIX_REUSE=1 ./vllm_kestrel --serve --port 8080 --model <model-dir> --auto-load \
     --wmode q4 --sparse-attn --sparse-k 32 --spec --spec-k 4 \
     --l3-evict --l3-ratio 0.75 --l3-min-seq 128 \
     --disk-kv <kv-dir> --threads 8
 
-# 大模型省内存档：逐层驻留（只支持明文 VQF）
+# Large-model memory-saving tier: per-layer residency (plaintext VQF only)
 VLLM_VQF_STREAM=1 ./vllm_kestrel --serve --port 8080 --model <model-dir> --auto-load --wmode q4
 ```
 
-### 4) 验证就绪
+### 4) Verify readiness
 
 ```bash
-# 健康检查 / 模型列表
+# Health check / model list
 curl http://<board>:8080/health
 curl http://<board>:8080/v1/models
 
-# 对话（OpenAI 兼容）
+# Chat completion (OpenAI-compatible)
 curl http://<board>:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model":"qwen3-vl","messages":[{"role":"user","content":"你好"}],"max_tokens":64}'
+  -d '{"model":"qwen3-vl","messages":[{"role":"user","content":"hello"}],"max_tokens":64}'
 ```
 
-- 管理页 / 对话页：`http://<board>:8080/admin/` 、`http://<board>:8080/chat/`
-  （管理页含「有效优化组合（实测台账）」：8 个组合可一键套用，并标注每项优化
-  针对 RAM / x86 是否有效；保存配置后需重启引擎生效）
-- 换板或换版本首次运行：先跑内置自检（`--test-l3` / `--test-sparse` / `--bench-mixed`）
-  并以自检结果为准。
-- 可选 NPU 加速：默认后端为**零第三方依赖直驱**（自研写 stock rknpu 内核驱动）。
-  首次使用先跑板端校准：`./vllm_kestrel --npu --npu-selftest --perf-only`
-  （寄存器命令表未校准通过前提交路径保持禁用，自动回退 CPU）。
+- Admin console / chat page: `http://<board>:8080/admin/` and `http://<board>:8080/chat/`
+  (the admin console includes the "Effective optimization combos" ledger: 8 combos that can be
+  applied in one click, each annotated with whether it helps for RAM / x86; restart the engine
+  after saving a configuration)
+- First run on a new board or a new version: run the built-in self-tests (`--test-l3` /
+  `--test-sparse` / `--bench-mixed`) first and trust their results.
+- Optional NPU acceleration: the default backend is **a zero-third-party direct driver**
+  (our own code against the stock rknpu kernel driver). Calibrate on the board first:
+  `./vllm_kestrel --npu --npu-selftest --perf-only` (until the register command table is
+  calibrated the submission path stays disabled and falls back to CPU automatically).
 
 ---
 
-## 模型转换工具（vqf_convert/）
+## Conversion Tool (vqf_convert/)
 
-**v1 起引擎只加载 VQF v2（只认自研格式）**，不再内置 safetensors/GGUF 加载与引擎内转换
-路径（v0 曾支持，见「v0 / v1 能力对照」）；转换职责由随版发布的独立工具 **`vqf_convert/`**
-承担（safetensors / GGUF → 单文件 mmap 的 VQF）。
+**Since v1 the engine loads VQF v2 only (the in-house format)**, with no in-engine
+safetensors/GGUF loading or conversion (v0 supported them — see the v0/v1 table above);
+conversion is handled by the shipped standalone tool **`vqf_convert/`**
+(safetensors / GGUF → a single mmap-able VQF file).
 
 ```bash
-# 构建转换工具（主机/板端均可；Windows 用 build.bat）
+# Build the converter (host or board; use build.bat on Windows)
 cd vqf_convert && ./build.sh
-# 转换（明文）
+# Convert (plaintext)
 ./vqf_conv --model <safetensors-dir> --convert-vqf <out.vqf> --wmode q4
-# 加密（VQF-Enc：SM4-CTR + HMAC-SM3）
+# Encrypt (VQF-Enc: SM4-CTR + HMAC-SM3)
 VLLM_VQF_KEY='<pass>' ./vqf_conv --model <safetensors-dir> --convert-vqf <out.vqf> --wmode q4
-# 内嵌 SM2 供应链签名（可与加密叠加）
+# Embed an SM2 supply-chain signature (can be combined with encryption)
 VLLM_VQF_SIGN_PRIV='<64hex>' ./vqf_conv --model <safetensors-dir> --convert-vqf <out.vqf> --wmode q4
 ```
 
 ---
 
-## 权重保护
+## Weight Protection
 
-**产出侧**（由 `vqf_convert/` 完成，二者可叠加）：
+**Producer side** (done by `vqf_convert/`; the two can be combined):
 
-| 防线 | 开关（产出侧） | 机制 |
+| Defense | Switch (producer side) | Mechanism |
 |---|---|---|
-| 存储态加密 | `VLLM_VQF_KEY` | VQF-Enc：SM4-CTR + HMAC-SM3 |
-| 供应链签名 | `VLLM_VQF_SIGN_PRIV`（64 hex） | 内嵌 SM2 签名，绑定权重来源 |
+| At-rest encryption | `VLLM_VQF_KEY` | VQF-Enc: SM4-CTR + HMAC-SM3 |
+| Supply-chain signature | `VLLM_VQF_SIGN_PRIV` (64 hex) | Embedded SM2 signature binding the weight's origin |
 
-**加载侧**：置 `VLLM_VQF_KEY` 解密、置 `VLLM_VQF_SIGN_PUB` 验签；错误口令 / 篡改数据字节
-均被拒绝（加载日志可见 `decrypted (SM4-CTR, HMAC-SM3 ok)` + `SM2 verify ok`）。
+**Loader side**: set `VLLM_VQF_KEY` to decrypt and `VLLM_VQF_SIGN_PUB` to verify; a wrong
+passphrase or tampered data bytes are rejected (the load log shows
+`decrypted (SM4-CTR, HMAC-SM3 ok)` + `SM2 verify ok`).
 
-> 边界：加密 / 签名文件需**全层驻留**（`VLLM_VQF_STREAM` 会对加密 VQF 显式拒绝）。
-> 全量路径与 `--stream` 路径均支持加密 / 签名；明文下二者产物**逐字节一致**（已 sha256 对拍）。
-> 可验证推理的密钥目录须放在**支持 POSIX 权限的文件系统**（ext4/f2fs 等）上——vfat/exfat
-> 上 `chmod` 不生效，私钥会变为世界可读，启动日志会打印 `[ATTEST] WARN`。
-
----
-
-## 推理验证（attestation）
-
-置 `VLLM_ATTEST=1`（可选 `VLLM_ATTEST_DIR=<密钥目录>`）即开启**逐响应出证**：
-
-- 引擎启动时生成 / 加载 SM2 密钥对，`GET /v1/attest` 下发设备公钥（`pub`，128 hex）；
-- 每个响应携带 `attest` 凭证：schema=3，magic `VLLM-AT-3`，**含请求原文绑定**
-  （`body_sha = SM3(客户端原始请求体)`）——只改 `top_k` / `thinking` 也必须改摘要；
-- 验签两条路径：**浏览器内自验**（对话页 / 管理页内建 SM3 + SM2 验签，零依赖）与
-  **离线复验**（`tools/verify_attest.py`，纯 Python 零依赖，退出码 0=PASS / 1=FAIL，
-  含 `--selftest`）。
-
-> 边界：凭证证明「该设备产出且内容未被篡改」，其可信度依赖设备私钥的保管
-> （私钥保护边界见上文「权重保护」）。方案全文见
-> [docs/权重保护与可验证推理方案.md](docs/权重保护与可验证推理方案.md)。
+> Limits: encrypted / signed files must stay **fully resident** (`VLLM_VQF_STREAM` explicitly
+> rejects encrypted VQF). Both the full path and the `--stream` path support encryption /
+> signing; in plaintext the two paths produce **byte-identical** output (verified by sha256).
+> The verifiable-inference key directory must live on a **file system with POSIX permission
+> semantics** (ext4/f2fs, etc.) — on vfat/exfat `chmod` has no effect, the private key becomes
+> world-readable, and the startup log prints `[ATTEST] WARN`.
 
 ---
 
-## 模型与复现
+## Inference Attestation
 
-> **模型支持范围（诚实声明）**：本引擎针对并实测验证的是**两类 Qwen3 架构**：
->
-> - **Qwen3-VL 系列（2B / 8B）**——纯文本与图片/视频多模态；tokenizer、mrope、
->   DeepStack 视觉塔等均为该架构特化实现。
-> - **Qwen3-MoE 系列（如 Qwen3-30B-A3B，文本）**——路由 + 逐专家 FFN 已接入
->   （`--moe-batch` / `VLLM_ACTQ` 等加速，见管理页「MoE 模型服务」组合）。
->
-> **其他架构（Llama、旧版 Qwen / Qwen2 纯文本等）未经适配与验证**：转换可能报错或
-> 输出不可用，请勿据此推定为通用推理引擎。
->
-> **文中性能数据的模型与测点**：v1.0（2026-09-12）为 Qwen3-VL-2B / Qwen3-VL-8B /
-> Qwen3-30B-A3B（均 RK3588 板端，逐层 vs 全层 × 组合⑧/①/①+⑤）；v0（2026-09-05，
-> 见附录 A）为 Qwen3-VL-2B 板端与 Qwen3-VL-8B x86 基准机，**不得用于 v1 结论**。
+Set `VLLM_ATTEST=1` (optionally `VLLM_ATTEST_DIR=<key dir>`) to enable **per-response
+attestation**:
 
-- 模型权重不随仓库分发。Qwen 系列权重遵循其原始开源许可（Qwen 社区许可），
-  下载后可用 `vqf_convert/` 转换为 VQF 后加载（见上文「模型转换工具」）。
-- 基准数据复现方法、语料与驱动位置见
-  [docs/RK3588_性能基准报告.md](docs/RK3588_性能基准报告.md) 附录（**v0 测点**）；
-  v1 测点的复现口径见上文「性能」一节。
-- **v1 一键复现**：`sh tools/bench_value.sh`——产出逐层 vs 全层 A/B 内存、热态 5 次采样
-  稳定度与页缓存证据（参数可用环境变量覆盖，见脚本头部注释；依赖仅 Python 3 标准库）。
+- On startup the engine generates / loads an SM2 key pair, and `GET /v1/attest` publishes the
+  device public key (`pub`, 128 hex);
+- Every response carries an `attest` proof: schema=3, magic `VLLM-AT-3`, **bound to the raw
+  request body** (`body_sha = SM3(client's original request body)`) — changing only `top_k` /
+  `thinking` also changes the digest;
+- Two verification paths: **in-browser self-verification** (the chat and admin pages embed
+  SM3 + SM2 verification with zero dependencies) and **offline re-verification**
+  (`tools/verify_attest.py`, pure Python with zero dependencies, exit code 0=PASS / 1=FAIL,
+  including a `--selftest`).
+
+> Limits: a proof shows that "this device produced it and the content was not tampered with",
+> and its trustworthiness rests on how well the device private key is protected (see "Weight
+> Protection" above). Full specification:
+> [docs/权重保护与可验证推理方案.md](docs/权重保护与可验证推理方案.md).
 
 ---
 
-## 体量与依赖（小而全）
+## Models and Reproduction
 
-| 项 | 数值 / 口径 |
+> **Model support (honest disclosure)**: this engine is built and validated for **two Qwen3
+> architecture families**:
+>
+> - **Qwen3-VL series (2B / 8B)** — text plus image/video multimodal; the tokenizer, mrope and
+>   the DeepStack vision tower are specialized implementations for this architecture.
+> - **Qwen3-MoE series (e.g. Qwen3-30B-A3B, text)** — routing and per-expert FFN are
+>   integrated (accelerations such as `--moe-batch` / `VLLM_ACTQ`; see the "MoE model serving"
+>   combo in the admin console).
+>
+> **Other architectures (Llama, older Qwen / Qwen2 text models, etc.) are neither adapted nor
+> validated**: conversion may fail or produce unusable output — do not treat this as a
+> general-purpose inference engine.
+>
+> **Models and measurement points behind the figures**: v1.0 (2026-09-12) covers
+> Qwen3-VL-2B / Qwen3-VL-8B / Qwen3-30B-A3B (all on RK3588, per-layer vs full residency ×
+> combos ⑧/①/①+⑤); v0 (2026-09-05, see Appendix A) covers Qwen3-VL-2B on the board and
+> Qwen3-VL-8B on an x86 baseline machine and **must not be used for v1 conclusions**.
+
+- Model weights are not distributed with this repository. Qwen weights follow their original
+  open licences (Qwen community licence); after downloading, convert them to VQF with
+  `vqf_convert/` and load them (see "Conversion Tool" above).
+- Reproduction methods, corpora and driver locations for the benchmark data are in the appendix
+  of [docs/RK3588_性能基准报告.md](docs/RK3588_性能基准报告.md) (**v0 measurements**); the
+  reproduction basis for v1 measurements is under "Performance" above.
+- **One-command v1 reproduction**: `sh tools/bench_value.sh` — produces the per-layer vs full
+  A/B memory comparison, the warm-state 5-sample stability and the page-cache evidence
+  (parameters are overridable via environment variables, see the script header; its only
+  dependency is the Python 3 standard library).
+
+---
+
+## Size and Dependencies (small but complete)
+
+| Item | Value / basis |
 |---|---|
-| 可执行文件 | `vllm_kestrel` ≈ **0.8 MB**（RK3588 Release, `-O2 -s`，板端实测 818,872 B，v0 测点）；`-DVLLM_STATIC=ON` 全静态 ≈ 1.5 MB，`ldd` 零 .so 依赖 |
-| 源码 | **28 个 C 文件**（main + core 11 + common 2 + serve 6 + model 6 + npu 2），C11，单工程单产物 |
-| 运行时依赖 | **无第三方运行时**——标准构建仅需 gcc + libm（`-fopenmp` 仅 NPU pack 并行区使用 libgomp，系 gcc 自带；全静态构建一并内联，零 .so） |
-| 代码内第三方 | 仅 `stb_image.h`（MIT, Sean Barrett）与 llama.cpp 派生 4x4 asm 内核（MIT, The ggml authors），见 [LICENSE](LICENSE) 第三节 |
-| 自研件 | NEON 量化 GEMM/GEMV、线程池 `vllm_tp`（替代 OpenMP）、国密 SM3/SM4/SM2、VQF v2 mmap 格式、NPU 直驱 `/dev/rknpu` |
-| 部署 | 单文件 + 可选 `vocab.bin`，拷贝即运行；VQF mmap 冷启动 **2.0 s**（v0 测点） |
+| Executable | `vllm_kestrel` ≈ **0.8 MB** (RK3588 Release, `-O2 -s`, board-measured 818,872 B, v0 measurement); `-DVLLM_STATIC=ON` fully static ≈ 1.5 MB, `ldd` reports zero .so dependencies |
+| Source | **28 C files** (main + core 11 + common 2 + serve 6 + model 6 + npu 2), C11, one project one artifact |
+| Runtime dependencies | **None** — a standard build needs only gcc + libm (`-fopenmp` is used only for the NPU pack parallel region via libgomp, which ships with gcc; fully static builds inline it too, zero .so) |
+| Third-party code inside | Only `stb_image.h` (MIT, Sean Barrett) and the llama.cpp-derived 4x4 asm kernel (MIT, The ggml authors); see [LICENSE](LICENSE) section 3 |
+| In-house components | NEON quantized GEMM/GEMV, thread pool `vllm_tp` (replacing OpenMP), SM2/SM3/SM4, the VQF v2 mmap format, the NPU direct driver `/dev/rknpu` |
+| Deployment | Single binary + optional `vocab.bin`, copy and run; VQF mmap cold start **2.0 s** (v0 measurement) |
 
-同机对照（**v0 测点**，v1 未复测）：冷启动 2.0 s vs llama.cpp 5.0 s、峰值 RSS 2.47 GB vs 3.03 GB、
-长上下文 decode 与 KV 恢复优势，原始数据与口径见文末附录 A 与
-[docs/RK3588_性能基准报告.md](docs/RK3588_性能基准报告.md)。
-> 诚实边界：二进制体积仅列本引擎自身（llama.cpp 动态/静态构建口径不同，未做同口径对比，
-> 不作跨框架体积比较）。
+Side-by-side comparison (**v0 measurements**, not re-measured on v1): cold start 2.0 s vs
+llama.cpp 5.0 s, peak RSS 2.47 GB vs 3.03 GB, plus long-context decode and KV restore
+advantages; raw data and definitions are in Appendix A and
+[docs/RK3588_性能基准报告.md](docs/RK3588_性能基准报告.md).
+> Honest boundary: the binary size covers this engine alone (llama.cpp dynamic/static build
+> bases differ and were not compared on equal footing), so no cross-framework size comparison
+> is claimed.
 
-### 零第三方依赖（自证清单）
+### Zero third-party dependencies (self-proof checklist)
 
-「零第三方依赖」不是说"没写什么"，而是说**下面这些常见组件栈都没有引入**：
+"Zero third-party dependencies" is not about what was *not written*, but about the fact that
+**none of the following common stacks are pulled in**:
 
-| 常见依赖项 | 本项目实际情况 |
+| Common dependency | Actual situation in this project |
 |---|---|
-| 推理框架运行时（Python / PyTorch / vLLM 栈） | 无——单一 C11 可执行文件即完整 HTTP 服务 |
-| GPU 计算栈（CUDA / ROCm） | 无——纯 CPU + NEON 量化内核；NPU 仅走系统内核公共 UAPI 直驱 |
-| 第三方推理/矩阵库（ggml、OpenBLAS、oneDNN…） | 无——GEMM/GEMV 手写（llama.cpp 派生 4x4 asm 为 MIT 提取件，文件头署名，见 LICENSE 第三节） |
-| 密码学库（OpenSSL / GmSSL / MbedTLS…） | 无——SM3 / SM4-CTR / HMAC-SM3 / SM2 全自研并经国密标准 KAT 验证 |
-| 图像/视频解码库（OpenCV / FFmpeg…） | 无——图片解码用单头 `stb_image.h`（MIT）；H.264 模块独立且默认不启用 |
-| Web/HTTP 框架与 JSON 库 | 无——自研 select 轮询 HTTP + SSE、自研最小 JSON 解析 |
-| OpenMP 运行时 | 引擎核心并行用自研线程池 `vllm_tp`；`-fopenmp` 仅 NPU direct 后端 pack 并行（libgomp 为 gcc 自带） |
+| Inference-framework runtime (Python / PyTorch / vLLM stack) | None — a single C11 executable is the complete HTTP service |
+| GPU compute stack (CUDA / ROCm) | None — pure CPU with NEON quantized kernels; the NPU is driven directly through the OS kernel's public UAPI |
+| Third-party inference/matrix libraries (ggml, OpenBLAS, oneDNN…) | None — GEMM/GEMV are hand-written (the llama.cpp-derived 4x4 asm is an MIT extract, credited in its file header; see LICENSE section 3) |
+| Cryptography libraries (OpenSSL / GmSSL / MbedTLS…) | None — SM3 / SM4-CTR / HMAC-SM3 / SM2 are all in-house and validated against the national-standard KAT vectors |
+| Image/video decoding libraries (OpenCV / FFmpeg…) | None — image decoding uses the single header `stb_image.h` (MIT); the H.264 module is separate and disabled by default |
+| Web/HTTP framework and JSON library | None — an in-house select-based HTTP + SSE loop and a minimal JSON parser |
+| OpenMP runtime | Core parallelism uses the in-house thread pool `vllm_tp`; `-fopenmp` is only for the NPU direct backend's pack parallelism (libgomp ships with gcc) |
 
-依赖上限一句话：**动态构建只碰系统工具链标准件（glibc / libgomp）；全静态构建（`-DVLLM_STATIC=ON`）产物 `ldd` 报 not a dynamic executable，可拷到任意 aarch64 Linux 直接运行**——没有任何第三方项目运行时随引擎分发。
+The dependency ceiling in one sentence: **a dynamic build touches only standard toolchain
+components (glibc / libgomp); a fully static build (`-DVLLM_STATIC=ON`) reports "not a dynamic
+executable" from `ldd` and can be copied to any aarch64 Linux and run directly** — no
+third-party project runtime is ever shipped with the engine.
 
 ---
 
-## 目录结构
+## Repository Layout
 
 ```
-├── CMakeLists.txt             # 构建（Release / 静态 / NPU 直驱默认）
-├── build_rk3588.sh            # RK3588 构建 + 自检入口
-├── cmake/toolchain-aarch64-rk3588.cmake   # x86 主机交叉编译工具链
-├── include/  src/             # C11 源码（common/core/media/model/npu/serve）
-│   ├── core/                  # 推理内核（NTT/FHE/CKKS/tp/matmul/attention/l3…）
-│   ├── model/                 # 权重加载（纯 VQF v2 mmap）、视觉、分词
-│   ├── serve/                 # HTTP/管理页/批处理/可验证推理(attest)
-│   └── media/                 # H.264/MP4 解码（独立模块，默认构建不启用）
-├── tools/                     # 自研工具
-│   ├── gen_embedded_web.py    # HTML → 内嵌字节数组生成器（改页面后须重跑）
-│   ├── build_vocab_bin.py     # tokenizer.json → vocab.bin（字节解码修复版）
-│   ├── extract_llama_asm.py   # 从 llama.cpp 提取 4x4 asm GEMM（MIT，见文件头）
-│   ├── verify_attest.py       # 可验证推理凭证离线验签（零依赖）
-│   ├── vllm_vqf_sign.c        # VQF SM2 供应链签名 / 密钥管理工具
-│   ├── vllm_mgr.py            # 引擎进程守护（start/stop/restart/状态页）
-│   ├── build_x64.ps1          # x86_64(MinGW) 原生构建脚本（非基准，仅一致性自检）
-│   ├── check_x64.ps1          # x86 构建 + 自检一条命令（退出码 0/1）
-│   ├── bench_value.sh         # 逐层价值实测：A/B 内存 + 热态稳定度 + 页缓存证据（见性能 §4）
-│   └── bench_http_probe.py    # 零依赖 HTTP 流式延迟探针（TTFT/tpot/峰值 VmHWM），供上者调用
-├── vqf_convert/               # 独立权重转换工具（safetensors/GGUF → VQF v2）
-└── docs/                      # 技术文档 / 基准报告 / 安全方案（中文）
+├── CMakeLists.txt             # build (Release / static / NPU direct by default)
+├── build_rk3588.sh            # RK3588 build + self-test entry point
+├── cmake/toolchain-aarch64-rk3588.cmake   # x86-host cross-compilation toolchain
+├── include/  src/             # C11 sources (common/core/media/model/npu/serve)
+│   ├── core/                  # inference kernels (NTT/FHE/CKKS/tp/matmul/attention/l3…)
+│   ├── model/                 # weight loading (pure VQF v2 mmap), vision, tokenizer
+│   ├── serve/                 # HTTP / admin console / batching / attestation
+│   └── media/                 # H.264/MP4 decoding (separate module, off by default)
+├── tools/                     # in-house tooling
+│   ├── gen_embedded_web.py    # HTML → embedded byte-array generator (re-run after page edits)
+│   ├── build_vocab_bin.py     # tokenizer.json → vocab.bin (byte-decoding fixed)
+│   ├── extract_llama_asm.py   # extract the 4x4 asm GEMM from llama.cpp (MIT, see header)
+│   ├── verify_attest.py       # offline attestation verification (zero dependencies)
+│   ├── vllm_vqf_sign.c        # VQF SM2 supply-chain signing / key management tool
+│   ├── vllm_mgr.py            # engine process supervisor (start/stop/restart/status page)
+│   ├── build_x64.ps1          # x86_64 (MinGW) native build script (not a baseline, consistency only)
+│   ├── check_x64.ps1          # x86 build + self-test in one command (exit code 0/1)
+│   ├── bench_value.sh         # per-layer value bench: A/B memory + warm stability + page-cache evidence (see Performance §4)
+│   └── bench_http_probe.py    # zero-dependency streaming HTTP latency probe (TTFT/tpot/peak VmHWM), called by the above
+├── vqf_convert/               # standalone conversion tool (safetensors/GGUF → VQF v2)
+└── docs/                      # technical docs / benchmark reports / security specs (Chinese)
 ```
 
 ---
 
-## 文档（docs/，中文）
+## Documentation (docs/, Chinese)
 
-| 文档 | 内容 |
+| Document | Contents |
 |---|---|
-| [docs/技术文档.md](docs/技术文档.md) | 架构、模块、权重格式 VQF、内核、服务层、多模态、上下文管理、位级确定性、NPU、性能、调试、版本演进 |
-| [docs/RK3588_性能基准报告.md](docs/RK3588_性能基准报告.md) | vllm_kestrel vs llama.cpp 冷启动 / 长上下文 / KV 恢复全矩阵（**v0 测点，对应附录 A，不适用于 v1**） |
-| [docs/优化配置与边界说明.md](docs/优化配置与边界说明.md) | 各优化档机制、收益与诚实边界（含有效组合与 x86 复核口径；**部分数字为 v0/热缓存口径**） |
-| [docs/KV缓存v2-惰性分配与分层驻留方案.md](docs/KV缓存v2-惰性分配与分层驻留方案.md) | KV 惰性分配、L3 分层驻留与 P3 前缀复用共存（L3 驱逐 + 前缀复用） |
-| [docs/权重保护与可验证推理方案.md](docs/权重保护与可验证推理方案.md) | 三道安全防线：VQF 存储态加密、SM2 供应链签名、推理出证（attestation schema=3，含请求原文绑定），含相互关系、端到端用法与统一安全边界 |
-
-> 不想逐篇翻文档？直接看 **[项目 Wiki](https://gitee.com/pei-xiaoguang/kestrel-llm/wikis/Home)**——
-> 按「上手 → 原理 → 数据与调优 → 安全」组织的导航页，并统一了**术语与数据口径**
-> （版本分区、冷/热页缓存、纯权重 RSS vs serve 峰值）。Wiki 为中文，由上述 `docs/` 提炼，
-> 细节以原文为准；同一套内容也随仓库分发在 [`wiki/`](wiki/Home.md)（克隆后离线可读）。
+| [docs/技术文档.md](docs/技术文档.md) | Architecture, modules, the VQF weight format, kernels, serving layer, multimodal, context management, bit-exact determinism, NPU, performance, debugging, version history |
+| [docs/RK3588_性能基准报告.md](docs/RK3588_性能基准报告.md) | Full vllm_kestrel vs llama.cpp matrix for cold start / long context / KV restore (**v0 measurements, see Appendix A, not applicable to v1**) |
+| [docs/优化配置与边界说明.md](docs/优化配置与边界说明.md) | Mechanisms, gains and honest boundaries of each optimization tier (including effective combos and the x86 cross-check basis; **some figures are v0 / warm-cache**) |
+| [docs/KV缓存v2-惰性分配与分层驻留方案.md](docs/KV缓存v2-惰性分配与分层驻留方案.md) | KV lazy allocation, L3 tiered residency and coexistence with P3 prefix reuse (L3 eviction + prefix reuse) |
+| [docs/权重保护与可验证推理方案.md](docs/权重保护与可验证推理方案.md) | Three lines of defense: VQF at-rest encryption, SM2 supply-chain signature, inference attestation (schema 3, bound to the raw request body) — relationships, end-to-end usage and the unified security boundary |
 
 ---
 
-## v1.0 变更摘要（相对 v0）
+## v1.0 Change Summary (vs v0)
 
-**工程与形态**
+**Engineering and shape**
 
-- **纯 VQF 运行时**：引擎只加载单文件 VQF v2（mmap 直挂），删除内置的 GGUF /
-  safetensors 加载与引擎内转换路径；转换职责移交随版发布的独立工具 **`vqf_convert/`**。
-- **源码瘦身**：随纯 VQF 运行时移除 `vllm_gguf.c/.h` 与 `convert.html` 等遗留件；
-  单产物仍约 0.8 MB；`CMakeLists.txt` 版本号提升至 `VERSION 1.0.0`。
-- **x86_64 分支随版**：`vllm_platform.h` 提供 x86-64（MinGW/MSVC）移植层；新增
-  `tools/build_x64.ps1` / `tools/check_x64.ps1`（已参数化，`VLLM_GCC` /
-  `VLLM_X64_OUTDIR` 可覆盖）。**x86 仅供功能自检与位级一致性对照，不作性能基准。**
+- **Pure-VQF runtime**: the engine loads only the VQF v2 single file (mmap-mounted); in-engine
+  GGUF / safetensors loading and conversion were removed and moved to the shipped standalone
+  tool **`vqf_convert/`**.
+- **Source slimming**: `vllm_gguf.c/.h`, `convert.html` and other leftovers were removed along
+  with the pure-VQF runtime; the single artifact is still about 0.8 MB; `CMakeLists.txt` was
+  bumped to `VERSION 1.0.0`.
+- **x86_64 branch shipped**: `vllm_platform.h` provides an x86-64 (MinGW/MSVC) portability
+  layer; `tools/build_x64.ps1` / `tools/check_x64.ps1` were added (parameterized, overridable
+  via `VLLM_GCC` / `VLLM_X64_OUTDIR`). **x86 is for functional self-test and bit-exactness
+  comparison only, never a performance baseline.**
 
-**性能与内存**
+**Performance and memory**
 
-- **逐层推理可交付化**（`VLLM_VQF_STREAM=1` 分层驻留 + KV v2 惰性分配）——权重常驻 RSS
-  实测省 **4.6× / 8.9× / 23.2×**（2B / 8B / 30B-A3B），使 17.66 GB 的 30B-A3B 能在
-  16 GB 板上服务；TOKIDS 与全层档**逐位一致**（语义不变）。口径与完整对照见
-  「性能」一节。
-- **P3：L3 驱逐 × 前缀复用共存**（`--l3-evict` + `VLLM_L3_PREFIX_REUSE=1`）——多轮
-  追问轮 prefill 实测 **−93%~−97%**（v0 时期口径，热缓存稳态）/ 2026-09-12 v1 同口径
-  成矩阵复测 **−80% ~ −96%**（2B/8B/30B-A3B × 全层/逐层，300 token 上文），为 v1.0
-  收益最大的单项优化；30B-A3B 再叠加 MoE 组合⑤后追问轮 prefill 降到 **3.2~5.3 s**
-  （相对基线 −99.3%）。
-- **L3 紧凑布局**：按驱逐顺序连续分配 `disk_off`（`wcursor`），文件 / RAM mirror
-  尺寸跟踪真实载荷而非全 KV 窗。
-- **P1/P2 内存分页**：mirror 跨轮复用 + `MADV_DONTNEED`；arena 化 + `imp_sum`
-  层内共享。
-- **管理页实测台账**：`/admin/` 新增「有效优化组合」表（8 组，可一键套用），并对
-  每项优化标注**针对 RAM / x86 是否有效**；补齐 P3 开关与 `--l3-evict` 未开 P3 门
-  时的联动告警。
+- **Per-layer residency made deliverable** (`VLLM_VQF_STREAM=1` tiered residency + KV v2 lazy
+  allocation) — measured resident weight RSS is **4.6× / 8.9× / 23.2×** smaller
+  (2B / 8B / 30B-A3B), letting a 17.66 GB 30B-A3B serve on a 16 GB board; TOKIDS stay
+  **bit-identical** to the full tier (semantics unchanged). Definitions and the full comparison
+  are under "Performance".
+- **P3: L3 eviction × prefix reuse coexisting** (`--l3-evict` + `VLLM_L3_PREFIX_REUSE=1`) —
+  follow-up-turn prefill measured at **−93%~−97%** (v0-era basis, warm-cache steady state) and
+  re-measured on 2026-09-12 on the same basis as a full matrix at **−80% ~ −96%**
+  (2B/8B/30B-A3B × full/per-layer, 300-token context), the single largest win in v1.0; adding
+  MoE combo ⑤ on the 30B-A3B brings follow-up prefill down to **3.2~5.3 s** (−99.3% vs baseline).
+- **Compact L3 layout**: `disk_off` (`wcursor`) is allocated contiguously in eviction order, and
+  file / RAM mirror sizes track the real payload rather than the whole KV window.
+- **P1/P2 memory paging**: mirror reuse across turns + `MADV_DONTNEED`; arenaization plus
+  `imp_sum` sharing within a layer.
+- **Admin-console ledger**: `/admin/` gained the "Effective optimization combos" table (8 combos,
+  one-click apply) with each optimization annotated as effective or not **for RAM / x86**; the
+  P3 switch and the interlock warning for `--l3-evict` without the P3 gate were completed.
 
-**安全与正确性**
+**Security and correctness**
 
-- **attestation schema 3**：新增**请求原文绑定**（`body_sha = SM3(客户端原始请求体)`），
-  只改 `top_k` / `thinking` 也必须改摘要。
-- **转换工具支持加密 / 签名产出**：`vqf_convert/` 设 `VLLM_VQF_KEY` 即输出 VQF-Enc 加密
-  文件（SM4-CTR + HMAC-SM3），设 `VLLM_VQF_SIGN_PRIV` 即内嵌 SM2 供应链签名，二者可叠加；
-  全量与 `--stream` 路径均可。引擎侧加载日志实测 `decrypted (SM4-CTR, HMAC-SM3 ok)` +
-  `SM2 verify ok`，错口令 / 篡改数据字节均被拒绝。
-- **VQF 离线补签口径修复**：离线签名工具先置 `VQF_FLAG_SIGNED` 再算摘要（与写侧
-  口径一致），修复补签后永远 digest mismatch 的问题。
-- **Debug 构建修复**：`CMAKE_C_FLAGS_DEBUG` 补 `-march`，避免 NEON dotprod 内联
-  在 Debug 档编译失败。
-- **注释编码修复**：修正历史遗留的若干源码注释乱码（`vqf_convert/src/conv_main.c`、
-  `src/serve/vllm_server.c`、`src/serve/vllm_batch.c`）。
+- **attestation schema 3**: adds **raw-request binding** (`body_sha = SM3(client's original
+  request body)`), so changing only `top_k` / `thinking` also changes the digest.
+- **Converter supports encrypted / signed output**: setting `VLLM_VQF_KEY` makes `vqf_convert/`
+  emit a VQF-Enc file (SM4-CTR + HMAC-SM3), and `VLLM_VQF_SIGN_PRIV` embeds an SM2 supply-chain
+  signature; the two can be combined. Both the full and `--stream` paths are supported. On the
+  engine side the load log shows `decrypted (SM4-CTR, HMAC-SM3 ok)` + `SM2 verify ok`, and both
+  a wrong passphrase and tampered data bytes are rejected.
+- **VQF offline re-sign fix**: the offline signing tool now sets `VQF_FLAG_SIGNED` before
+  computing the digest (matching the writer side), fixing the permanent digest mismatch after
+  re-signing.
+- **Debug build fix**: `CMAKE_C_FLAGS_DEBUG` now includes `-march`, so NEON dotprod inlining no
+  longer fails to compile in Debug builds.
+- **Comment encoding fix**: corrected mojibake in several historical source comments
+  (`vqf_convert/src/conv_main.c`, `src/serve/vllm_server.c`, `src/serve/vllm_batch.c`).
 
 ---
 
-## 附录 A：v0（历史版本）实测数据（2026-09-05，**不适用于 v1**）
+## Appendix A: v0 (Historical) Measurements (2026-09-05, **not applicable to v1**)
 
-> **警告：以下数据全部在 v0 上测得，v1 未复测，不得用于 v1 的任何结论。**
-> v1 已移除 GGUF / safetensors 加载与引擎内转换（改为只认自研 VQF v2 单文件），并引入
-> **逐层推理**与 **KV v2**，因此**冷启动、常驻内存、长上下文与多轮 prefill 的口径都已变化**。
-> 本附录只作版本演进对照与历史参考；v1 的性能主张一律以正文
-> 「性能」（2026-09-12 测点）为准。
+> **Warning: all data below was measured on v0 and not re-measured on v1; it must not be used
+> for any v1 conclusion.** v1 removed GGUF / safetensors loading and in-engine conversion
+> (it only accepts the in-house VQF v2 single file) and introduced **per-layer residency** and
+> **KV v2**, so **the definitions behind cold start, resident memory, long context and
+> multi-turn prefill have all changed**. This appendix is a version-history reference only;
+> v1 performance claims always follow "Performance" (2026-09-12 measurements) in the main body.
 
-平台：Orange Pi 5 Plus（RK3588，8 核，15GB RAM，eMMC，无 GPU/NPU 参与）。
-模型：Qwen3-VL-2B-Instruct（vllm_kestrel VQF q4 全优化档 vs llama.cpp GGUF Q4_0）。
-完整方法学、口径与原始数据见 [docs/RK3588_性能基准报告.md](docs/RK3588_性能基准报告.md)。
+Platform: Orange Pi 5 Plus (RK3588, 8 cores, 15 GB RAM, eMMC, no GPU/NPU involved).
+Model: Qwen3-VL-2B-Instruct (vllm_kestrel VQF q4 fully-optimized tier vs llama.cpp GGUF Q4_0).
+Full methodology, definitions and raw data:
+[docs/RK3588_性能基准报告.md](docs/RK3588_性能基准报告.md).
 
-### A.1 冷启动
-| 引擎 | spawn→HTTP ready | 峰值 RSS (VmHWM) |
+### A.1 Cold start
+| Engine | spawn→HTTP ready | Peak RSS (VmHWM) |
 |---|---|---|
-| vllm_kestrel（VQF mmap） | **2.01 s** | ~2465 MB |
+| vllm_kestrel (VQF mmap) | **2.01 s** | ~2465 MB |
 | llama.cpp (GGUF mmap) | 5.02 s | ~3027 MB |
 
-### A.2 长上下文（内容 token 1K/2K/4K/8K，生成 64 token）
-| 档 | vllm decode (TPOT) | llama decode (TPOT) | decode 比 |
+### A.2 Long context (content tokens 1K/2K/4K/8K, 64 tokens generated)
+| Tier | vllm decode (TPOT) | llama decode (TPOT) | decode ratio |
 |---|---|---|---|
 | 1K | 73.4 ms | 102 ms | vllm 1.4× |
 | 2K | 84.6 ms | 126 ms | vllm 1.5× |
 | 4K | 102 ms | 218 ms | vllm 2.1× |
 | **8K** | **136.7 ms** | **411.6 ms** | **vllm 3.0×** |
 
-- prefill：1K–4K llama 快 1.4–1.6×（ggml NEON Q4 更成熟），**8K 拉平**
-  （vllm 40.0 vs llama 38.3 tok/s）；vllm 预填吞吐 4K→8K 不降，llama 每档下降 20%+
-  （sparse-attn 的 O(n·k) 效果）。
-- decode 随上下文放大是架构级差异：llama f16-KV 每词全扫 8K、2K→8K 劣化 3.3×；
-  vllm q8-KV + 稀疏 decode 仅 1.6×。
+- prefill: llama is 1.4–1.6× faster from 1K–4K (ggml's NEON Q4 is more mature), **evening out
+  at 8K** (vllm 40.0 vs llama 38.3 tok/s); vllm's prefill throughput does not drop from 4K to
+  8K, while llama loses 20%+ per step (the O(n·k) effect of sparse attention).
+- decode scaling with context is an architectural difference: llama with f16-KV scans all 8K
+  per token and degrades 3.3× from 2K to 8K; vllm with q8-KV plus sparse decode degrades only
+  1.6×.
 
-### A.3 KV 缓存恢复（同进程前缀复用 vs 跨进程磁盘恢复）
-- 同进程第二轮（29 token 增量 prefill，8K 上下文）：**vllm 2.0s vs llama 6.63s（3.3×）**。
-- 跨进程磁盘 KV 恢复（`--disk-kv`，8K 会话 F32 快照 1.87GB，重启后 15.4s 恢复 vs
-  全量 prefill 202s）：**vllm 13.1×**；llama.cpp 无等价物（重启即失）。
+### A.3 KV cache restore (in-process prefix reuse vs cross-process disk restore)
+- Second in-process turn (29-token incremental prefill, 8K context): **vllm 2.0 s vs llama
+  6.63 s (3.3×)**.
+- Cross-process disk KV restore (`--disk-kv`, 8K session, 1.87 GB F32 snapshot, 15.4 s restore
+  after restart vs 202 s full prefill): **vllm 13.1×**; llama.cpp has no equivalent (state is
+  lost on restart).
 
-> 诚实口径：本报告为板内单引擎串行测量、权重同源（Qwen3-VL-2B safetensors）但量化
-> 格与算子不同（非位级同一权重），数值为各自引擎原始字段对齐后的并列展示。
-> 复现方法与数据文件见报告附录。
+> Honest basis: this report is a single-engine serial measurement on the board; the weights are
+> from the same source (Qwen3-VL-2B safetensors) but the quantization grids and operators differ
+> (not bit-identical weights), so the numbers are side-by-side presentations of each engine's
+> own fields. Reproduction methods and data files are in the report appendix.
 
 ---
 
-## 许可与合规
+## Licence and Compliance
 
-- **许可：双许可（AGPL-3.0-or-later 或 商业许可，二选一）**——本项目是**自由软件**：
-  你可以依 **GNU Affero 通用公共许可证 v3.0 或更新版本**（SPDX：`AGPL-3.0-or-later`）
-  自由使用、修改与分发；**若你不能或不愿承担 AGPL 的源码开放义务**
-  （例如在闭源产品中集成、以闭源方式提供商业服务 / SaaS），则**须先取得商业授权**。
-  完整条款见 [LICENSE](LICENSE)，贡献规则见 [CONTRIBUTING.md](CONTRIBUTING.md)。
-- **第三方组件**按各自许可保留：`stb_image.h`（MIT, Sean Barrett）与源自 llama.cpp
-  的 4x4 asm GEMM 提取文件及其派生内核（MIT, The ggml authors）——版权与许可
-  文本见对应文件头，详见 [LICENSE](LICENSE) 第三节。两者均与 AGPL 兼容。
-- **安全漏洞请私下报告**（不要开公开 Issue），流程与承诺见 [SECURITY.md](SECURITY.md)。
-- 本引擎的 NPU 直驱后端仅与操作系统内核驱动（stock rknpu）的公共 UAPI 交互，
-  不包含任何闭源库或第三方头文件。
+- **Licence: dual licensing (AGPL-3.0-or-later OR commercial, your choice)** — this project is
+  **free software**: you may use, modify and distribute it under the **GNU Affero General Public
+  License v3.0 or later** (SPDX: `AGPL-3.0-or-later`). **If you cannot or do not wish to carry the
+  AGPL source-disclosure obligation** (e.g. embedding in a closed-source product, or offering a
+  closed-source service / SaaS), you **must obtain a commercial licence** first. Full terms are in
+  [LICENSE](LICENSE); contribution rules are in [CONTRIBUTING.md](CONTRIBUTING.md).
+- Third-party components are retained under their own licences: `stb_image.h` (MIT, Sean
+  Barrett) and the 4x4 asm GEMM file extracted from llama.cpp plus its derived kernels (MIT,
+  The ggml authors) — copyright and licence text are in the respective file headers, detailed
+  in [LICENSE](LICENSE) section 3. Both are compatible with AGPL.
+- **Please report security vulnerabilities privately** (do not open a public issue); see
+  [SECURITY.md](SECURITY.md) for the process and our response commitments.
+- The NPU direct backend of this engine interacts only with the OS kernel driver's (stock
+  rknpu) public UAPI and contains no closed-source library or third-party header.
 
-## 联系
+## Contact
 
-商业授权 / 研究合作 / 复现数据：**398152090@qq.com**
-（也可通过 [Issues](https://gitee.com/pei-xiaoguang/kestrel-llm/issues) 或 Gitee 站内私信联系作者；
-商业许可协议与双许可条款见 [LICENSE](LICENSE)）
+Commercial licensing / research collaboration / reproduction data: **398152090@qq.com**
+(also via [Issues](https://gitee.com/pei-xiaoguang/kestrel-llm/issues) or Gitee direct message;
+see [LICENSE](LICENSE) for the commercial agreement and dual-licensing terms)
 
 For commercial licensing / research collaborations / data requests:
 **398152090@qq.com**, or open an issue at https://gitee.com/pei-xiaoguang/kestrel-llm/issues.

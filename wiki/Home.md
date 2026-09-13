@@ -87,7 +87,7 @@ v1 已移除引擎内置的 GGUF / safetensors 加载与引擎内转换、引入
 - [docs/优化配置与边界说明.md](../docs/优化配置与边界说明.md)
 - [docs/KV缓存v2-惰性分配与分层驻留方案.md](../docs/KV缓存v2-惰性分配与分层驻留方案.md)
 - [docs/权重保护与可验证推理方案.md](../docs/权重保护与可验证推理方案.md)
-- [README.md](../README.md) ｜ [README.en.md](../README.en.md)
+- [README.md](../README.md) ｜ [简体中文](../README.zh-CN.md)
 
 ---
 
