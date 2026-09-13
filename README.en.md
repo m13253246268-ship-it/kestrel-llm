@@ -585,7 +585,7 @@ attestation**:
 | Executable | `vllm_kestrel` ≈ **0.8 MB** (RK3588 Release, `-O2 -s`, board-measured 818,872 B, v0 measurement); `-DVLLM_STATIC=ON` fully static ≈ 1.5 MB, `ldd` reports zero .so dependencies |
 | Source | **28 C files** (main + core 11 + common 2 + serve 6 + model 6 + npu 2), C11, one project one artifact |
 | Runtime dependencies | **None** — a standard build needs only gcc + libm (`-fopenmp` is used only for the NPU pack parallel region via libgomp, which ships with gcc; fully static builds inline it too, zero .so) |
-| Third-party code inside | Only `stb_image.h` (MIT, Sean Barrett) and the llama.cpp-derived 4x4 asm kernel (MIT, The ggml authors); see [LICENSE](LICENSE) section 3 |
+| Third-party code inside | Only `stb_image.h` (MIT, Sean Barrett) and the llama.cpp-derived 4x4 asm kernel (MIT, The ggml authors); see [LICENSING.md](LICENSING.md) section 3 |
 | In-house components | NEON quantized GEMM/GEMV, thread pool `vllm_tp` (replacing OpenMP), SM2/SM3/SM4, the VQF v2 mmap format, the NPU direct driver `/dev/rknpu` |
 | Deployment | Single binary + optional `vocab.bin`, copy and run; VQF mmap cold start **2.0 s** (v0 measurement) |
 
@@ -606,7 +606,7 @@ advantages; raw data and definitions are in Appendix A and
 |---|---|
 | Inference-framework runtime (Python / PyTorch / vLLM stack) | None — a single C11 executable is the complete HTTP service |
 | GPU compute stack (CUDA / ROCm) | None — pure CPU with NEON quantized kernels; the NPU is driven directly through the OS kernel's public UAPI |
-| Third-party inference/matrix libraries (ggml, OpenBLAS, oneDNN…) | None — GEMM/GEMV are hand-written (the llama.cpp-derived 4x4 asm is an MIT extract, credited in its file header; see LICENSE section 3) |
+| Third-party inference/matrix libraries (ggml, OpenBLAS, oneDNN…) | None — GEMM/GEMV are hand-written (the llama.cpp-derived 4x4 asm is an MIT extract, credited in its file header; see LICENSING.md section 3) |
 | Cryptography libraries (OpenSSL / GmSSL / MbedTLS…) | None — SM3 / SM4-CTR / HMAC-SM3 / SM2 are all in-house and validated against the national-standard KAT vectors |
 | Image/video decoding libraries (OpenCV / FFmpeg…) | None — image decoding uses the single header `stb_image.h` (MIT); the H.264 module is separate and disabled by default |
 | Web/HTTP framework and JSON library | None — an in-house select-based HTTP + SSE loop and a minimal JSON parser |
@@ -769,11 +769,11 @@ Full methodology, definitions and raw data:
   License v3.0 or later** (SPDX: `AGPL-3.0-or-later`). **If you cannot or do not wish to carry the
   AGPL source-disclosure obligation** (e.g. embedding in a closed-source product, or offering a
   closed-source service / SaaS), you **must obtain a commercial licence** first. Full terms are in
-  [LICENSE](LICENSE); contribution rules are in [CONTRIBUTING.md](CONTRIBUTING.md).
+  [LICENSE](LICENSE) (AGPL-3.0 text); dual-licensing terms and commercial authorisation are in [LICENSING.md](LICENSING.md); contribution rules are in [CONTRIBUTING.md](CONTRIBUTING.md).
 - Third-party components are retained under their own licences: `stb_image.h` (MIT, Sean
   Barrett) and the 4x4 asm GEMM file extracted from llama.cpp plus its derived kernels (MIT,
   The ggml authors) — copyright and licence text are in the respective file headers, detailed
-  in [LICENSE](LICENSE) section 3. Both are compatible with AGPL.
+  in [LICENSING.md](LICENSING.md) section 3. Both are compatible with AGPL.
 - **Please report security vulnerabilities privately** (do not open a public issue); see
   [SECURITY.md](SECURITY.md) for the process and our response commitments.
 - The NPU direct backend of this engine interacts only with the OS kernel driver's (stock
@@ -783,7 +783,7 @@ Full methodology, definitions and raw data:
 
 Commercial licensing / research collaboration / reproduction data: **398152090@qq.com**
 (also via [Issues](https://gitee.com/pei-xiaoguang/kestrel-llm/issues) or Gitee direct message;
-see [LICENSE](LICENSE) for the commercial agreement and dual-licensing terms)
+see [LICENSING.md](LICENSING.md) for the commercial agreement and dual-licensing terms)
 
 For commercial licensing / research collaborations / data requests:
 **398152090@qq.com**, or open an issue at https://gitee.com/pei-xiaoguang/kestrel-llm/issues.
