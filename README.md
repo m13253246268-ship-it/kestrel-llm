@@ -664,12 +664,15 @@ VLLM_VQF_SIGN_PRIV='<64hex>' ./vqf_conv --model <safetensors-dir> --convert-vqf 
 
 ## 许可与合规
 
-- **许可：source-available 双许可（非 OSI 开源许可）**——学习 / 学术研究 / 论文复现
-  完全免费；任何商业使用与企业内部生产部署须先取得商业授权。
-  **请勿以 MIT/Apache 等标准开源协议理解本仓库**；完整条款见 [LICENSE](LICENSE)。
-- 第三方组件按各自许可保留：`stb_image.h`（MIT, Sean Barrett）与源自 llama.cpp
+- **许可：双许可（AGPL-3.0-or-later 或 商业许可，二选一）**——本项目是**自由软件**：
+  你可以依 **GNU Affero 通用公共许可证 v3.0 或更新版本**（SPDX：`AGPL-3.0-or-later`）
+  自由使用、修改与分发；**若你不能或不愿承担 AGPL 的源码开放义务**
+  （例如在闭源产品中集成、以闭源方式提供商业服务 / SaaS），则**须先取得商业授权**。
+  完整条款见 [LICENSE](LICENSE)，贡献规则见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+- **第三方组件**按各自许可保留：`stb_image.h`（MIT, Sean Barrett）与源自 llama.cpp
   的 4x4 asm GEMM 提取文件及其派生内核（MIT, The ggml authors）——版权与许可
-  文本见对应文件头，详见 [LICENSE](LICENSE) 第三节。
+  文本见对应文件头，详见 [LICENSE](LICENSE) 第三节。两者均与 AGPL 兼容。
+- **安全漏洞请私下报告**（不要开公开 Issue），流程与承诺见 [SECURITY.md](SECURITY.md)。
 - 本引擎的 NPU 直驱后端仅与操作系统内核驱动（stock rknpu）的公共 UAPI 交互，
   不包含任何闭源库或第三方头文件。
 

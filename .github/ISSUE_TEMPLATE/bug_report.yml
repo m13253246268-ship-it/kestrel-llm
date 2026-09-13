@@ -1,0 +1,161 @@
+name: Bug 报告 / Bug report
+description: 崩溃、结果错误、内存错误、位级不一致，或与文档口径不符
+title: "[模块] 一句话描述，例如：[l3] 8K 上下文下 --test-l3 失败"
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。本项目对**复现口径**要求较严（见 [CONTRIBUTING.md](../blob/master/CONTRIBUTING.md) 第二节）。
+
+        > **一份写清口径的报告，胜过十句"跑出来不对"。**
+        > 安全漏洞请**不要**发在这里，请改走 [SECURITY.md](../blob/master/SECURITY.md) 的私下流程。
+
+  - type: input
+    id: device
+    attributes:
+      label: 板型 / 设备画像
+      description: 例如 Orange Pi 5 Plus / RK3588 / 4×A76+4×A55
+      placeholder: Orange Pi 5 Plus / RK3588 / 4×A76+4×A55
+    validations:
+      required: true
+
+  - type: dropdown
+    id: arch
+    attributes:
+      label: 架构
+      description: x86-64 分支只作功能自检与位级一致性对照，**不作性能基准**
+      options:
+        - aarch64（主力目标）
+        - x86-64（仅功能自检）
+    validations:
+      required: true
+
+  - type: input
+    id: mem
+    attributes:
+      label: 内存（MemTotal）
+      description: 原始值 + 换算，例如 16,347,860 kB = 15.6 GiB
+      placeholder: 16,347,860 kB = 15.6 GiB
+    validations:
+      required: false
+
+  - type: input
+    id: storage
+    attributes:
+      label: 权重所在介质
+      description: eMMC / microSD / NVMe；附实测带宽更佳（同一模型换介质会显著改变 TTFT）
+      placeholder: microSD（SanDisk 62.7 MB/s）
+    validations:
+      required: false
+
+  - type: input
+    id: commit
+    attributes:
+      label: 源码 commit
+      description: 输出 `git rev-parse --short HEAD`
+      placeholder: 7238bcc
+    validations:
+      required: true
+
+  - type: input
+    id: sha256
+    attributes:
+      label: 引擎二进制 sha256
+      description: 输出 `sha256sum vllm_kestrel`（板端 ./vllm_kestrel 会随 build_rk3588.sh 同步）
+      placeholder: 4f9a...
+    validations:
+      required: false
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 完整命令，含模型目录与**全部**参数（含环境变量），不要只给片段
+      placeholder: |
+        ./build_rk3588.sh --run-tests
+        VLLM_VQF_STREAM=1 ./vllm_kestrel --model /mnt/VQF/... --threads 4 ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望 vs 实际
+      description: 实际请**贴日志原文**，不要转述
+      placeholder: |
+        期望：...
+        实际：
+        ```
+        （原始输出）
+        ```
+    validations:
+      required: true
+
+  - type: input
+    id: docref
+    attributes:
+      label: 对照的文档章节
+      description: 我按 docs/xxx 的第 y 节做了 z，结果与文档不符 —— 这一段能直接把问题分流成"文档 bug / 代码 bug / 操作偏差"
+      placeholder: docs/优化配置与边界说明.md 第 3 节
+    validations:
+      required: false
+
+  - type: markdown
+    attributes:
+      value: |
+        ---
+        ### 仅性能类问题才需要填下面四项
+        本项目的性能数字有**强制口径**（见 `wiki/术语与数据口径.md`）。
+        `--threads 4` 与 `--threads 8` 在 8B 全层 decode 上相差 **2.3×**；
+        冷/热页缓存、纯权重 RSS 与含 KV 的 serve 峰值、v0 与 v1.0 测点，
+        **都不能混比**——不写清这四项，差异来源无法判定。
+
+  - type: input
+    id: perf_threads
+    attributes:
+      label: 性能类 · 线程数
+      placeholder: "--threads 4"
+    validations:
+      required: false
+
+  - type: dropdown
+    id: perf_cache
+    attributes:
+      label: 性能类 · 页缓存状态
+      options:
+        - 未填
+        - 热缓存（未 drop）
+        - 冷页缓存（sync; echo 3 > /proc/sys/vm/drop_caches）
+    validations:
+      required: false
+
+  - type: dropdown
+    id: perf_mem
+    attributes:
+      label: 性能类 · 内存口径
+      options:
+        - 未填
+        - 纯权重 RSS（--stream-test）
+        - 含 KV 的 serve 峰值（VmHWM，注意它是历史高水位）
+    validations:
+      required: false
+
+  - type: dropdown
+    id: perf_version
+    attributes:
+      label: 性能类 · 版本测点
+      options:
+        - 未填
+        - v1.0（2026-09-12 及以后）
+        - v0（2026-09-05 测点，两代口径不同，禁止混比）
+    validations:
+      required: false
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: 补充材料
+      description: 日志文件、`/proc/<pid>/smaps` 片段、复现脚本等
+    validations:
+      required: false

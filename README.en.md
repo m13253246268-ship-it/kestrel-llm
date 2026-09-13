@@ -764,15 +764,18 @@ Full methodology, definitions and raw data:
 
 ## Licence and Compliance
 
-- **Licence: source-available dual licensing (not an OSI open-source licence)** — learning /
-  academic research / paper reproduction are entirely free; any commercial use or production
-  deployment inside a company requires a commercial licence first. **Do not read this
-  repository as MIT/Apache or any other standard open-source licence**; full terms are in
-  [LICENSE](LICENSE).
+- **Licence: dual licensing (AGPL-3.0-or-later OR commercial, your choice)** — this project is
+  **free software**: you may use, modify and distribute it under the **GNU Affero General Public
+  License v3.0 or later** (SPDX: `AGPL-3.0-or-later`). **If you cannot or do not wish to carry the
+  AGPL source-disclosure obligation** (e.g. embedding in a closed-source product, or offering a
+  closed-source service / SaaS), you **must obtain a commercial licence** first. Full terms are in
+  [LICENSE](LICENSE); contribution rules are in [CONTRIBUTING.md](CONTRIBUTING.md).
 - Third-party components are retained under their own licences: `stb_image.h` (MIT, Sean
   Barrett) and the 4x4 asm GEMM file extracted from llama.cpp plus its derived kernels (MIT,
   The ggml authors) — copyright and licence text are in the respective file headers, detailed
-  in [LICENSE](LICENSE) section 3.
+  in [LICENSE](LICENSE) section 3. Both are compatible with AGPL.
+- **Please report security vulnerabilities privately** (do not open a public issue); see
+  [SECURITY.md](SECURITY.md) for the process and our response commitments.
 - The NPU direct backend of this engine interacts only with the OS kernel driver's (stock
   rknpu) public UAPI and contains no closed-source library or third-party header.
 
