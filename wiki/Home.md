@@ -7,7 +7,7 @@
 2B/8B 纯文本与图片/视频多模态，OpenAI 兼容 HTTP API 即刻可用。
 
 > 仓库：[kestrel-llm (Gitee)](https://gitee.com/pei-xiaoguang/kestrel-llm)
-> 许可：源码可得双许可（学习与学术研究免费，商业与产品化部署需取得商业授权），详见 [LICENSE](../LICENSE)
+> 许可：源码可得双许可（学习与学术研究免费，商业与产品化部署需取得商业授权），详见 [LICENSING.md](../LICENSING.md)
 
 ---
 

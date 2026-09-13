@@ -498,7 +498,7 @@ VLLM_VQF_SIGN_PRIV='<64hex>' ./vqf_conv --model <safetensors-dir> --convert-vqf 
 | 可执行文件 | `vllm_kestrel` ≈ **0.8 MB**（RK3588 Release, `-O2 -s`，板端实测 818,872 B，v0 测点）；`-DVLLM_STATIC=ON` 全静态 ≈ 1.5 MB，`ldd` 零 .so 依赖 |
 | 源码 | **28 个 C 文件**（main + core 11 + common 2 + serve 6 + model 6 + npu 2），C11，单工程单产物 |
 | 运行时依赖 | **无第三方运行时**——标准构建仅需 gcc + libm（`-fopenmp` 仅 NPU pack 并行区使用 libgomp，系 gcc 自带；全静态构建一并内联，零 .so） |
-| 代码内第三方 | 仅 `stb_image.h`（MIT, Sean Barrett）与 llama.cpp 派生 4x4 asm 内核（MIT, The ggml authors），见 [LICENSE](LICENSE) 第三节 |
+| 代码内第三方 | 仅 `stb_image.h`（MIT, Sean Barrett）与 llama.cpp 派生 4x4 asm 内核（MIT, The ggml authors），见 [LICENSING.md](LICENSING.md) 第三节 |
 | 自研件 | NEON 量化 GEMM/GEMV、线程池 `vllm_tp`（替代 OpenMP）、国密 SM3/SM4/SM2、VQF v2 mmap 格式、NPU 直驱 `/dev/rknpu` |
 | 部署 | 单文件 + 可选 `vocab.bin`，拷贝即运行；VQF mmap 冷启动 **2.0 s**（v0 测点） |
 
@@ -516,7 +516,7 @@ VLLM_VQF_SIGN_PRIV='<64hex>' ./vqf_conv --model <safetensors-dir> --convert-vqf 
 |---|---|
 | 推理框架运行时（Python / PyTorch / vLLM 栈） | 无——单一 C11 可执行文件即完整 HTTP 服务 |
 | GPU 计算栈（CUDA / ROCm） | 无——纯 CPU + NEON 量化内核；NPU 仅走系统内核公共 UAPI 直驱 |
-| 第三方推理/矩阵库（ggml、OpenBLAS、oneDNN…） | 无——GEMM/GEMV 手写（llama.cpp 派生 4x4 asm 为 MIT 提取件，文件头署名，见 LICENSE 第三节） |
+| 第三方推理/矩阵库（ggml、OpenBLAS、oneDNN…） | 无——GEMM/GEMV 手写（llama.cpp 派生 4x4 asm 为 MIT 提取件，文件头署名，见 LICENSING.md 第三节） |
 | 密码学库（OpenSSL / GmSSL / MbedTLS…） | 无——SM3 / SM4-CTR / HMAC-SM3 / SM2 全自研并经国密标准 KAT 验证 |
 | 图像/视频解码库（OpenCV / FFmpeg…） | 无——图片解码用单头 `stb_image.h`（MIT）；H.264 模块独立且默认不启用 |
 | Web/HTTP 框架与 JSON 库 | 无——自研 select 轮询 HTTP + SSE、自研最小 JSON 解析 |
@@ -668,10 +668,10 @@ VLLM_VQF_SIGN_PRIV='<64hex>' ./vqf_conv --model <safetensors-dir> --convert-vqf 
   你可以依 **GNU Affero 通用公共许可证 v3.0 或更新版本**（SPDX：`AGPL-3.0-or-later`）
   自由使用、修改与分发；**若你不能或不愿承担 AGPL 的源码开放义务**
   （例如在闭源产品中集成、以闭源方式提供商业服务 / SaaS），则**须先取得商业授权**。
-  完整条款见 [LICENSE](LICENSE)，贡献规则见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+  完整条款见 [LICENSE](LICENSE)（AGPL-3.0 正文），双许可条款与商用授权见 [LICENSING.md](LICENSING.md)，贡献规则见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 - **第三方组件**按各自许可保留：`stb_image.h`（MIT, Sean Barrett）与源自 llama.cpp
   的 4x4 asm GEMM 提取文件及其派生内核（MIT, The ggml authors）——版权与许可
-  文本见对应文件头，详见 [LICENSE](LICENSE) 第三节。两者均与 AGPL 兼容。
+  文本见对应文件头，详见 [LICENSING.md](LICENSING.md) 第三节。两者均与 AGPL 兼容。
 - **安全漏洞请私下报告**（不要开公开 Issue），流程与承诺见 [SECURITY.md](SECURITY.md)。
 - 本引擎的 NPU 直驱后端仅与操作系统内核驱动（stock rknpu）的公共 UAPI 交互，
   不包含任何闭源库或第三方头文件。
@@ -680,7 +680,7 @@ VLLM_VQF_SIGN_PRIV='<64hex>' ./vqf_conv --model <safetensors-dir> --convert-vqf 
 
 商业授权 / 研究合作 / 复现数据：**398152090@qq.com**
 （也可通过 [Issues](https://gitee.com/pei-xiaoguang/kestrel-llm/issues) 或 Gitee 站内私信联系作者；
-商业许可协议与双许可条款见 [LICENSE](LICENSE)）
+商业许可协议与双许可条款见 [LICENSING.md](LICENSING.md)）
 
 For commercial licensing / research collaborations / data requests:
 **398152090@qq.com**, or open an issue at https://gitee.com/pei-xiaoguang/kestrel-llm/issues.
