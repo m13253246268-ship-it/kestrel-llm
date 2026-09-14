@@ -590,7 +590,7 @@ function parseSSE(ev, aiText, onRaw){
 }
 
 /* ============ 可验证推理（attest）浏览器内自验 ============
- * 与设备端（src/serve/vllm_attest.c）及离线脚本（tools/verify_attest.py）用同一套
+ * 与设备端（src/serve/vllm_attest.c）及离线脚本（tools/security/verify_attest.py）用同一套
  * 帧规范复算，零第三方依赖：
  *   body_sha = SM3(请求体原始字节)
  *   digest   = SM3( magic || F(model_fp) || F(model) || F(device) || F(user) ||
@@ -658,7 +658,7 @@ function sm3(bytes){
   return out;
 }
 
-/* ---------- SM2 验签 (GM/T 0003.2)，与 tools/verify_attest.py 同参数 ---------- */
+/* ---------- SM2 验签 (GM/T 0003.2)，与 tools/security/verify_attest.py 同参数 ---------- */
 const _P  = 0xFFFFFFFEFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF00000000FFFFFFFFFFFFFFFFn;
 const _A  = 0xFFFFFFFEFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF00000000FFFFFFFFFFFFFFFCn;
 const _B  = 0x28E9FA9E9D9F5E344D5A9E4BCF6509A7F39789F515AB8F92DDBCBD414D940E93n;
@@ -793,7 +793,7 @@ function fillAttestPanel(p){
       (res.all ? T("结论: 凭证有效", "Result: VALID") : T("结论: 凭证无效", "Result: INVALID")) + '</b></span></div>';
   }
   h += '<div class="row mut" style="margin-top:6px">' + T("离线复验（导出三件套 + 设备公钥）: ", "Offline verify (exported trio + device pubkey): ") +
-    '<code>python tools/verify_attest.py --proof proof.json --request request.json --output output.txt --pub vllm_attest.pub</code></div>';
+    '<code>python tools/security/verify_attest.py --proof proof.json --request request.json --output output.txt --pub vllm_attest.pub</code></div>';
   p.innerHTML = h;
 }
 function runAttestVerify(p){
@@ -820,7 +820,7 @@ function exportAttest(att){
   downloadText("proof_" + stamp + ".json", JSON.stringify(att.proof, null, 2));
   downloadText("request_" + stamp + ".json", att.body);
   downloadText("output_" + stamp + ".txt", att.out);
-  msgStatus(T("凭证已导出（proof/request/output），可用 tools/verify_attest.py 离线复验", "Proof exported (proof/request/output); verify offline with tools/verify_attest.py"), false);
+  msgStatus(T("凭证已导出（proof/request/output），可用 tools/security/verify_attest.py 离线复验", "Proof exported (proof/request/output); verify offline with tools/security/verify_attest.py"), false);
 }
 function renderAttest(aiBody, att){
   const snap = { body: att.body, out: att.out, proof: att.proof };

@@ -1,4 +1,5 @@
 # Kestrel — ARM (aarch64) Edge LLM Inference Engine (RK3588 Development Baseline)
+
 [简体中文](README.zh-CN.md) | **English**
 
 **A pure-C11, zero-third-party-runtime LLM inference engine for ARM (aarch64) CPUs.**
@@ -19,7 +20,7 @@
 | Weight residency | Fully resident (all layers) | New **per-layer residency** (`VLLM_VQF_STREAM=1`): resident weight RSS decoupled from model size / layer count; **plaintext VQF only** — VQF-Enc / SM2-signed weights are explicitly rejected (must stay fully resident) |
 | KV & long context | KV v1 | **KV v2 lazy allocation** + L3 tiered residency + P3 (L3 eviction × prefix reuse coexisting) |
 | Security & compliance | VQF at-rest encryption (SM4-CTR + HMAC-SM3), SM2 supply-chain signature | Adds **verifiable-inference attestation (schema 3, bound to the raw request body)**, verified in-browser or offline with zero dependencies |
-| x86-64 | none | Shipped x86-64 portability layer (`tools/build_x64.ps1` / `check_x64.ps1`), **for functional self-test and bit-exactness comparison only — never a performance baseline** |
+| x86-64 | none | Shipped x86-64 portability layer (`tools/build/build_x64.ps1` / `tools/build/check_x64.ps1`), **for functional self-test and bit-exactness comparison only — never a performance baseline** |
 | Benchmark points | 2026-09-05: cold start / 8K long context / KV restore (with llama.cpp side-by-side) | **2026-09-12**: per-layer vs full residency × {2B / 8B / 30B-A3B} × {combo ⑧ baseline, combo ①, combo ①+⑤}, 14 serve configurations |
 
 > Why they must not be mixed: v1 removed the GGUF/safetensors loading path and introduced
@@ -95,282 +96,224 @@ two residency tiers (see the md5 comparison under "Performance").
 
 ### How performance figures are partitioned
 
-The main body uses **v1.0 (2026-09-12) measurements only**: 3 models (2B / 8B / 30B-A3B) ×
-{full residency, per-layer residency} × {combo ⑧ baseline, combo ①, combo ①+⑤} as a full
-matrix. **The v0 (2026-09-05) cold start / 8K long context / KV restore data was moved
-wholesale to "Appendix A"** — it was measured on v0 and not re-measured on v1 (v1 removed the
-GGUF/safetensors loading path and introduced per-layer residency and KV v2, so the definitions
-changed). **It must not be used for any v1 conclusion**, and must not be mixed with the v1
-numbers below.
+Numbers in this chapter come from two sources, and each subsection heading states which one it is:
 
-### Per-layer vs full residency (RK3588, v1.0 measurement, 2026-09-12)
+1. **Controlled A/B (reproducible to within 1%)** -- the `--stream-test` basis. On the same board, with the same model file, the **old build** (compiled here from the previous Gitee source commit `ffd0b92`) and the **new build** (this release's source) were run **interleaved within a single session**, 2 rounds per configuration, with temperature and per-core frequency sampled at every point. **Sections 1 and 4 belong here.**
+2. **New points (single-shot, not controlled)** -- serve-style bases (sections 2 / 3 / 5). The matching old-build points were not re-measured, because a single old-build 30B serve point takes 15-40 minutes. These tables **describe this release only and are not an old-vs-new comparison**.
 
-`VLLM_VQF_STREAM=1` puts the engine into **tiered (per-layer) residency** mode: the VQF single
-file is still mmap-mounted, but each layer's weights establish file pages only while that layer
-computes, then release them immediately with `MADV_DONTNEED`, keeping only the `keep` layers
-(1 by default) resident. Together with v1.0's KV v2 lazy allocation (the KV base grows on
-demand), **resident memory is decoupled from model size and layer count** — a 17.66 GB
-Qwen3-30B-A3B-q4 can be served on a 16 GB RK3588, where the same model fully resident needs a
-12.7 GB peak (`--stream-test`) / 14.2 GB peak (serve, including KV). This section covers two
-measurement methods (`--stream-test` same-basis A/B, and serve cold/warm plus 3 follow-up
-turns) over 14 serve configurations, with no OOM, no failure and no fallback throughout.
+**Measurement environment**: RK3588 (Orange Pi 5 Plus, 15.9 GB RAM, `governor=performance`). Old build sha256 `76d5bffb8c6fb280...`, new build `078349be598e13ef...`. Temperature stayed within **30.5-47.2 C** and the A76 / A55 cores held **2,304,000 / 1,800,000 kHz** throughout -- **there was no downclocking**, so the old-vs-new differences do not come from temperature or frequency.
 
-Self-evidence from the board log:
+**Correctness criterion (bit-identical greedy TOKIDS from `--stream-test`)**:
 
-```
-[VQF-STREAM] enabled keep=1 nl=48 segs=11 per-layer=334.1MB data=16847.2MB resident~808.4MB rss=988kB
-```
+- 30B-A3B: all **16 points** in section 1 (old/new x full/per-layer x 2 rounds) emitted 32 tokens with the same sequence; first 8 ids = `151667, 198, 99692, 3837, 20002, 104029, 11622, 104811`.
+- 8B: all **24 points** emitted 29 tokens with the same sequence; first 4 ids = `100062, 99371, 58814, 113272`.
 
-**Semantics unchanged**: the greedy TOKIDS sequence from `--stream-test` is **bit-identical**
-between the two residency tiers — the last column below is the first 12 hex digits of the md5
-of that sequence, and the "full" / "per-layer" rows of the same model carry the same value
-(each of the three models agrees internally); eviction only drops clean file pages and content
-is rebuilt from the file, so no value changes.
-
-Reproduction basis (board binary `vllm_shs`, sha256 `e1484740…a8f8e8`): models were
-`/mnt/emmc/Modl/Qwen3-VL-2B-Instruct/qwen3vl2b.dual.vqf` (4.16 GB),
-`/mnt/VQF/8b/qwen3vl8b.q4.vqf` (6.60 GB) and `/mnt/VQF/qwen3-30B-A3B-q4` (17.66 GB);
-`--stream-test` used `--threads 8`; serve used `--serve --port 18080 --device arm-rk3588-opi5
---auto-load`, the baseline added `--no-prefix-kv`, combo ① added
-`--sparse-attn --sparse-k 32 --l3-evict --l3-ratio 0.75 --l3-min-seq 128 --l3-path /mnt/emmc/l3bench`
-plus the environment variable `VLLM_L3_PREFIX_REUSE=1`, combo ⑤ added
-`VLLM_ACTQ=1 VLLM_MOE_BATCH=1`; per-layer mode is the environment variable `VLLM_VQF_STREAM=1`.
-
-#### 1) Same-basis A/B (`--stream-test`: 32-token prefill + 32-token greedy decode, cold page cache)
-
-| Model (single-file VQF) | Residency | Weight RSS (after prefill) | Peak VmHWM | prefill 32tok | decode | TOKIDS |
-|---|---|---|---|---|---|---|
-| 2B (Qwen3-VL-2B, dual, 4.16 GB) | full | 1,806,732 kB | 2,761,732 kB | 7.14 s | 221 ms/tok | `1a5d48906a4c` |
-| 2B | **per-layer** | **394,464 kB (4.6×)** | **631,428 kB (4.4×)** | 8.02 s (+12%) | 257 ms/tok (+16%) | `1a5d48906a4c` |
-| 8B (Qwen3-VL-8B, q4, 6.60 GB) | full | 4,183,048 kB | 4,224,032 kB | 73.39 s | 429 ms/tok | `efb5a00c5803` |
-| 8B | **per-layer** | **471,800 kB (8.9×)** | **593,172 kB (7.1×)** | 72.48 s (−1%) | 586 ms/tok (+37%) | `efb5a00c5803` |
-| 30B-A3B (MoE, q4, 17.66 GB) | full | 11,728,860 kB | 12,703,020 kB | 273.6 s | 2442 ms/tok | `d4996200fcf2` |
-| 30B-A3B | **per-layer** | **506,368 kB (23.2×)** | **713,240 kB (17.8×)** | 273.3 s (−0.1%) | 2840 ms/tok (+16%) | `d4996200fcf2` |
-
-> Method: each configuration is preceded by `sync; echo 3 > /proc/sys/vm/drop_caches`, so this
-> is the **first forward pass on a cold page cache** (including the full cost of reading
-> GB-scale weights from storage). The 8B/30B prefill times above are therefore dominated
-> by weight reads and must not be compared with "warm-cache steady state" (see §2); the 30B's
-> 17.66 GB of weights exceed 16 GB of RAM, so the full-residency tier sits right at the memory
-> ceiling.
+> ### Why the 2026-09-12 figures were retired
 >
-> **Storage medium (measured 2026-09-12)**: the v1 8B/30B weights live on a **SanDisk microSD
-> card** (`/mnt/VQF` sits on the rootfs, and the rootfs is on the SD card), while the 2B weights
-> and the L3 directory are on eMMC. The two differ by 3.8× in measured bandwidth (see §5), so
-> the 8B/30B cold-read cost in this section is priced at **62.7 MB/s (SD card)**.
+> Those numbers came from a **different binary** (sha256 `e1484740...a8f8e8`) and a **different session**. They **cannot be reproduced** by the old build compiled here today from the same source commit:
 >
-> The difference from "4.6×~21.8× saved, prefill +11~25% / decode +121~259%" in
-> `docs/优化配置与边界说明.md` comes from the **measurement basis**: that set is **v0-era**
-> warm-cache (weights already in RAM/page cache) steady state and **is not a v1 conclusion**.
+> | Historical record | Old build measured today | Deviation |
+> |---|---|---|
+> | 8B full t8 warm decode 431 ms/tok | 468 ms/tok | +8.6% |
+> | 8B per-layer t4 warm decode 370 ms/tok | 319 ms/tok | -14% |
+> | 8B P3 prefill (t2), section 3: 1,885 ms | 2,730 ms (after clearing L3) | +45% |
+> | 30B full t8 cold decode 2,442 ms/tok | 2,020 ms/tok | -17% |
+>
+> The cause is not code but "different binary + different session state (especially L3 / page cache)". The historical figures are therefore **retired wholesale** and are no longer cited; this is also why the chapter was rebuilt as an interleaved same-session A/B.
 
-#### 2) Steady-state basis (serve, "cold → warm" same question in one process; combo ⑧ baseline `--no-prefix-kv`)
+### Summary
+
+| Model | Progress vs the previous release | Memory |
+|---|---|---|
+| **30B-A3B (MoE, q4, 17.66 GB)** | **decode 1.74-3.72x faster; prefill 1.21x (cold, better I/O overlap) to 5.44x (warm)** | unchanged (+0.1-1.0%) |
+| **8B (dense, q4, 6.60 GB)** | **no change** -- 24 points agree point by point, max deviation 1.0% | unchanged |
+
+---
+
+### 1) Per-layer vs full residency (`--stream-test`, **controlled A/B**)
+
+`VLLM_VQF_STREAM=1` puts the engine into **tiered (per-layer) residency** mode: the VQF single file stays mmap-mounted, but each layer's weights establish file pages only while that layer computes and release them immediately with `MADV_DONTNEED`, keeping only the `keep` layers (1 by default) resident. Together with KV v2 lazy allocation, **resident memory is decoupled from model size and layer count**: a 17.66 GB Qwen3-30B-A3B-q4 can be served on a 16 GB board.
+
+**30B-A3B (MoE, q4, 17.66 GB; `/mnt/VQF/qwen3-30B-A3B-q4/model.vqf`, on the SanDisk microSD card)**
+
+| Residency | Threads / cache | Old prefill | New prefill | Ratio | Old decode | New decode | Ratio |
+|---|---|---|---|---|---|---|---|
+| full | t8 / cold | 259.86 s | **213.70 s** | 1.22x | 2,020 ms/tok | **986 ms/tok** | **2.05x** |
+| full | t4 / warm | 36.28 s | **6.67 s** | **5.44x** | 1,205 ms/tok | **324 ms/tok** | **3.72x** |
+| per-layer | t8 / cold | 260.54 s | **215.15 s** | 1.21x | 2,412 ms/tok | **1,387 ms/tok** | **1.74x** |
+| per-layer | t4 / warm | 36.75 s | **6.93 s** | **5.30x** | 1,583 ms/tok | **564 ms/tok** | **2.81x** |
+
+Peak VmHWM: full 12,705,354 -> **12,722,536 kB (+0.14%)**; per-layer 708,162 -> **715,054 kB (+0.97%)**. Memory is **unchanged** between the two builds; per-layer saves **17.8x** versus full (12,722,536 / 715,054).
+
+> **The 1.21-1.22x on cold prefill is an indirect gain**: that basis is dominated by reading 17.66 GB from the SD card, with an effective read rate of 68.0 MB/s (old) versus 82.6 MB/s (new). The file is identical and the only variable is the CPU -- the old build's slow unpacking stalled the read pipeline, while the new build overlaps computation with I/O far better. **Do not read this as "the kernel accelerated the disk read".**
+
+> **The 30B decode ratio depends on page-cache state -- read it as a range**: the model is 17.66 GB against 15.9 GB of RAM. The new build's decode was measured between **324 and 1,204 ms/tok**: about 324 ms/tok when the active experts are cached (full residency, the table above) and about **570-580 ms/tok** for per-layer residency (three interleaved runs: 571 / 576 / 581), but 1.6-2.5 s spikes once they are evicted (the same binary and the same config differed by 3.7x across two rounds; per-token detail 321 / 321 / 2511 / 1069 / ...). The old build's 1,205 ms/tok is, by contrast, **uniform** (compute-bound, with I/O fully hidden). So the 3.72x for decode is a **best-case-cache** figure; worst case it is roughly a wash.
+
+> **Caliber alignment (with the project docs)**: both sides of the table above run the **exact track** (no `VLLM_ACTQ`), which is what preserves bit-exactness. The 5.44x prefill here is the "exact-track GroupGEMM 6.55x" of the project document (Distributed Expert Extraction plan, section 9.12), and the 2.81x decode is its "down row-group parallelism 2.88x". **The separate "3-3.4 s / about 200 ms" figures in that document are the approximate track (`VLLM_ACTQ=1`, int8 SDOT activations, greedy divergence from about token 24 on long text) and must not be mixed with this table.** Reference magnitudes (board 30B, per-layer, t4, warm, 32-token prefill): exact track per-token about 37-60 s; exact track with batching about 7-9 s (the new build's 6.7 s is this tier); `ACTQ=1` with batching about 2.7-3.4 s. In other words this release takes the **exact** track from about 37 s to about 7 s (5.3x), making bit-exact inference genuinely usable; but it is still **2.3x** away from the approximate track (about 3.0 s) and has not caught up. **Note also that under the recommended configuration (`VLLM_ACTQ=1` plus batching, i.e. combo 5) the two builds are essentially level -- across 2 interleaved rounds: prefill old 3.022/3.027 s vs new 3.078/2.994 s (1.00x), decode old 442/446 ms vs new 430/433 ms (1.03x). The value of this release is that the exact track is 5.3x faster, not that the recommended configuration is faster.**
+
+**8B (Qwen3-VL-8B, q4, 6.60 GB; `/mnt/VQF/8b/qwen3vl8b.q4.vqf`, on the SanDisk microSD card)**
+
+| Residency | Threads / cache | Old prefill | New prefill | Old decode | New decode |
+|---|---|---|---|---|---|
+| full | t8 / cold | 71.10 s | 71.08 s | 470 ms/tok | 469 ms/tok |
+| full | t4 / warm | 1.594 s | 1.605 s | 185 | 185 |
+| full | t8 / warm | 2.127 s | 2.135 s | 468 | 468 |
+| per-layer | t8 / cold | 71.05 s | 71.03 s | 590 | 588 |
+| per-layer | t4 / warm | 1.707 s | 1.724 s | 320 | 318 |
+| per-layer | t8 / warm | 2.220 s | 2.209 s | 581 | 582 |
+
+**Everything is within 1.0% -- 8B is completely unchanged in this release** (see section 7). Peak VmHWM: full about 4,226.7 MB, per-layer about 593.2 MB (identical for both builds); per-layer saves **7.12x** versus full.
+
+> Basis: both models run `--stream-n 32`, but 8B reaches EOS early and **actually emits 29 tokens** (30B emits 32). "Cold" = `sync; echo 3 > /proc/sys/vm/drop_caches` before each point; "warm" = no `drop_caches`, and each warm point is preceded by a discarded warm-up run (`--stream-n 16`) so both builds start from the same cache state.
+
+**Addendum: 30B-A3B "ACTQ track x residency" 2x2 (same-version characterization, **controlled A/B**)**
+> The main table above answers "how much did the new build gain". This addendum answers a different question: the trade-off between two orthogonal dimensions **inside one binary** -- `VLLM_ACTQ` (exact track / approximate track) and `VLLM_VQF_STREAM` (full-layer / per-layer). It uses the same basis as this section (`--stream-n 32 --threads 4`, with a discarded `--stream-n 16` warm-up before each point) and runs **the 4 configurations interleaved within a round**, 2 rounds.
+
+| Track | Residency | prefill (pure compute) | prefill (end to end) | GATEUP | decode (steady) | Peak VmHWM | TOKIDS |
+|---|---|---|---|---|---|---|---|
+| exact | full | 6,528 / 6,530 ms | 6.670 / 6.658 s | 6,240 ms | **325 ms/tok** | 12,286 / 12,278 MB | `41eae062e4ee` |
+| exact | per-layer | 6,514 / 6,539 ms | 6.946 / 6.962 s | 6,212 / 6,230 ms | **572 / 573 ms/tok** | **695 MB** | `41eae062e4ee` |
+| ACTQ | full | 2,644 / 2,645 ms | 2.762 / 2.781 s | 2,379 ms | **197 ms/tok** | 12,354 / 12,346 MB | `1fd42e485639` |
+| ACTQ | per-layer | 2,665 / 2,654 ms | 3.057 / 3.032 s | 2,396 / 2,385 ms | **428 / 430 ms/tok** | **695 / 691 MB** | `1fd42e485639` |
+
+(One value per round. "Pure compute" is the engine's `[PREFILL-TIMING] total`; "end to end" is `[STREAM] prefill ... in`.)
+
+**Three quotable conclusions**
+
+- **ACTQ track**: prefill pure compute is **2.47x** faster (full) / **2.45x** (per-layer); end to end 2.40x / 2.28x. Decode is **1.65x** faster (full, 325 -> 197 ms/tok) / **1.34x** (per-layer, 572 -> 428).
+- **Per-layer residency costs almost no compute**: prefill pure compute **ties** with full-layer (exact 6,514/6,528 = 1.000x; ACTQ 1.006x); end to end is only 4.4% / 9.9% higher (that is per-layer page establishment and scheduling). **The cost sits almost entirely in decode**: exact +76% (325 -> 572), ACTQ +117% (197 -> 430).
+- **Peak memory**: full 12,278-12,354 MB -> per-layer 691-695 MB, i.e. **17.7x**.
+
+**Correctness (this dataset also yields the criterion for a "track")**
+
+All 4 exact-track runs (2 rounds x 2 residencies) produce identical TOKIDS (`41eae062e4ee`), all 4 ACTQ-track runs are likewise identical to each other (`1fd42e485639`), but the **two tracks differ from each other**. So: **residency does not change the numbers (per-layer is bit-identical to full-layer); only switching the track does** (ACTQ is an approximate track). Exact-track logs contain no `[ACTQ]` / `[ACTQ16]` line; every ACTQ-track run prints `[ACTQ] VLLM_ACTQ=1: q4 MoE int8-dot approximate track ON`.
+
+**Cross-check against the table above (two independent sessions)**: this addendum's exact-track full t4 warm prefill is **6.670 / 6.658 s** and per-layer is **6.946 / 6.962 s**, matching this section's new-build figures of **6.67 s / 6.93 s**; decode 325 ms/tok matches **324 ms/tok**. The ACTQ-track full-layer 2.76-2.78 s also falls inside the "`ACTQ=1` plus batching about 2.7-3.4 s" band stated above. The numbers are therefore usable as a baseline.
+
+> **Two reading rules**
+>
+> 1. **The round-1 "full" decode averages (445 / 275 ms/tok) must not be quoted.** The per-token detail shows `r1_exact_full` steady at 322-325 ms for the first 16 tokens, then jumping to 355 -> 907 -> 883 -> 859 -> 607 -> ...; `r1_actq_full` steady at 195-203 ms for the first 23 tokens, then jumping at t=24 to 675 / 346 / 644 / 605 / .... The round-2 runs of the same configurations are steady across all 32 tokens (323-328 / 196-199, coefficient of variation 0.4%), and both per-layer points are steady too (0.7-1.5%). Round-1 full-layer decode is therefore judged **contaminated by external interference (page-cache reclaim / I/O)**; this table takes decode from round 2 only. Prefill is unaffected (0.02-0.8% spread across rounds, directly quotable).
+> 2. The gap between "end to end" and "pure compute" prefill (about 140 ms exact, about 430 ms per-layer) comes from process startup and per-layer page establishment and is **not part of the compute basis**, which is why both numbers are given.
+
+> Environment: `governor=performance` throughout; temperature 30.5-45.3 C; all 8 cores at constant frequency (A55 1,800,000 kHz / A76 2,304,000 kHz); page cache steady at 15.3-15.5 GB; logs confirm every point took the batched path (`[batch]`).
+
+---
+
+### 2) Steady-state basis (serve, **new points, single-shot**)
+
+One request = 292-token context + 32 generated tokens (greedy, `--threads 8`). Cold = first request after `drop_caches`; warm = the same request sent immediately afterwards.
 
 | Model | Residency | Peak VmHWM | Cold prefill | Warm prefill | Warm TTFT | Warm tpot |
 |---|---|---|---|---|---|---|
-| 2B | full | 2,968,920 kB | 13,993 ms | 5,267 ms | 5,267 ms | 113.0 ms |
-| 2B | **per-layer** | **854,476 kB (3.5×)** | 14,882 ms | 5,441 ms | 5,441 ms | 156.7 ms |
-| 8B | full | 4,523,240 kB | 87,459 ms | 16,035 ms | 16,035 ms | 458.4 ms |
-| 8B | **per-layer** | **914,448 kB (4.9×)** | 86,375 ms | 16,463 ms | 16,463 ms | 617.2 ms |
-| 30B-A3B | full | 14,228,868 kB | 841,365 ms | 620,774 ms | 620,775 ms | 2,240.4 ms |
-| 30B-A3B | **per-layer** | **1,112,500 kB (12.8×)** | 841,969 ms | 623,125 ms | 623,126 ms | 2,647.7 ms |
+| 8B | full | 4,351,464 kB | 84,044 ms | 15,292 ms | 15,293 ms | 499.2 ms |
+| 8B | **per-layer** | **741,216 kB** | 84,294 ms | 15,700 ms | 15,700 ms | 624.7 ms |
+| 30B-A3B | full | 14,208,808 kB | 272,175 ms | 76,673 ms | 76,674 ms | 554.3 ms |
+| 30B-A3B | **per-layer** | **1,116,948 kB** | 274,256 ms | 78,275 ms | 78,276 ms | 875.6 ms |
 
-One request = 300-token context + 32 generated tokens (greedy). Cold = the first request after
-`drop_caches`; warm = the same request sent immediately afterwards: the full tier already has
-its weights resident in RAM (the warm pass pays compute only), while the per-layer tier touches
-the weight pages again every pass (the warm pass is still bound by storage bandwidth) — this is
-precisely the marginal cost of trading time for memory.
+> **The "warm" 30B row is only partially cached**: the model is 17.66 GB against 15.9 GB of board RAM, so it can never fill the page cache, and the figures depend on what ran before it. Measured within a single session, the 30B per-layer baseline showed t1/t2/t3 = 60.6 / 68.1 / 77.9 s, i.e. **monotonically slower** -- exactly this effect. Treat the 30B serve figures as **orders of magnitude only, not a precise baseline**. 8B fits in RAM and has no such problem.
 
-> Peaks in this table include the KV cache, so the ratios are smaller than the "weight-only
-> RSS" ratios in §1 (30B: 12.8× vs 23.2×): what per-layer residency truly decouples is the
-> **weights**, while KV is managed separately by KV v2 lazy allocation. The 30B full-residency
-> peak of 14.2 GB already hits the ceiling of a 16 GB board (MemTotal 15.6 GiB), whereas the
-> per-layer tier compresses the same model to 1.11 GB, leaving all the headroom for KV and the
-> process itself.
+---
 
-#### 3) Stacking with the "effective optimization combos" (serve multi-turn follow-ups; combo ① = `--sparse-attn --sparse-k 32 --l3-evict --l3-min-seq 128` + `VLLM_L3_PREFIX_REUSE=1`)
+### 3) Stacking with the "effective optimization combos" (**new points, single-shot**)
 
-| Model | Residency | Config | t2 prefill | t3 prefill | vs baseline |
-|---|---|---|---|---|---|
-| 2B | full | ⑧ base | 5,882 ms | 6,545 ms | — |
-| 2B | full | ① P3 | **952 ms** | **972 ms** | **−83.8% / −85.1%** |
-| 2B | per-layer | ⑧ base | 6,057 ms | 6,706 ms | — |
-| 2B | per-layer | ① P3 | **1,189 ms** | **1,130 ms** | **−80.4% / −83.1%** |
-| 8B | full | ⑧ base | 19,251 ms | 21,193 ms | — |
-| 8B | full | ① P3 | **1,885 ms** | **2,008 ms** | **−90.2% / −90.5%** |
-| 8B | per-layer | ⑧ base | 19,579 ms | 21,545 ms | — |
-| 8B | per-layer | ① P3 | **2,048 ms** | **2,203 ms** | **−89.5% / −89.8%** |
-| 30B-A3B | full | ⑧ base | 722,394 ms | 822,409 ms | — |
-| 30B-A3B | full | ① P3 | **28,633 ms** | **32,140 ms** | **−96.0% / −96.1%** |
-| 30B-A3B | full | ①+⑤ P3+MoE | **4,727 ms** | **3,157 ms** | **−99.3% / −99.6%** |
-| 30B-A3B | per-layer | ⑧ base | 724,367 ms | 824,535 ms | — |
-| 30B-A3B | per-layer | ① P3 | **29,368 ms** | **32,820 ms** | **−95.9% / −96.0%** |
-| 30B-A3B | per-layer | ①+⑤ P3+MoE | **5,269 ms** | **3,695 ms** | **−99.3% / −99.6%** |
+Combo 1 = `--sparse-attn --sparse-k 32 --l3-evict --l3-ratio 0.75 --l3-min-seq 128` plus the environment variable `VLLM_L3_PREFIX_REUSE=1`; combo 5 = `VLLM_ACTQ=1 VLLM_MOE_BATCH=1` (meaningful for MoE / q4 only).
 
-Combo ⑤ = `VLLM_ACTQ=1 VLLM_MOE_BATCH=1` (MoE expert activation quantization + expert
-batching). It only applies to MoE weights (q4) and stacks orthogonally with combo ① and with
-per-layer residency.
+**8B (measured after clearing the L3 directory each time; two rounds reported)**
 
-Self-evidence for combo ① (raw board log, 2B full tier; all three stages — L3 spill, restore,
-prefix reuse — are visible):
-
-```
-[L3] evicted 252 blocks -> /mnt/emmc/l3bench_u65bbfe41 (cursor=9.84 MB, seq=345, keep=332, ratio=0.75, ...), freed 78.8 MB from RAM
-[L3] restored 252 prefix blocks from Q4 payload (prefix=377)
-[KV-PREFIX] reuse 377-token KV prefix, prefill rest
-```
-
-The same combo yields gains of the same order in both residency tiers (2B −80% ~ −83%,
-8B −89% ~ −90%, 30B −96%), showing that the **weight-residency axis and the KV-paging axis are
-orthogonal**. Adding combo ⑤ (MoE) on the 30B-A3B (`VLLM_ACTQ=1 VLLM_MOE_BATCH=1`, q4 weights
-required) cuts the second/third follow-up prefill from the ⑧ baseline's 722 s / 822 s down to
-**4.7 s / 3.2 s (full tier)**, and the first turn from 620 s to 23 s, with tpot going from
-2,240 ms to 504 ms — all measured in this round; the same tier also holds under **per-layer
-residency** (t2/t3 = 5.3 s / 3.7 s), i.e. "memory-efficient" and "fast" can be had at once.
-
-#### 4) 8B: the recommended tier delivers (measured 2026-09-12)
-
-§1/§2 above cover all three tiers (2B/8B/30B). This section answers one question: **where does
-per-layer residency pay off best — the answer is 8B.**
-
-Configuration: `--threads 4` (`OMP_NUM_THREADS=4 VLLM_THREADS=4`); **weights on a SanDisk
-microSD card (62.7 MB/s)**. Memory basis as in §1 (`--stream-test`, 32-token prefill + 32-token
-decode, cold page cache A/B). The prefill and decode below come **from the same cold-page-cache
-run** (hence decode is slower than the warm-page-cache thread A/B table further down):
-
-| Tier | Weight RSS (after prefill) | rss_end | prefill 32tok | decode |
+| Residency | Config | t2 prefill | t3 prefill | vs baseline |
 |---|---|---|---|---|
-| full | 4,189,912 kB | 4,202,988 kB | 67.9 s | 207 ms/tok (4.84 tok/s) |
-| **per-layer** | **480,348 kB (8.7×)** | **487,912 kB** | 63.2 s | 385 ms/tok (2.60 tok/s) |
+| full | baseline (`--no-prefix-kv`) | 15,086 ms | 17,423 ms | -- |
+| full | combo 1 P3 | **2,907 / 2,930 ms** | **2,732 / 2,742 ms** | **-81%** |
+| per-layer | baseline | 15,376 ms | 17,829 ms | -- |
+| per-layer | combo 1 P3 | **3,076 / 3,184 ms** | **2,874 / 2,871 ms** | **-80%** |
 
-Serve in per-layer mode + short request (`enable_thinking=false`, `max_tokens=96`; finished
-naturally at 70 tokens):
+**30B-A3B**
 
-| Tier | TTFT | End-to-end | tpot | Peak VmHWM |
-|---|---|---|---|---|
-| Cold (first after `drop_caches`) | 73.1 s | 99.7 s | 385.3 ms | 611,880 kB |
-| **Warm (5 identical consecutive requests)** | **1.95 s** (1.899~1.966) | **27.9 s** | **376.6 ms** (376.4~377.4) | 824,192 kB |
-
-> The warm VmHWM is the **high-water mark accumulated over 5 runs** (656,144 → 698,228 → 740,088
-> → 782,236 → 824,192 kB, about +42 MB per run); see the VmHWM note in §5 for the basis and the
-> open item.
-
-**Why 8B is the recommended tier (three reasons, all reproducible)**:
-
-1. **You capture the full memory win at a controllable cost**: resident weights 4.19 GB →
-   **0.48 GB (8.7×)**, serve peak **0.82 GB**.
-2. **Warm-state stability is backed by physics**: the 6.15 GiB of weights **fit in the 15.6 GiB
-   page cache**, so warm behaviour is not a gamble — the measured spread over 5 samples is
-   **TTFT ±1.8%, tpot ±0.13%**.
-3. **The one-off cold-start cost is low**: 73 s (vs 195~211 s for the 30B), because the cost is
-   proportional to weight size ÷ medium bandwidth.
-
-**The hidden 2×: you must use `--threads 4`** (same board, same model, A/B, 2 repeats each,
-warm page cache):
-
-| Tier | `--threads 4` | `--threads 8` | Ratio |
+| Residency | Config | t2 prefill | t3 prefill |
 |---|---|---|---|
-| full decode | **186 / 189 ms/tok** | 431 / 433 ms/tok | 4 threads **2.3× faster** |
-| per-layer decode | **370 / 378 ms/tok** | 580 / 582 ms/tok | 4 threads **1.56× faster** |
+| full | baseline | 75,947 ms | 81,846 ms |
+| full | combo 1 P3 | 8,599 ms | 7,005 ms |
+| full | combo 1+5 | **4,382 ms** | **3,692 ms** |
+| per-layer | baseline | 68,058 ms | 77,905 ms |
+| per-layer | combo 1 P3 | 9,098 ms | 7,443 ms |
+| per-layer | combo 1+5 | **4,860 ms** | **4,106 ms** |
 
-> The RK3588 is 4×A76 + 4×A55, and `--threads 8` pulls the four A55 little cores into the GEMM
-> parallel region. The 8B figures in §1 (full 429 / per-layer 586 ms/tok) are exactly the
-> **`--threads 8`** basis and match the right-hand column above; **switching to 4 threads brings
-> 8B full-residency decode to 5.4 tok/s**.
+- The 8B P3 gain is **-80% to -81%** and **must be read with the L3 directory cleared**: if L3 was already warmed by a previous run you get a markedly more optimistic figure (the 1,885 ms in the historical record is exactly that case).
+- On the 30B, combo 5 takes off a further about **1.9x** on top of combo 1 (8,599 -> 4,382 ms); the two axes still stack.
 
-**One-command reproduction**: `sh tools/bench_value.sh` (parameters are overridable via
-environment variables; see the header comment in the script) — it produces the A/B memory
-comparison, warm-state stability and page-cache evidence, and writes `http.json`.
+---
 
-#### 5) 30B-A3B on a short request: how far it actually goes (thinking switch measured)
+### 4) 8B: the recommended tier delivers
 
-> Additional measurement (2026-09-12, same board, same engine sha256 `e1484740…a8f8e8`).
-> The question it answers: is the 30B on a 16 GB board merely *barely runnable*, or genuinely
-> usable? **The weights sit on a SanDisk microSD card.**
+**Thread A/B (warm page cache, controlled A/B, 2 rounds each)**
 
-Configuration: per-layer `VLLM_VQF_STREAM=1` + combo ⑤ `VLLM_ACTQ=1 VLLM_MOE_BATCH=1` +
-combo ① flags (with only a 22-token context the log shows `[L3] skipped: seq=22 <
-l3-min-seq=128`, i.e. **L3 and prefix reuse did not engage**, so this table reflects the
-"per-layer + MoE" tier without combo ①'s KV-side gain); `OMP_NUM_THREADS=4 VLLM_THREADS=4`.
-Request = 22-token context + 32 generated tokens (greedy, streaming).
-
-| Tier | TTFT | End-to-end | tpot | Peak VmHWM |
-|---|---|---|---|---|
-| Cold (first request after `drop_caches`) | 211.5 s | 258.8 s | 1,524.5 ms | 666,468 kB |
-| **Warm (same request sent immediately after)** | **3.3 s** | **20.8 s** | **564.8 ms** | 918,300 kB |
-
-Cross-checked with the same request in non-streaming mode: 20.7 s (consistent with 20.8 s
-streaming); after that run the process high-water mark had accumulated to 933,656 kB.
-
-> **On VmHWM**: it is the process's **historical high-water mark** (monotonically non-decreasing),
-> not the steady-state footprint of a single request, so a rising value across runs is expected.
-> The two rows above are the marks measured at their respective points; the same applies to the
-> 8B five-sample warm run (611,880 → 656,144 → 698,228 → 740,088 → 782,236 → 824,192 kB, about
-> +42 MB per run). Whether the per-request footprint falls back would require sampling `VmRSS`
-> per run — **we have not done that sampling; it is recorded as an open item**.
-
-**Critical precondition: `enable_thinking` defaults to on** (the engine matches HF
-`apply_chat_template`; see `resolve_thinking` in `src/serve/vllm_server.c`). Those 32 tokens
-**were all spent inside the thinking block and produced no answer** — measuring only "how long
-does it take to emit 32 tokens" yields an over-optimistic usability verdict. Hence the switch
-comparison below:
-
-| Tier (max_tokens=256) | TTFT | End-to-end | Actual output | Result |
-|---|---|---|---|---|
-| thinking **on** (default) | 29.5 s | 221.9 s | **256 (budget exhausted)** | **`</think>` never appears; no answer** |
-| **thinking off** (request body `"enable_thinking": false`) | **3.1 s** | **24.5 s** | **40 (natural EOS)** | **complete answer delivered** |
-
-The thinking-off output *is* the answer:
-「边缘计算是在数据产生地附近进行数据处理和分析的计算模式，而云计算则是在远程数据中心进行集中式数据处理，两者的主要区别在于数据处理的位置和实时性需求。」
-
-> Note: both requests followed a cold warm-up request. The thinking-off run was the 3rd request
-> with the warmest page cache (TTFT 3.1 s), while the thinking-on run was the 2nd (TTFT 29.5 s
-> reflects a still-warming page cache) — **the TTFT gap comes mainly from page-cache state, not
-> from the thinking switch itself**. The thinking-on run took longer because it never finished
-> reasoning within its 256-token budget.
-
-**Revised conclusion: the usable tier for the 30B-A3B on this 16 GB board is "thinking off +
-short context".** With thinking disabled it returns a complete one-sentence answer in 24.5 s at
-a 0.91 GB peak — that is the real "usable" figure. With thinking on (the default), 256 tokens
-are not enough to finish the reasoning block; a single Q&A actually needs 300+ tokens, i.e.
-roughly 3~4 minutes. The 258.8 s cold figure is the one-off cost of reading all 17.66 GB of
-weights (16.8 GB of which is the weight data segments) from the SD card on first touch; once the
-weights sit in the page cache it returns to
-seconds — which is exactly how per-layer residency fits a 17.66 GB model onto a 16 GB board.
-
-**Storage medium measured** (same board, `dd iflag=direct`, 1 GiB, bypassing the page cache):
-
-| Medium | Role / mount | Device | Measured sequential read |
+| Tier | `--threads 4` (old / new) | `--threads 8` (old / new) | Conclusion |
 |---|---|---|---|
-| **SanDisk microSD** | 8B/30B weights (`/mnt/VQF`) | `/dev/mmcblk1` (`name=SD64G`, `type=SD`, `manfid=0x000003`) | **62.7 MB/s** |
-| eMMC | 2B weights, L3 directory (`/mnt/emmc`) | `/dev/mmcblk0` (`name=BJTD4R`, `type=MMC`) | **240 MB/s** |
+| full decode | 185 / 185 ms/tok | 468 / 468 ms/tok | **4 threads are 2.53x faster** |
+| per-layer decode | 320 / 318 ms/tok | 581 / 582 ms/tok | **4 threads are 1.82x faster** |
 
-> This explains the cold-read magnitude in §1: in the per-layer tier's "trade time for memory",
-> **the time is proportional to weight size ÷ medium bandwidth**. The 211.5 s above is priced at
-> the SD card's 62.7 MB/s; **moving the weights to eMMC (240 MB/s) would, by bandwidth ratio,
-> bring first token down to roughly 56 s — this is an extrapolation, not a measurement.**
+Both builds agree at each tier. The RK3588 has 4x A76 + 4x A55, and `--threads 8` pulls the four A55 little cores into the GEMM parallel region, making **decode 1.8-2.5x slower**. **Always use `--threads 4` for 8B.**
 
-#### 6) Honest boundaries
+**Per-layer serve + short request (`--no-think`, `max_tokens=96`, naturally ends at 70 tokens; new points)**
 
-- **Per-layer residency is plaintext-only**: VQF-Enc / SM2-signed weights are explicitly
-  rejected (they must stay fully resident).
+| Tier | TTFT | Total | tpot | Peak VmHWM |
+|---|---|---|---|---|
+| cold (first request after `drop_caches`) | 72.09 s | 94.87 s | 328.8 ms | 613,084 kB |
+| **warm (5 consecutive identical requests)** | **1.662-1.775 s** | **23.97-24.17 s** | **322.3-325.1 ms** | 805,240 kB |
+
+Across the 5 warm samples the **tpot spread is only 0.9%** (one TTFT outlier at 1.775 s, the rest about 1.66 s).
+
+**Why 8B is the recommended tier (three points, all reproducible)**:
+
+1. **It collects the full memory saving**: resident weights drop from 4.23 GB to **0.59 GB (7.12x)**, with a serve peak of **0.81 GB**.
+2. **Warm-state stability is physically guaranteed**: the 6.15 GiB of weights **fit in the 15.9 GB page cache**, so warm behaviour is not a gamble.
+3. **The one-off cold-start cost is low**: 72.1 s, because the cost scales with weight size divided by storage bandwidth.
+
+**One-command reproduction**: `sh tools/bench/bench_value.sh` (parameters are overridable via environment variables; see the header comment in the script).
+
+---
+
+### 5) 30B-A3B on a short request (**new points, single-shot**)
+
+Config: per-layer `VLLM_VQF_STREAM=1` + combo 1 + combo 5, `OMP_NUM_THREADS=4 VLLM_THREADS=4`. Request = 22-token context + 32 generated tokens (greedy, streaming). With only 22 tokens of context the log shows `[L3] skipped: seq=22 < l3-min-seq=128`, so **L3 and prefix reuse never engage**; this table therefore reflects the "per-layer + MoE tier".
+
+| Tier | TTFT | Total | tpot | Peak VmHWM |
+|---|---|---|---|---|
+| cold (first request after `drop_caches`) | 202.33 s | 236.81 s | 1,110.6 ms | 664,484 kB |
+| **warm (same request sent immediately again)** | **2.483 s** | **16.17 s** | **439.4 ms** | 919,012 kB |
+
+**Key precondition: `enable_thinking` defaults to on** (matching HF `apply_chat_template`). The 32 tokens above **all fall inside the reasoning block and produce no answer**, so the switch was measured as well:
+
+| Tier (`max_tokens=256`) | TTFT | Total | Actual output | Result |
+|---|---|---|---|---|
+| thinking **on** (default) | 2.417 s | 134.45 s | **256 (budget exhausted)** | text still starts with `<think>`, **no answer** |
+| **thinking off** (`"enable_thinking": false`) | **2.437 s** | **20.82 s** | **40 (natural EOS)** | **complete answer** |
+
+**Conclusion: on this 16 GB board the usable 30B-A3B tier is thinking off + short context.** With thinking off a complete short answer arrives in 20.8 s at a 0.92 GB peak; with the default (thinking on) 256 tokens do not finish the reasoning block, so a single exchange must budget 300+ tokens. The 202 s cold figure is the one-off cost of reading all 17.66 GB of weights from the SD card.
+
+---
+
+### 6) Storage media (same board, `dd iflag=direct`, 1 GiB, bypassing the page cache)
+
+| Media | Use / mount | Device | Measured sequential read |
+|---|---|---|---|
+| **SanDisk microSD** | 8B / 30B weights (`/mnt/VQF`) | `/dev/mmcblk1` | **64.5 MB/s** |
+| eMMC | 2B weights / L3 directory (`/mnt/emmc`) | `/dev/mmcblk0` | **267 MB/s** |
+
+The time in "trade time for memory" scales with weight size divided by storage bandwidth: the 30B cold figure of about 202-215 s corresponds to the SD card's 64.5 MB/s; moving the weights to eMMC (267 MB/s) would, by simple bandwidth ratio, bring it to roughly the 50 s range -- **that is an extrapolation, not a measurement**.
+
+---
+
+### 7) Honest boundaries
+
+- **8B is unchanged in this release, and that is expected**: 8B is a **dense** model, so every decode token reads all 6.15 GiB of weights and it is **bandwidth-bound**; this release optimizes **unpacking compute**, which does not help 8B. 30B-A3B is **MoE** and activates only the top-8 experts per token (about 1.6 GB), making it **compute-bound**, hence the large gain.
+  > Caveat: 6.6 GB / 0.185 s implies 35.7 GB/s, above the 25.74 GB/s recorded earlier, so the "8B is bandwidth-bound" explanation **still needs a direct bandwidth measurement for confirmation**; treat it as the current best explanation.
+- **The 30B "warm" numbers are not a precise baseline**: the model is 17.66 GB against 15.9 GB of RAM, so it cannot fill the page cache and the figures depend on cache history (evidence in the note under section 2). Use the section 2 / 3 30B figures as orders of magnitude only.
+- **Per-layer residency is plaintext-only**: VQF-Enc / SM2-signed weights are explicitly rejected (they must stay fully resident).
 - It does not coexist with expert windows (`VLLM_EW*`; EW owns the layer entry hook).
-- The speed cost grows with "weight size ÷ storage bandwidth": under `--stream-test` cold page
-  cache, prefill +12% (2B) / −1% (8B) / −0.1% (30B) and decode +16% / +37% / +16%; in serve
-  steady state (§2) warm tpot is +38.7% (2B) / +34.6% (8B) / +18.2% (30B) while warm prefill is
-  only +3.3% / +2.7% / +0.4%. What you get in return is 4.6× / 8.9× / 23.2× resident-memory
-  reduction (weight-only RSS).
-- **The absolute speed of the 30B-A3B on a 16 GB board is low — that is a hardware boundary,
-  not an implementation defect**: an unoptimized baseline needs 620 s for a 300-token context
-  (tpot 2,240 ms, ≈0.45 tok/s), and the full tier's 14.2 GB peak already sits at the memory
-  ceiling. The practical configuration is "per-layer residency (1.11 GB) + combo ① + combo ⑤"
-  — combo ⑤ MoE brings the first turn down to 23 s and follow-ups to 3~5 s, which is what makes
-  the 30B actually usable. **See §5 for the short-request measurement** — note that the usable
-  tier requires **thinking off**: with it disabled, a complete short answer comes back in 24.5 s
-  at a 0.91 GB peak; with the default thinking on, 256 tokens do not finish the reasoning block.
-- Per-layer residency compresses **weight residency**; the KV base is constrained separately by
-  v1.0's KV v2 lazy allocation (with `VLLM_KV_NOF32=1` the 2B can be pushed further to the
-  ~222 MB range — see
-  [docs/KV缓存v2-惰性分配与分层驻留方案.md](docs/KV缓存v2-惰性分配与分层驻留方案.md)).
+- Per-layer residency compresses **weight residency**; the KV base is constrained separately by KV v2 lazy allocation (with `VLLM_KV_NOF32=1` resident memory can be pushed lower -- see [docs/KV缓存v2-惰性分配与分层驻留方案.md](docs/KV缓存v2-惰性分配与分层驻留方案.md)).
+- **The 2B tier has been removed from this chapter**: the `Qwen3-VL-2B-Instruct` dual weights (4.16 GB) used earlier are no longer on the active board; what exists now is `Qwen3-VL-2B-q8fix` (3.19 GB, q8 and not dual), a different quantization basis that must not be mixed with the old figures.
+- **The x86-64 branch is for functional self-test and bit-exactness comparison only** and is never a performance baseline.
 
 ---
 
@@ -402,9 +345,9 @@ board.
 
 ```powershell
 # Windows / MinGW-w64 (gcc must be on PATH, or pass -Gcc explicitly)
-powershell -ExecutionPolicy Bypass -File tools\check_x64.ps1
+powershell -ExecutionPolicy Bypass -File tools\build\check_x64.ps1
 #   → compiles + runs --test-l3 / --test-sparse self-tests, exit code 0/1
-powershell -ExecutionPolicy Bypass -File tools\build_x64.ps1 -Gcc D:\tools\mingw64\bin\gcc.exe
+powershell -ExecutionPolicy Bypass -File tools\build\build_x64.ps1 -Gcc D:\tools\mingw64\bin\gcc.exe
 #   → build only; artifact build-x64\vllm_kestrel_x64.exe
 ```
 
@@ -427,10 +370,10 @@ section). The model directory must contain:
 
 ```bash
 # config.json + model.vqf (VQF v2 single file, mmap-mounted)
-# + optional vocab.bin (generated from tokenizer.json by tools/build_vocab_bin.py;
+# + optional vocab.bin (generated from tokenizer.json by tools/build/build_vocab_bin.py;
 #   if absent the engine falls back to the embedded vocab — functional, but size/vocab
 #   then follow the model's own):
-python tools/build_vocab_bin.py <tokenizer.json> <vocab.bin> <vocab.bin>
+python tools/build/build_vocab_bin.py <tokenizer.json> <vocab.bin> <vocab.bin>
 ```
 
 ### 3) Start the service
@@ -534,7 +477,7 @@ attestation**:
   `thinking` also changes the digest;
 - Two verification paths: **in-browser self-verification** (the chat and admin pages embed
   SM3 + SM2 verification with zero dependencies) and **offline re-verification**
-  (`tools/verify_attest.py`, pure Python with zero dependencies, exit code 0=PASS / 1=FAIL,
+  (`tools/security/verify_attest.py`, pure Python with zero dependencies, exit code 0=PASS / 1=FAIL,
   including a `--selftest`).
 
 > Limits: a proof shows that "this device produced it and the content was not tampered with",
@@ -570,7 +513,7 @@ attestation**:
 - Reproduction methods, corpora and driver locations for the benchmark data are in the appendix
   of [docs/RK3588_性能基准报告.md](docs/RK3588_性能基准报告.md) (**v0 measurements**); the
   reproduction basis for v1 measurements is under "Performance" above.
-- **One-command v1 reproduction**: `sh tools/bench_value.sh` — produces the per-layer vs full
+- **One-command v1 reproduction**: `sh tools/bench/bench_value.sh` — produces the per-layer vs full
   A/B memory comparison, the warm-state 5-sample stability and the page-cache evidence
   (parameters are overridable via environment variables, see the script header; its only
   dependency is the Python 3 standard library).
@@ -630,16 +573,21 @@ third-party project runtime is ever shipped with the engine.
 │   ├── serve/                 # HTTP / admin console / batching / attestation
 │   └── media/                 # H.264/MP4 decoding (separate module, off by default)
 ├── tools/                     # in-house tooling
-│   ├── gen_embedded_web.py    # HTML → embedded byte-array generator (re-run after page edits)
-│   ├── build_vocab_bin.py     # tokenizer.json → vocab.bin (byte-decoding fixed)
-│   ├── extract_llama_asm.py   # extract the 4x4 asm GEMM from llama.cpp (MIT, see header)
-│   ├── verify_attest.py       # offline attestation verification (zero dependencies)
-│   ├── vllm_vqf_sign.c        # VQF SM2 supply-chain signing / key management tool
-│   ├── vllm_mgr.py            # engine process supervisor (start/stop/restart/status page)
-│   ├── build_x64.ps1          # x86_64 (MinGW) native build script (not a baseline, consistency only)
-│   ├── check_x64.ps1          # x86 build + self-test in one command (exit code 0/1)
-│   ├── bench_value.sh         # per-layer value bench: A/B memory + warm stability + page-cache evidence (see Performance §4)
-│   └── bench_http_probe.py    # zero-dependency streaming HTTP latency probe (TTFT/tpot/peak VmHWM), called by the above
+│   ├── bench/                 # benchmarks + streaming latency probe
+│   │   ├── bench_value.sh     # per-layer value bench: A/B memory + warm stability + page-cache evidence (see Performance §4)
+│   │   └── bench_http_probe.py  # zero-dependency streaming HTTP latency probe (TTFT/tpot/peak VmHWM), called by the above
+│   ├── build/                 # build + code generation
+│   │   ├── gen_embedded_web.py  # HTML → embedded byte-array generator (re-run after page edits)
+│   │   ├── build_vocab_bin.py   # tokenizer.json → vocab.bin (byte-decoding fixed)
+│   │   ├── build_x64.ps1        # x86_64 (MinGW) native build script (not a baseline, consistency only)
+│   │   └── check_x64.ps1        # x86 build + self-test in one command (exit code 0/1)
+│   ├── client/                # vllm_client.py: OpenAI-compatible HTTP client (zero deps)
+│   ├── ops/                   # vllm_mgr.py: engine process supervisor (start/stop/restart/status page)
+│   ├── security/              # verify_attest.py (offline verify) + vllm_vqf_sign.c (VQF SM2 signing)
+│   ├── npu/                   # npu_export_ops.py: RK3588 operator-level NPU model export
+│   ├── kernels/               # extract_llama_asm.py + llama_gemm_q4_0_4x4_asm.c (MIT)
+│   ├── preproc/               # FHE ciphertext-chain data preprocessing scripts
+│   └── drivers/               # FHE ciphertext-chain drivers (t23_m3p.c / t23_chain.c)
 ├── vqf_convert/               # standalone conversion tool (safetensors/GGUF → VQF v2)
 └── docs/                      # technical docs / benchmark reports / security specs (Chinese)
 ```
@@ -669,7 +617,7 @@ third-party project runtime is ever shipped with the engine.
   with the pure-VQF runtime; the single artifact is still about 0.8 MB; `CMakeLists.txt` was
   bumped to `VERSION 1.0.0`.
 - **x86_64 branch shipped**: `vllm_platform.h` provides an x86-64 (MinGW/MSVC) portability
-  layer; `tools/build_x64.ps1` / `tools/check_x64.ps1` were added (parameterized, overridable
+  layer; `tools/build/build_x64.ps1` / `tools/build/check_x64.ps1` were added (parameterized, overridable
   via `VLLM_GCC` / `VLLM_X64_OUTDIR`). **x86 is for functional self-test and bit-exactness
   comparison only, never a performance baseline.**
 

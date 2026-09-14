@@ -10,12 +10,12 @@
  *   GET  /admin/api/log?n=200     tail of the engine log file (JSON)
  *   POST /admin/api/shutdown      graceful shutdown (vhttp_stop)
  *
- * Process start/stop supervision lives in tools/vllm_mgr.py (a stopped
+ * Process start/stop supervision lives in tools/ops/vllm_mgr.py (a stopped
  * engine cannot start itself); the admin page drives it over a second
  * tiny HTTP port (default 8082).
  *
  * Config persisted by /admin/api/config/save is a plain JSON file that
- * vllm_mgr.py reads to build the engine's command line on start.
+ * tools/ops/vllm_mgr.py reads to build the engine's command line on start.
  * ================================================================ */
 #include "vllm_server.h"
 #include "vllm_batch.h"      /* vllm_batch_active (continuous batching status) */
@@ -288,14 +288,17 @@ static VJson *build_config_json(const VLLMServerCtx *ctx) {
     json_put_str(env, "OMP_NUM_THREADS",
                  getenv_int_str("OMP_NUM_THREADS", "4"));
     /* NEON kernel / threadpool optimization switches (admin.html 内核优化
-     * card) + MoE 优化 card (VLLM_MOE_BATCH / VLLM_ACTQ / VLLM_MOE_PAR /
-     * VLLM_MOE_Q4SIMD). Only echo vars that are explicitly set; fillForm
-     * treats absent keys as the engine default. */
+     * card) + MoE 优化 card (VLLM_MOE_BATCH / VLLM_ACTQ / VLLM_ACTQ16 /
+     * VLLM_MOE_PAR / VLLM_MOE_Q4SIMD). Only echo vars that are explicitly
+     * set; fillForm treats absent keys as the engine default.
+     * VLLM_ACTQ16：管理页「精度/速度轨」三选一写出（0=精确轨 / 1=s16 近似轨），
+     * 与 VLLM_ACTQ 互斥且优先；不回填的话页面会误判当前轨。 */
     static const char *opt_envs[] = {
         "VLLM_Q8_8X8", "VLLM_DISABLE_Q8_REPACK", "VLLM_DISABLE_Q4_REPACK",
         "VLLM_ENABLE_8X8L", "VLLM_PB_HEAP", "VLLM_TP_BIND", "VLLM_TP_SPIN",
         "VLLM_ROW_SLICE", "VLLM_VQF_KEY",
-        "VLLM_MOE_BATCH", "VLLM_ACTQ", "VLLM_MOE_PAR", "VLLM_MOE_Q4SIMD",
+        "VLLM_MOE_BATCH", "VLLM_ACTQ", "VLLM_ACTQ16",
+        "VLLM_MOE_PAR", "VLLM_MOE_Q4SIMD",
         /* P3 前缀复用门：--l3-evict 开启时 prefix-kv 会被静默打掉，必须靠这个
          * env 才能让 L3 驱逐与前缀复用共存。管理页有对应勾选框，故需回填。 */
         "VLLM_L3_PREFIX_REUSE",
