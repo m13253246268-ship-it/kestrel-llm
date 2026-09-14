@@ -166,6 +166,37 @@ Peak VmHWM: full 12,705,354 -> **12,722,536 kB (+0.14%)**; per-layer 708,162 -> 
 
 > Basis: both models run `--stream-n 32`, but 8B reaches EOS early and **actually emits 29 tokens** (30B emits 32). "Cold" = `sync; echo 3 > /proc/sys/vm/drop_caches` before each point; "warm" = no `drop_caches`, and each warm point is preceded by a discarded warm-up run (`--stream-n 16`) so both builds start from the same cache state.
 
+**Addendum: 30B-A3B "ACTQ track x residency" 2x2 (same-version characterization, **controlled A/B**)**
+> The main table above answers "how much did the new build gain". This addendum answers a different question: the trade-off between two orthogonal dimensions **inside one binary** -- `VLLM_ACTQ` (exact track / approximate track) and `VLLM_VQF_STREAM` (full-layer / per-layer). It uses the same basis as this section (`--stream-n 32 --threads 4`, with a discarded `--stream-n 16` warm-up before each point) and runs **the 4 configurations interleaved within a round**, 2 rounds.
+
+| Track | Residency | prefill (pure compute) | prefill (end to end) | GATEUP | decode (steady) | Peak VmHWM | TOKIDS |
+|---|---|---|---|---|---|---|---|
+| exact | full | 6,528 / 6,530 ms | 6.670 / 6.658 s | 6,240 ms | **325 ms/tok** | 12,286 / 12,278 MB | `41eae062e4ee` |
+| exact | per-layer | 6,514 / 6,539 ms | 6.946 / 6.962 s | 6,212 / 6,230 ms | **572 / 573 ms/tok** | **695 MB** | `41eae062e4ee` |
+| ACTQ | full | 2,644 / 2,645 ms | 2.762 / 2.781 s | 2,379 ms | **197 ms/tok** | 12,354 / 12,346 MB | `1fd42e485639` |
+| ACTQ | per-layer | 2,665 / 2,654 ms | 3.057 / 3.032 s | 2,396 / 2,385 ms | **428 / 430 ms/tok** | **695 / 691 MB** | `1fd42e485639` |
+
+(One value per round. "Pure compute" is the engine's `[PREFILL-TIMING] total`; "end to end" is `[STREAM] prefill ... in`.)
+
+**Three quotable conclusions**
+
+- **ACTQ track**: prefill pure compute is **2.47x** faster (full) / **2.45x** (per-layer); end to end 2.40x / 2.28x. Decode is **1.65x** faster (full, 325 -> 197 ms/tok) / **1.34x** (per-layer, 572 -> 428).
+- **Per-layer residency costs almost no compute**: prefill pure compute **ties** with full-layer (exact 6,514/6,528 = 1.000x; ACTQ 1.006x); end to end is only 4.4% / 9.9% higher (that is per-layer page establishment and scheduling). **The cost sits almost entirely in decode**: exact +76% (325 -> 572), ACTQ +117% (197 -> 430).
+- **Peak memory**: full 12,278-12,354 MB -> per-layer 691-695 MB, i.e. **17.7x**.
+
+**Correctness (this dataset also yields the criterion for a "track")**
+
+All 4 exact-track runs (2 rounds x 2 residencies) produce identical TOKIDS (`41eae062e4ee`), all 4 ACTQ-track runs are likewise identical to each other (`1fd42e485639`), but the **two tracks differ from each other**. So: **residency does not change the numbers (per-layer is bit-identical to full-layer); only switching the track does** (ACTQ is an approximate track). Exact-track logs contain no `[ACTQ]` / `[ACTQ16]` line; every ACTQ-track run prints `[ACTQ] VLLM_ACTQ=1: q4 MoE int8-dot approximate track ON`.
+
+**Cross-check against the table above (two independent sessions)**: this addendum's exact-track full t4 warm prefill is **6.670 / 6.658 s** and per-layer is **6.946 / 6.962 s**, matching this section's new-build figures of **6.67 s / 6.93 s**; decode 325 ms/tok matches **324 ms/tok**. The ACTQ-track full-layer 2.76-2.78 s also falls inside the "`ACTQ=1` plus batching about 2.7-3.4 s" band stated above. The numbers are therefore usable as a baseline.
+
+> **Two reading rules**
+>
+> 1. **The round-1 "full" decode averages (445 / 275 ms/tok) must not be quoted.** The per-token detail shows `r1_exact_full` steady at 322-325 ms for the first 16 tokens, then jumping to 355 -> 907 -> 883 -> 859 -> 607 -> ...; `r1_actq_full` steady at 195-203 ms for the first 23 tokens, then jumping at t=24 to 675 / 346 / 644 / 605 / .... The round-2 runs of the same configurations are steady across all 32 tokens (323-328 / 196-199, coefficient of variation 0.4%), and both per-layer points are steady too (0.7-1.5%). Round-1 full-layer decode is therefore judged **contaminated by external interference (page-cache reclaim / I/O)**; this table takes decode from round 2 only. Prefill is unaffected (0.02-0.8% spread across rounds, directly quotable).
+> 2. The gap between "end to end" and "pure compute" prefill (about 140 ms exact, about 430 ms per-layer) comes from process startup and per-layer page establishment and is **not part of the compute basis**, which is why both numbers are given.
+
+> Environment: `governor=performance` throughout; temperature 30.5-45.3 C; all 8 cores at constant frequency (A55 1,800,000 kHz / A76 2,304,000 kHz); page cache steady at 15.3-15.5 GB; logs confirm every point took the batched path (`[batch]`).
+
 ---
 
 ### 2) Steady-state basis (serve, **new points, single-shot**)

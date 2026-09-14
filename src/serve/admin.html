@@ -206,13 +206,31 @@ a{color:var(--acc)}
   <!-- MoE 优化 (Qwen3-30B-A3B 稀疏专家) -->
   <div class="card">
     <h2 data-en="MoE Optimization (Sparse Experts)">MoE 优化（稀疏专家）</h2>
+    <div class="sec" data-en="Precision / speed track (pick one)">精度 / 速度轨（三选一）</div>
+    <label class="fld"><span class="t" data-en="q4-expert compute track">q4 专家计算轨</span>
+      <select id="f_moe_track">
+        <option value="exact" data-en="Exact track (default): bit-identical, ACTQ16=0 + ACTQ=0, no precision loss">精确轨（默认）：位级一致，ACTQ16=0 + ACTQ=0，无精度损失</option>
+        <option value="s16" data-en="s16 light approximation: ACTQ16=1, error ~1e-5 (x86 kernel only; on the ARM board it is a no-op)">s16 轻量近似：ACTQ16=1，误差约 1e-5（仅 x86 有内核，板端 ARM 上为空操作）</option>
+        <option value="actq" data-en="ACTQ + batching (fastest): ACTQ=1 + MOE_BATCH=1, error ~0.4%, drifts on long text">ACTQ + 批式（最快）：ACTQ=1 + MOE_BATCH=1，误差约 0.4%，长文本会漂移</option>
+      </select></label>
     <div class="sec" data-en="Batched prefill (cross-token fusion)">批式 prefill（跨 token 融合）</div>
     <div class="chkrow"><input type="checkbox" id="f_moe_batch"><label for="f_moe_batch"><span data-en="MoE cross-token batching ">MoE 跨 token 批式 </span><b>(VLLM_MOE_BATCH)</b><span data-en=" — on by default: GATEUP 2.60×(t4) / 3.95×(t8), bit-identical to the per-token path; decode unaffected"> — 默认开：GATEUP 2.60×(t4) / 3.95×(t8)，与逐 token 路径位级一致；decode 不受影响</span></label></div>
-    <div class="sec" data-en="int8-dot approximate track">int8-dot 近似轨</div>
-    <div class="chkrow"><input type="checkbox" id="f_actq"><label for="f_actq"><span data-en="q4 expert int8-dot approximate track ">q4 专家 int8-dot 近似轨 </span><b>(VLLM_ACTQ)</b><span data-en=" — off by default: "> — 默认关：</span><b data-en="approximate compute">近似计算</b><span data-en=" (not bit-identical to the exact track); ">（与精确轨非位级一致）；</span><b data-en="hard prerequisite for batching to take effect">批式生效的硬前提</b></label></div>
     <div class="sec" data-en="Parallelism &amp; SIMD">并行与 SIMD</div>
     <div class="chkrow"><input type="checkbox" id="f_moe_par"><label for="f_moe_par"><span data-en="Expert parallelism ">专家并行 </span><b>(VLLM_MOE_PAR)</b><span data-en=" — on by default; disabling falls back to a serial expert loop"> — 默认开；关闭回退串行专家循环</span></label></div>
     <div class="chkrow"><input type="checkbox" id="f_moe_q4simd"><label for="f_moe_q4simd"><span data-en="q4 MoE row-group SIMD ">q4 MoE 行组 SIMD </span><b>(VLLM_MOE_Q4SIMD)</b><span data-en=" — on by default; disabling falls back to scalar"> — 默认开；关闭回退标量</span></label></div>
+    <div class="chkrow" id="trackWarn" style="display:none;color:var(--warn);font-size:12px;line-height:1.6"></div>
+    <div style="font-size:11px;color:var(--tx2);line-height:1.75" data-en-html="<b>Notes (the three tracks are mutually exclusive; only the exact track is reproducible)</b><br>1. The exact track is bit-identical (A equals C) and can be matched bit-by-bit against any reference; s16 and ACTQ are approximation tracks whose output is not bit-identical to the exact track.<br>2. s16 and ACTQ are mutually exclusive with s16 taking priority (the engine force-disables ACTQ when the s16 track is active).<br>3. The s16 track currently has an x86 kernel only; on ARM it is a constant-0 stub, so selecting it on the board equals the exact track: no speedup and no error.<br>4. ACTQ uses int8 activation quantization with about 0.4% error; measured greedy decoding starts drifting after about 23 tokens (t about 24 on long text).<br>5. ACTQ also needs three conditions at once: the model was converted with --wmode q4, the expert geometry holds (ff divisible by ne and 4-row aligned), and the ARM build has NEON dotprod.<br>6. EP (expert parallelism / distributed expert extraction) scenarios must stay on the exact track: main.c forces ACTQ16=0, and either ACTQ or ACTQ16 turns the M1/M2 bit-exact comparison into a false comparison.<br>7. Batched prefill is independent of the track: on the exact track it is still a bit-identical cross-token fusion (on by default, no precision loss); on the ACTQ track it switches to the int8 approximate kernel.<br>8. The env for this card is read once at process start: after changing it, click Save and restart the engine for it to take effect.<br>9. When in doubt, keep the exact track: on the board the 30B exact-track prefill already dropped from about 37 s to about 7 s (5.3x), at the cost of still being about 2.3x slower than ACTQ + batching.">
+      <b>注意事项（三轨互斥，只有精确轨可复现）</b><br>
+      1. 精确轨 = 位级一致（A 等同于 C），可与任意参考实现逐位对拍；s16 与 ACTQ 都是近似轨，输出与精确轨不逐位相同。<br>
+      2. s16 与 ACTQ 互斥且 s16 优先（引擎内命中 s16 时强制关掉 ACTQ）。<br>
+      3. s16 轨目前只有 x86 内核，板端 ARM 是「恒 0」安全桩：在板端选它等于精确轨，不会有任何提速，也不会报错。<br>
+      4. ACTQ 走 int8 激活量化，误差约 0.4%，实测贪婪解码在约 23 token 后开始漂移（长文本 t 约 24 起）。<br>
+      5. ACTQ 生效还需三个条件同时成立：模型按 --wmode q4 转换、专家几何成立（ff 能被 ne 整除且 4 行对齐）、ARM 上编译期具备 NEON dotprod。<br>
+      6. EP（专家并行 / 分布式专家抽取）场景必须留在精确轨：main.c 会强制 ACTQ16=0，且 ACTQ / ACTQ16 都会让 M1/M2 位级对拍变成假对拍。<br>
+      7. 「批式 prefill」与轨道相互独立：精确轨下它也是位级一致的跨 token 融合（默认开，无精度损失）；ACTQ 轨下它改走 int8 近似核。<br>
+      8. 本卡片的 env 在进程启动时读取一次：改完需「保存配置」并重启引擎才生效。<br>
+      9. 拿不准就留精确轨：板端 30B 精确轨 prefill 已从约 37 s 降到约 7 s（5.3 倍），代价是仍比 ACTQ+批式慢约 2.3 倍。
+    </div>
     <div style="font-size:12px;color:var(--tx2);margin-top:6px"><span data-en="Applies to ">仅对 </span><b data-en="q4 experts">q4 专家</b><span data-en=" only (non-q4 falls back to per-token automatically); after clicking Save, restart the engine for it to take effect. For parameter details see 《核心性能参数配置注意事项.md》.">生效（非 q4 自动回落逐 token）；标记「保存」后需重启引擎生效。参数口径见《核心性能参数配置注意事项.md》。</span></div>
   </div>
 
@@ -336,10 +354,10 @@ a{color:var(--acc)}
       <button id="btn_attcheck" data-en="Refresh">刷新</button>
     </div>
     <div class="msg" id="attmsg"></div>
-    <div style="font-size:11px;color:var(--tx2);line-height:1.7" data-en-html="Verification: the chat page (<b>/chat</b>) marks every reply with a verifiable badge — click it to recompute SM3(request bytes) + SM3(digest) and verify the SM2 signature in-browser, or export proof.json / request.json / output.txt and re-verify offline with <b>tools/verify_attest.py</b>. The switch takes effect after saving the config and restarting the engine.">
+    <div style="font-size:11px;color:var(--tx2);line-height:1.7" data-en-html="Verification: the chat page (<b>/chat</b>) marks every reply with a verifiable badge — click it to recompute SM3(request bytes) + SM3(digest) and verify the SM2 signature in-browser, or export proof.json / request.json / output.txt and re-verify offline with <b>tools/security/verify_attest.py</b>. The switch takes effect after saving the config and restarting the engine.">
       验证方式：对话页（<b>/chat</b>）每条回复带「可验证」徽标 —— 点开即在浏览器内复算
       SM3(请求原文) + SM3(摘要) 并验证 SM2 签名；也可导出 proof.json / request.json / output.txt，
-      用 <b>tools/verify_attest.py</b> 离线复验。开关需「保存配置」并重启引擎后生效。
+      用 <b>tools/security/verify_attest.py</b> 离线复验。开关需「保存配置」并重启引擎后生效。
     </div>
   </div>
 
@@ -589,6 +607,9 @@ async function loadStatus(){
   try {
     s = await eng("/admin/api/status");
     ok = true;
+    /* s16 轨是 x86-only（ARM 侧恒 0 桩），换轨告警文案按平台区分；每轮刷新重绘。 */
+    isArm = /aarch64|arm/i.test(s.device_arch || "");
+    if ($("f_moe_track")) updateTrackWarn();
     const g = $("stGrid");
     g.innerHTML = "";
     const items = [
@@ -710,11 +731,17 @@ function fillForm(c){
   $("f_row_slice").value = ev.VLLM_ROW_SLICE || "";
   /* MoE 优化：默认开项用「!== "0"」，默认关项用「=== "1"」 */
   $("f_moe_batch").checked = ev.VLLM_MOE_BATCH !== "0";
-  $("f_actq").checked = ev.VLLM_ACTQ === "1";
+  /* 精度/速度轨（三选一）：与引擎侧 actq16_env()/moe_q4_actq_ok() 同口径 ——
+   * ACTQ16 与 ACTQ 互斥且 ACTQ16 优先；ACTQ16 未显式给定时按平台默认
+   * （x86 默认开、ARM 为恒 0 安全桩）→ ARM 上缺省即精确轨。 */
+  $("f_moe_track").value = (ev.VLLM_ACTQ === "1") ? "actq"
+      : (ev.VLLM_ACTQ16 === "1" || (ev.VLLM_ACTQ16 === undefined && !isArm)) ? "s16"
+      : "exact";
   $("f_moe_par").checked = ev.VLLM_MOE_PAR !== "0";
   $("f_moe_q4simd").checked = ev.VLLM_MOE_Q4SIMD !== "0";
   $("f_auto_start").checked = !!c.auto_start;
   updateP3Warn();
+  updateTrackWarn();
   badgeT($("cfgBadge"), "配置: 已载入", "Config: loaded", "ok");
   applyLang();
 }
@@ -767,8 +794,14 @@ function collectEnv(){
   const rs = $("f_row_slice").value.trim();
   if (rs && rs !== "auto") ev.VLLM_ROW_SLICE = rs;
   /* MoE 优化：只写非默认值，保持 config.json 精简（缺省即引擎默认） */
+  /* 精度/速度轨（三选一）：ACTQ16 一律显式写 —— x86 上它默认开，不写 0 会让
+   * 「精确轨」退化成 s16 轨；ARM 上它是恒 0 桩，写了也无副作用。
+   * actq 轨还必须显式关 ACTQ16（引擎内 ACTQ16 优先），否则仍走 s16。 */
+  const track = $("f_moe_track").value;
+  if (track === "actq") { ev.VLLM_ACTQ16 = "0"; ev.VLLM_ACTQ = "1"; }
+  else if (track === "s16") { ev.VLLM_ACTQ16 = "1"; }
+  else { ev.VLLM_ACTQ16 = "0"; }
   if (!$("f_moe_batch").checked) ev.VLLM_MOE_BATCH = "0";
-  if ($("f_actq").checked) ev.VLLM_ACTQ = "1";
   if (!$("f_moe_par").checked) ev.VLLM_MOE_PAR = "0";
   if (!$("f_moe_q4simd").checked) ev.VLLM_MOE_Q4SIMD = "0";
   if ($("f_vqf_prewarm").checked) ev.VLLM_VQF_PREWARM = "1";
@@ -844,11 +877,14 @@ function applyFields(o){
   if (o.spec != null)            $("f_spec").checked = !!o.spec;
   if (o.spec_k != null)          $("f_spec_k").value = String(o.spec_k);
   if (o.moe_batch != null)       $("f_moe_batch").checked = !!o.moe_batch;
-  if (o.actq != null)            $("f_actq").checked = !!o.actq;
+  if (o.moe_track != null)       $("f_moe_track").value = o.moe_track;
+  /* 兼容台账的简写：actq:true = 选中 ACTQ 轨，false = 回到精确轨 */
+  if (o.actq != null)            $("f_moe_track").value = o.actq ? "actq" : "exact";
   if (o.vqf_stream != null)      $("f_vqf_stream").checked = !!o.vqf_stream;
   if (o.npu != null)             $("f_npu").checked = !!o.npu;
   if (o.npu_load != null)        $("f_npu_load").value = String(o.npu_load);
   updateP3Warn();
+  updateTrackWarn();
 }
 function applyPreset(){
   const p = PRESETS[$("f_preset").value];
@@ -916,8 +952,8 @@ const COMBO_ROWS = [
     sw_en: "env VLLM_ACTQ=1 VLLM_MOE_BATCH=1 (+ per-layer / P3); model must be converted with --wmode q4",
     ev: "prefill <b>10.78×</b>（37.5s → 3.48s）/ decode <b>3.20×</b>（30B 逐层 t4）",
     ev_en: "prefill <b>10.78×</b> (37.5s → 3.48s) / decode <b>3.20×</b> (30B per-layer t4)",
-    note: "ACTQ 是近似轨（与精确轨非位级一致），且是 MOE_BATCH 生效硬前提",
-    note_en: "ACTQ is an approximate track (not bit-identical to the exact track) and a hard prerequisite for MOE_BATCH",
+    note: "ACTQ 是近似轨（与精确轨非位级一致，长文本约 23 token 后漂移）；批式 prefill 与轨道无关，精确轨下同样位级一致",
+    note_en: "ACTQ is an approximation track (not bit-identical to the exact track; drifts after about 23 tokens on long text); batched prefill is independent of the track and is bit-identical on the exact track too",
     plat: [],
     set: { actq: true, moe_batch: true } },
 
@@ -989,6 +1025,9 @@ function comboApply(i){
  * 一致即命中；set 为空（⑥ 的 --batch-max 页面上无对应控件）不参与判定；多行同时
  * 命中是正常的（②/③/④ 都是在①的重叠子集上叠加）。 */
 let curCfg = null;
+/* 引擎所在设备的架构（/admin/api/status 的 device_arch）：s16 轨只有 x86 内核，
+ * 板端 ARM 上是恒 0 安全桩，换轨告警与配置回填都要按平台区分。 */
+let isArm = false;
 function cfgNum(v, d){ return (v == null || v === "") ? d : Number(v); }
 function cfgValOf(c, k){
   const ev = c.env || {};
@@ -1032,6 +1071,27 @@ function updateP3Warn(){
   if (!el) return;
   el.style.display = ($("f_l3_evict").checked && !$("f_l3_prefix_reuse").checked)
                      ? "block" : "none";
+}
+/* 精度/速度轨联动告警：选近似轨就明说「与精确轨不逐位一致」；s16 轨在 ARM 上
+ * 是恒 0 桩（引擎侧无内核），必须点破「选了等于没选」，否则用户会以为提速了。 */
+function updateTrackWarn(){
+  const el = $("trackWarn");
+  if (!el) return;
+  const tr = $("f_moe_track").value;
+  if (tr === "s16"){
+    el.textContent = T(
+      isArm ? "s16 近似轨：误差约 1e-5，与精确轨不逐位一致。当前引擎为 ARM，板端无 s16 内核（恒 0 安全桩）：此选择不会生效，等价于精确轨。"
+            : "s16 近似轨：误差约 1e-5，与精确轨不逐位一致（TOKIDS 锚点级一致）。",
+      isArm ? "s16 approximation track: about 1e-5 error, not bit-identical to the exact track. This engine is ARM, which has no s16 kernel (constant-0 stub): the selection has no effect and equals the exact track."
+            : "s16 approximation track: about 1e-5 error, not bit-identical to the exact track (anchor-level TOKIDS agreement).");
+  } else if (tr === "actq"){
+    el.textContent = T(
+      "ACTQ 近似轨：int8 激活量化误差约 0.4%，长文本贪婪解码约 23 token 后开始漂移；需模型按 --wmode q4 转换、专家几何成立。",
+      "ACTQ approximation track: about 0.4% int8 activation-quantization error; greedy decoding drifts after about 23 tokens on long text. Needs a --wmode q4 model and valid expert geometry.");
+  } else {
+    el.textContent = "";
+  }
+  el.style.display = el.textContent ? "block" : "none";
 }
 
 /* ---- device profile helpers ---- */
@@ -1121,7 +1181,7 @@ async function opStart(){
   try {
     const r = await mgr("/api/start", {method: "POST"});
     msg($("opmsg2"), r.ok ? T("已提交启动。模型加载约需数分钟，请查看日志。", "Start submitted. Model loading takes a few minutes; check the log.") : T("启动失败: ", "Start failed: ") + (r.error||""), !!r.ok);
-  } catch (e) { msg($("opmsg2"), T("supervisor 不可达 (", "supervisor unreachable (") + mgrBase + T(")。请在板端运行: python3 tools/vllm_mgr.py --serve", "). Run on the board: python3 tools/vllm_mgr.py --serve"), false); }
+  } catch (e) { msg($("opmsg2"), T("supervisor 不可达 (", "supervisor unreachable (") + mgrBase + T(")。请在板端运行: python3 tools/ops/vllm_mgr.py --serve", "). Run on the board: python3 tools/ops/vllm_mgr.py --serve"), false); }
   setTimeout(loadStatus, 1500);
 }
 async function opRestart(){
@@ -1312,6 +1372,8 @@ $("btn_preset").onclick = applyPreset;
 /* L3 卡片的联动告警 + 有效组合台账渲染 */
 $("f_l3_evict").onchange = updateP3Warn;
 $("f_l3_prefix_reuse").onchange = updateP3Warn;
+/* MoE 精度/速度轨联动告警（选近似轨时明示精度代价） */
+$("f_moe_track").onchange = updateTrackWarn;
 renderCombos();
 $("btn_applydev").onclick = applyDevRecommend;
 $("btn_start").onclick = opStart;
