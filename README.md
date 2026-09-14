@@ -408,6 +408,27 @@ curl http://<board>:8080/v1/chat/completions \
   首次使用先跑板端校准：`./vllm_kestrel --npu --npu-selftest --perf-only`
   （寄存器命令表未校准通过前提交路径保持禁用，自动回退 CPU）。
 
+### 5) 分布式专家并行（EP）——**仅限可信网络**
+
+把 MoE 专家分片到多台机器上协同推理，让单板内存放不下的大模型也能跑起来。
+
+```bash
+# rank0（协调者）与 rank r>0（工作者）；跨机时 --ep-host 填对端的板 IP
+# rank0:
+./vllm_kestrel --moe-ep-coord  --ep-nranks 2 --ep-host 0.0.0.0 --ep-port 29500 \
+    --model <model-dir> --auto-load --wmode q4
+# rank r:
+./vllm_kestrel --moe-ep-worker --ep-nranks 2 --ep-host <rank0-ip> --ep-port 29500 \
+    --model <model-dir> --auto-load --wmode q4
+```
+
+- EP 的正确性口径是**各 rank（含跨 ISA）输出逐位一致**；引擎会自动把 `VLLM_ACTQ16` 置 0
+  （近似轨不参与跨机一致性对拍），无需手工设置。
+- ⚠️ **EP 的传输协议没有鉴权、没有完整性校验、也没有版本号**：`--ep-host` 默认
+  `127.0.0.1`（只监听本机），**一旦为跨机而绑定板 IP，该端口就对整个局域网开放**——
+  任何能连上它的主机都可参与张量交换。请只在可信网络内使用，必要时用网段隔离或隧道，
+  **切勿暴露到公网**。详见 [SECURITY.md](SECURITY.md)「三、安全面」。
+
 ---
 
 ## 模型转换工具（vqf_convert/）
