@@ -95,4 +95,14 @@ void vqf_stream_willneed_to(int keep);
 void vqf_ffn_prefetch(const STModelWeights *w, int layer,
                       const int *sel, int tk);
 
+/* EP 专家分片导出（方案 A，资料/分布式专家提取_实施方案.md）：
+ * 把全量 VQF 导出为"本 rank 独占"的稀疏分片 —— 布局与源文件逐字节同构
+ * （header/directory/data_offset/file_len/flags/arch 照抄），只物化本 rank 的
+ * q4_gate/q4_up/q4_down 字节区间，其余留空洞。产物是**合法 VQF**，引擎
+ * `vqf_load` 与 EP 路径无需任何改动即可加载。
+ *   rank ∈ [0, nranks)，且须整除 arch.n_experts。
+ * 返回 0 = 成功；非 0 = 失败（原因打印到 stderr）。仅明文 VQF。 */
+int vqf_export_ep_shard(const char *src_path, int rank, int nranks,
+                        const char *out_path);
+
 #endif /* VQF_H */
