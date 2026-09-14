@@ -4,7 +4,7 @@
 verify_attest.py - vllm_kestrel 可验证推理凭证（attest）一键离线验证脚本。
 
 用法（对归档的推理记录出证）：
-    python tools/verify_attest.py \
+    python tools/security/verify_attest.py \
         --proof proof.json        # 响应 JSON 中的 "attest" 对象（原样保存）
         --request req.json        # 客户端当时 POST 的原始请求体（逐字节）
         --output out.txt          # 当时收到的 assistant 输出文本（逐字节）

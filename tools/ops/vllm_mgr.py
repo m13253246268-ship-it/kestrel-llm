@@ -10,12 +10,12 @@ A tiny zero-dependency (stdlib-only) process manager that:
     page at :8080/admin/ can start the engine after a shutdown
 
 Usage:
-  python3 vllm_mgr.py status                 # show engine status
-  python3 vllm_mgr.py start                  # launch the engine (nohup)
-  python3 vllm_mgr.py stop                   # stop it (SIGTERM -> SIGKILL)
-  python3 vllm_mgr.py restart                # stop then start
-  python3 vllm_mgr.py selftest               # run --npu-calib, print result
-  python3 vllm_mgr.py serve [--serve 8082]   # HTTP supervisor (daemon loop)
+  python3 tools/ops/vllm_mgr.py status                 # show engine status
+  python3 tools/ops/vllm_mgr.py start                  # launch the engine (nohup)
+  python3 tools/ops/vllm_mgr.py stop                   # stop it (SIGTERM -> SIGKILL)
+  python3 tools/ops/vllm_mgr.py restart                # stop then start
+  python3 tools/ops/vllm_mgr.py selftest               # run --npu-calib, print result
+  python3 tools/ops/vllm_mgr.py serve [--serve 8082]   # HTTP supervisor (daemon loop)
 
 Config file schema (written by the admin page):
   { "model_dir": "<path-to-model-dir>", "kv_q4": false,
@@ -44,9 +44,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-# Repo root (one level up from tools/), overridable for board layouts that do
-# not match the repository layout (e.g. a dedicated deploy directory).
-REPO = os.environ.get("VLLM_MGR_REPO", os.path.dirname(HERE))
+# Repo root (two levels up from tools/ops/), overridable for board layouts that
+# do not match the repository layout (e.g. a dedicated deploy directory).
+REPO = os.environ.get("VLLM_MGR_REPO", os.path.dirname(os.path.dirname(HERE)))
 
 def env_path(name, dflt):
     v = os.environ.get(name)
@@ -65,8 +65,8 @@ def find_bin():
     v = os.environ.get("VLLM_MGR_BIN")
     if v and os.path.isfile(v):
         return v
-    for c in (os.path.join(HERE, "..", "build-rk3588", "vllm_kestrel"),
-              os.path.join(HERE, "..", "build", "vllm_kestrel"),
+    for c in (os.path.join(HERE, "..", "..", "build-rk3588", "vllm_kestrel"),
+              os.path.join(HERE, "..", "..", "build", "vllm_kestrel"),
               os.path.join(REPO, "build-rk3588", "vllm_kestrel"),
               "./build-rk3588/vllm_kestrel"):
         if os.path.isfile(c):

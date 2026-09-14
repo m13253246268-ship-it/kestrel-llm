@@ -12,7 +12,7 @@ Run on an x86_64 Linux host with rknn-toolkit2 installed:
 
     pip install rknn-toolkit2 numpy onnx
 
-    python tools/npu_export_ops.py \
+    python tools/npu/npu_export_ops.py \
         --config <model-config-dir>/config.json \
         --out npu_ops --mode fp32 --m-list 1,16
 

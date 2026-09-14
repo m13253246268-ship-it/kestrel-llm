@@ -3253,7 +3253,7 @@ static void handle_health(VLLMServerCtx *ctx, VHttpResponse *resp) {
 
 /* ---------- /v1/attest (可验证推理的公开参数) ----------
  * 下发设备公钥 + 算法/schema/SM2 用户 ID，供验证方（对话页的浏览器内自验、
- * tools/verify_attest.py）离线复算与验签；不含任何机密（私钥永不离开设备）。*/
+ * tools/security/verify_attest.py）离线复算与验签；不含任何机密（私钥永不离开设备）。*/
 static void handle_attest_info(VLLMServerCtx *ctx, VHttpResponse *resp) {
     char *body = (char *)malloc(1024);
     if (!body) { json_error(resp, 500, "Out of memory"); return; }

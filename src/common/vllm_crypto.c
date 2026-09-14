@@ -702,7 +702,7 @@ int vc_secure_rand(uint8_t out[32]) {
 #elif defined(_WIN32)
     /* Windows：BCryptGenRandom（内核 CSPRNG）。原本这里直接 return -1，
      * 导致 x86/Windows 上出证与 VQF 签名一路被判为「密钥不可用」而静默
-     * 关闭；与 tools/vllm_vqf_sign.c 的兜底口径保持一致。 */
+     * 关闭；与 tools/security/vllm_vqf_sign.c 的兜底口径保持一致。 */
     BCRYPT_ALG_HANDLE h = NULL;
     if (BCryptOpenAlgorithmProvider(&h, BCRYPT_RNG_ALGORITHM, NULL, 0) != 0)
         return -1;

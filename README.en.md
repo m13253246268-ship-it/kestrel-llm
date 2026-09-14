@@ -46,7 +46,7 @@ OpenAI-compatible HTTP API is available immediately.
 
 | Strength | One-line metric |
 |---|---|
-| **Per-layer residency** (new in v1) | Resident memory decoupled from model size: **8B resident weights 4.19 GB → 0.48 GB (8.7×)**, serve peak **0.82 GB**; warm **TTFT 1.95 s / tpot 377 ms**, spread over 5 samples **±1.8% / ±0.13%** |
+| **Per-layer residency** (new in v1) | Resident memory decoupled from model size: **8B resident weights 4.19 GB → 0.48 GB (8.7×)**, serve peak **0.82 GB**; warm, remotely re-measured **TTFT 1.73 s / tpot 330 ms** (median of 5 identical requests, see "Performance" §4) |
 | **Long text and multi-turn** | Combo ① (L3 eviction × prefix reuse) cuts follow-up-turn prefill by **−80% ~ −96%**; with MoE combo ⑤ the 30B reaches **4.7 s / 3.2 s** for t2/t3 |
 | **In-house format and kernels** | Only the in-house VQF v2 single file; single ~0.8 MB binary, zero third-party runtime; hand-written NEON quantized GEMM/GEMV, own thread pool, own SM2/SM3/SM4 |
 | **Verifiable inference** | SM2 supply-chain signature protects weights + per-request attestation proof (schema 3), verified in-browser or offline with zero dependencies |
@@ -73,9 +73,11 @@ and stable serving.** The 2B case is even more direct: resident weights of just 
 less than full residency, at the cost of warm-state tpot rising from 113.0 ms to 156.7 ms
 (+38.7%).
 
-**The recommended tier is 8B** (measured 2026-09-12, see "Performance" §4): resident weights
-4.19 GB → **0.48 GB (8.7×)**, serve peak **0.82 GB**, warm **TTFT 1.95 s / tpot 377 ms**
-(27.9 s end-to-end for 70 tokens), with a **±0.13% tpot spread over 5 samples**. Its 6.15 GiB of
+**The recommended tier is 8B** (with the 2026-09-15 RK3588 remote re-test as the current public
+baseline, see "Performance" §4): resident weights 4.19 GB → **0.48 GB (8.7×)**, serve peak
+**0.82 GB**, warm **TTFT median 1.734 s / tpot median 330.2 ms** (range `1.711-1.796 s` /
+`328.9-330.6 ms`, about 24.5 s end-to-end for 70 tokens), with a **tpot spread of about ±0.26% over
+5 samples**. Its 6.15 GiB of
 weights are **smaller than physical RAM**, so the page cache holds them and warm-state stability
 is guaranteed by physics — something the 30B cannot claim (see "Performance" §4 and §5).
 
@@ -243,7 +245,7 @@ Combo 1 = `--sparse-attn --sparse-k 32 --l3-evict --l3-ratio 0.75 --l3-min-seq 1
 
 ---
 
-### 4) 8B: the recommended tier delivers
+### 4) 8B: the recommended tier delivers (with the 2026-09-15 RK3588 remote re-test as the current public baseline)
 
 **Thread A/B (warm page cache, controlled A/B, 2 rounds each)**
 
@@ -254,20 +256,26 @@ Combo 1 = `--sparse-attn --sparse-k 32 --l3-evict --l3-ratio 0.75 --l3-min-seq 1
 
 Both builds agree at each tier. The RK3588 has 4x A76 + 4x A55, and `--threads 8` pulls the four A55 little cores into the GEMM parallel region, making **decode 1.8-2.5x slower**. **Always use `--threads 4` for 8B.**
 
-**Per-layer serve + short request (`--no-think`, `max_tokens=96`, naturally ends at 70 tokens; new points)**
+**Per-layer serve + short request (`--no-think`, `max_tokens=96`, naturally ends at 70 tokens; remote re-test on the Gitee tree)**
 
 | Tier | TTFT | Total | tpot | Peak VmHWM |
 |---|---|---|---|---|
-| cold (first request after `drop_caches`) | 72.09 s | 94.87 s | 328.8 ms | 613,084 kB |
-| **warm (5 consecutive identical requests)** | **1.662-1.775 s** | **23.97-24.17 s** | **322.3-325.1 ms** | 805,240 kB |
+| cold (first request after `drop_caches`) | 72.613 s | 95.505 s | 331.8 ms | 612,868 kB |
+| **warm (5 consecutive identical requests)** | **median 1.734 s** (1.711-1.796) | **about 24.5 s** (24.408-24.610) | **median 330.2 ms** (328.9-330.6) | 824,152 kB |
 
-Across the 5 warm samples the **tpot spread is only 0.9%** (one TTFT outlier at 1.775 s, the rest about 1.66 s).
+Across the 5 warm samples the **tpot spread is only 0.5%** and the TTFT spread about **4.9%**; these
+figures come from the same remote board, the same binary and 5 consecutive identical requests, so
+they serve as the current public baseline for the recommended tier.
 
 **Why 8B is the recommended tier (three points, all reproducible)**:
 
-1. **It collects the full memory saving**: resident weights drop from 4.23 GB to **0.59 GB (7.12x)**, with a serve peak of **0.81 GB**.
-2. **Warm-state stability is physically guaranteed**: the 6.15 GiB of weights **fit in the 15.9 GB page cache**, so warm behaviour is not a gamble.
-3. **The one-off cold-start cost is low**: 72.1 s, because the cost scales with weight size divided by storage bandwidth.
+1. **It collects the full memory saving**: under `--stream-test` with a cold page cache, resident
+   weights drop from 4.19 GB to **0.48 GB (8.7×)**, with a serve per-layer peak of **0.82 GB**.
+2. **Warm-state stability is physically guaranteed**: the 6.15 GiB of weights **fit in the 15.9 GB
+   page cache**, so warm behaviour is not a gamble; across 5 consecutive identical requests in the
+   remote re-test, tpot stayed within **328.9-330.6 ms**.
+3. **The one-off cold-start cost is low**: cold-state first-request TTFT is **72.613 s**, because the
+   cost scales with weight size divided by storage bandwidth.
 
 **One-command reproduction**: `sh tools/bench/bench_value.sh` (parameters are overridable via environment variables; see the header comment in the script).
 

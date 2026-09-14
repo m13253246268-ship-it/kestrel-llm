@@ -3,7 +3,7 @@
  *
  * 编译（Linux 或 Windows MinGW）：
  *   gcc -O2 -Iinclude -Iinclude/common -Iinclude/model \
- *       src/common/vllm_crypto.c tools/vllm_vqf_sign.c \
+ *       src/common/vllm_crypto.c tools/security/vllm_vqf_sign.c \
  *       -o vllm_vqf_sign [-lbcrypt]        # Windows 生成密钥需要 -lbcrypt
  *
  * 用法：

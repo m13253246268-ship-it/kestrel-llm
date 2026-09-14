@@ -11,13 +11,13 @@
 零第三方依赖，Windows / RK3588 (Python 3.6+) 均可直接运行。
 
 CLI 用法:
-    python vllm_client.py --url http://127.0.0.1:8080 health
-    python vllm_client.py --url http://127.0.0.1:8080 models
-    python vllm_client.py chat "你好" --stream --max-tokens 128
-    python vllm_client.py chat --system "你是一个助手" "介绍一下自己"
-    python vllm_client.py chat --image photo.jpg "这张图里有什么？" --stream
-    python vllm_client.py complete "The capital of France is"
-    echo "你好" | python vllm_client.py chat
+    python tools/client/vllm_client.py --url http://127.0.0.1:8080 health
+    python tools/client/vllm_client.py --url http://127.0.0.1:8080 models
+    python tools/client/vllm_client.py chat "你好" --stream --max-tokens 128
+    python tools/client/vllm_client.py chat --system "你是一个助手" "介绍一下自己"
+    python tools/client/vllm_client.py chat --image photo.jpg "这张图里有什么？" --stream
+    python tools/client/vllm_client.py complete "The capital of France is"
+    echo "你好" | python tools/client/vllm_client.py chat
 """
 
 import argparse

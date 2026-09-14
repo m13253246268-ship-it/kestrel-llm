@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """bench_http_probe.py —— 对 vllm_shs 的 OpenAI 兼容接口做流式延迟探针（零第三方依赖）。
 
-配合 tools/bench_value.sh 使用，也可单独运行。
+配合 tools/bench/bench_value.sh 使用，也可单独运行。
 
 用法:
   python3 bench_http_probe.py [--port 18092] [--n 5] [--max-tokens 96]

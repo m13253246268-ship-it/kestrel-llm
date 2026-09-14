@@ -1,12 +1,12 @@
-﻿# check_x64.ps1 - x86「可验证」回归：构建 + L3/Sparse 自检计数
+﻿﻿﻿﻿# check_x64.ps1 - x86「可验证」回归：构建 + L3/Sparse 自检计数
 #
 # 目的：把「引擎在 x86 上能编译、且数值自检与 ARM 同源」固化成一条命令，
 #       不再依赖"上次手工跑过"的口头证据。
 #       ARM 侧同口径期望值：--test-l3 16/16、--test-sparse 9/9（板端实测一致）。
 #
 # 用法：
-#   powershell -ExecutionPolicy Bypass -File tools\check_x64.ps1
-#   powershell -ExecutionPolicy Bypass -File tools\check_x64.ps1 -Gcc <gcc路径> -OutDir .\build-x64
+#   powershell -ExecutionPolicy Bypass -File tools\build\check_x64.ps1
+#   powershell -ExecutionPolicy Bypass -File tools\build\check_x64.ps1 -Gcc <gcc路径> -OutDir .\build-x64
 #   （-Gcc / -OutDir 省略时透传给 build_x64.ps1 的同名回退规则）
 # 退出码：
 #   0 = 构建成功 且 --test-l3 16/16 且 --test-sparse 9/9
@@ -25,7 +25,7 @@ param(
 
 $ErrorActionPreference = 'Continue'
 
-$root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+$root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 if (-not $OutDir) { $OutDir = Join-Path $root 'build-x64' }
 $exe  = Join-Path $OutDir 'vllm_kestrel_x64.exe'
 

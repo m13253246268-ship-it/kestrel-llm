@@ -7,8 +7,8 @@
 #   B. 逐层档的热态是否稳定？—— 连续 N 次同请求的 TTFT/tpot 波动 + 峰值 VmHWM
 #
 # 用法（板端执行；所有参数均可用环境变量覆盖）：
-#   sh tools/bench_value.sh
-#   MODEL_DIR=/path/to/dir MODEL_FILE=/path/to/model.vqf sh tools/bench_value.sh
+#   sh tools/bench/bench_value.sh
+#   MODEL_DIR=/path/to/dir MODEL_FILE=/path/to/model.vqf sh tools/bench/bench_value.sh
 #
 # 环境变量：
 #   EXE        引擎可执行文件        默认 /mnt/emmc/New_vLLM/vllm_shs
@@ -24,7 +24,7 @@
 #   NO_THINK   1 = 请求带 enable_thinking=false（短问答推荐）默认 1
 #
 # 产物：$OUT/{stream_full.log,stream_layer.log,serve.log,http.json,http.err}
-# 依赖：curl、python3、sha256sum；探针 tools/bench_http_probe.py 与本脚本同目录
+# 依赖：curl、python3、sha256sum；探针 tools/bench/bench_http_probe.py 与本脚本同目录
 # =============================================================================
 set -u
 

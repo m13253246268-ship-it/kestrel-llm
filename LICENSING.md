@@ -55,7 +55,7 @@ commercial licence from the copyright holder.
 | 组件 | 位置 | 许可 |
 |---|---|---|
 | `stb_image.h` | `src/model/stb_image.h` | MIT License, Copyright (c) 2017 Sean Barrett |
-| llama.cpp 派生 4x4 asm GEMM 内核 | `tools/llama_gemm_q4_0_4x4_asm.c`，以及 `src/model/vllm_safetensors.c` 中标注的 ggml_gemm / gemv / vec_dot 派生内核 | MIT License, Copyright (c) 2023–2026 The ggml authors |
+| llama.cpp 派生 4x4 asm GEMM 内核 | `tools/kernels/llama_gemm_q4_0_4x4_asm.c`，以及 `src/model/vllm_safetensors.c` 中标注的 ggml_gemm / gemv / vec_dot 派生内核 | MIT License, Copyright (c) 2023–2026 The ggml authors |
 
 版权声明与许可文本见各文件头。上述 MIT 组件与 AGPL 兼容（MIT 许可允许被纳入 AGPL 作品）。
 

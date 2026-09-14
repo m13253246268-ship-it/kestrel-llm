@@ -1,4 +1,4 @@
-﻿# build_x64.ps1 - Windows x64 (MinGW-w64) 构建脚本（x86「可验证」副产物）
+﻿﻿﻿﻿# build_x64.ps1 - Windows x64 (MinGW-w64) 构建脚本（x86「可验证」副产物）
 #
 # 定位：主树为双架构（aarch64-Linux 一级目标 + x86-64/MinGW 副分支）。x86 构建
 #       只用于「可编译 + 自检与 ARM 同口径」的回归，**不作性能基准**
@@ -6,8 +6,8 @@
 #       所有 x86 代码均以 #if ST_ARCH_X86 / #ifdef _WIN32 / #if ST_HAVE_NEON 门控。
 #
 # 用法：
-#   powershell -ExecutionPolicy Bypass -File tools\build_x64.ps1
-#   powershell -ExecutionPolicy Bypass -File tools\build_x64.ps1 -Gcc D:\tools\mingw64\bin\gcc.exe -OutDir .\build-x64
+#   powershell -ExecutionPolicy Bypass -File tools\build\build_x64.ps1
+#   powershell -ExecutionPolicy Bypass -File tools\build\build_x64.ps1 -Gcc D:\tools\mingw64\bin\gcc.exe -OutDir .\build-x64
 #
 # 参数（均可省略，按顺序回退）：
 #   -Gcc     MinGW-w64 gcc 路径；省略时取 $env:VLLM_GCC，再取 PATH 中的 gcc
@@ -38,7 +38,7 @@ if (-not $Gcc -or -not (Test-Path $Gcc)) {
     exit 1
 }
 
-$root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+$root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 if (-not $OutDir) { $OutDir = Join-Path $root 'build-x64' }
 if (-not (Test-Path $OutDir)) { New-Item -ItemType Directory -Path $OutDir -Force | Out-Null }
 $out = Join-Path $OutDir 'vllm_kestrel_x64.exe'

@@ -16,7 +16,7 @@ runtime), so vocab.bin must store the UN-encoded UTF-8 text, e.g. "答" not
 from the existing vocab.bin.
 
 Usage:
-    python tools/build_vocab_bin.py <tokenizer.json> <vocab.bin> <vocab.bin.new>
+    python tools/build/build_vocab_bin.py <tokenizer.json> <vocab.bin> <vocab.bin.new>
 
   - <tokenizer.json> : HuggingFace tokenizer.json of the target model
   - <vocab.bin>      : an existing engine vocab.bin from the same model
