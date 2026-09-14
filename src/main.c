@@ -512,8 +512,28 @@ static int  g_serve_port = -1;
 static int  g_serve_port_explicit = 0;  /* set only by --port (no interactive prompt) */
 static const char *g_serve_model_dir = NULL;
 static int g_stream_test = 0;   /* --stream-test: AirLLM 型分层驻留验证 */
+static int g_stream_warmup = 0; /* --warmup: 先跑一轮丢弃的 prefill+decode（§9.40 页缓存预热） */
 static int g_stream_n    = 12;  /* --stream-n N: decode token 数 */
+static int g_stream_ctx  = 0;   /* --stream-ctx N: 把 prompt 填充到 ~N token（§9.28 长上下文） */
+static const char *g_stream_ctx_file = NULL; /* --stream-ctx-file <path>: 用真实文本填充（专家多样性） */
 static int g_moe_l0      = -1;  /* --moe-l0 <tok>: M3 layer-0 单 token 对拍 dump */
+static int g_moe_ep      = 0;   /* --test-moe-ep: MoE 专家并行（EP）阶段一自检 */
+static int g_moe_ep_coord  = 0; /* --moe-ep-coord: M3 多进程 EP 协调者（rank0） */
+static int g_moe_ep_worker = 0; /* --moe-ep-worker: M3 多进程 EP 工作者（rank r） */
+static int g_moe_ep_stream = 0; /* --moe-ep-stream: EP 接入真实 forward 的 stream 测试 */
+static int g_ep_export_shard = 0; /* --ep-export-shard: 导出 EP 专家分片（方案 A） */
+static const char *g_shard_out = NULL; /* --shard-out <path>: 分片输出路径 */
+static int g_ep_nranks   = 2;   /* --ep-nranks N: EP 总 rank 数 */
+static int g_ep_rank     = 1;   /* --ep-rank R: 本进程 rank（worker 用） */
+static int g_ep_port     = 29500; /* --ep-port P */
+static int g_ep_split    = 0;   /* --ep-split S: 非对称分片（0=均分；>0=N==2 时 rank0 拥 [0,S)） */
+static int g_eplb        = 0;   /* --eplb auto: EPLB 专家→rank 动态分配（默认关） */
+static const char *g_eplb_heat = NULL; /* --eplb-heat <path>: 热度文件 "l:e:count" */
+static double g_eplb_cap[16] = {0};    /* --eplb-cap w0,w1,...: 各 rank 算力权重 */
+static int g_eplb_ncap   = 0;
+static int g_ep_rank_bench = -1;/* --ep-rank-bench R: 单 rank 独占 FFN 基准（§9.26） */
+static int g_ep_bench_nranks = 0;/* --ep-bench-nranks N: 该基准的 N（允许 1 = 单板全做） */
+static const char *g_ep_host = "127.0.0.1"; /* --ep-host H（阶段二换板 IP 即跨机） */
 static const char *g_serve_model_id = NULL;
 static int  g_serve_threads = 8;       /* HTTP worker threads */
 static int  g_serve_max_queued = 16;   /* max queued inference requests (429 beyond) */
@@ -1925,8 +1945,12 @@ static void test_performance_benchmark(void) {
     if (vqf_is_file(model_dir)) {
         snprintf(vqf_path, sizeof(vqf_path), "%s", model_dir);
         snprintf(tok_dir, sizeof(tok_dir), "%s", model_dir);
+        /* 词表目录 = .vqf 所在目录。需同时认 '/' 与 '\\'：Windows 路径用反斜杠，
+         * 只认 '/' 会把 tok_dir 退化成 "."（EP 分片直接给 .vqf 文件时必踩）。 */
         char *sl = strrchr(tok_dir, '/');
-        if (sl) { *sl = '\0'; if (!tok_dir[0]) snprintf(tok_dir, sizeof(tok_dir), "."); }
+        char *bs = strrchr(tok_dir, '\\');
+        char *sep = (bs && (!sl || bs > sl)) ? bs : sl;
+        if (sep) { *sep = '\0'; if (!tok_dir[0]) snprintf(tok_dir, sizeof(tok_dir), "."); }
         else    snprintf(tok_dir, sizeof(tok_dir), ".");
     } else {
         if (!vqf_dir_find(model_dir, vqf_path, sizeof(vqf_path))) {
@@ -2588,6 +2612,97 @@ static int run_moe_l0_test(const char *model_dir, int tok) {
 }
 
 /* ================================================================
+ * --test-moe-ep：MoE 专家并行（EP）阶段一自检（只走自研 VQF 明文 MoE 模型）
+ * 方案锚点：资料/分布式专家提取_实施方案.md
+ *   M1 专家段一等化：专家 (层,专家) → gate/up 连续段 & down 列带，并用 VQF
+ *      目录元数据独立交叉校验（非自证）；
+ *   M2 虚拟 rank 位级一致：专家按 rank 均分，各 rank 只算自己拥有的被选专家、
+ *      产出完整 d 维贡献后按 j 升序归约，须与单机 st_moe_ffn_sparse_q4 位级一致。
+ * 退出码：0 = 全 PASS；1 = 任一 FAIL / 模型不可用。
+ * ================================================================ */
+static int moe_ep_load(const char *model_dir, STModelWeights *w);
+
+/* EPLB（§9.25）：把 CLI 配置下发给引擎。关闭时显式清零，避免跨模式残留。 */
+static void moe_ep_apply_eplb(void) {
+    if (!g_eplb) { st_moe_ep_eplb_config(0, NULL, NULL, 0); return; }
+    if (!g_eplb_heat)
+        printf("[MOE-EP-EPLB] 警告: --eplb auto 未提供 --eplb-heat → 无热度，退化为编号轮转\n");
+    st_moe_ep_eplb_config(1, g_eplb_heat, g_eplb_cap, g_eplb_ncap);
+}
+
+static int run_moe_ep_test(const char *model_dir, int nranks_max) {
+    printf("\n=== [MOE-EP] model=%s (N<=%d) ===\n", model_dir, nranks_max);
+    fflush(stdout);
+    STModelWeights w;
+    if (moe_ep_load(model_dir, &w) != 0) return 1;
+    moe_ep_apply_eplb();
+    int rc = st_moe_ep_selftest(&w, nranks_max);
+    st_weights_free(&w);
+    printf("[MOE-EP] RESULT: %s\n", rc == 0 ? "PASS" : "FAIL");
+    fflush(stdout);
+    return rc;
+}
+
+/* MoE EP 各模式共用的 VQF 加载（目录或 .vqf 文件）。返回 0 = 成功。 */
+static int moe_ep_load(const char *model_dir, STModelWeights *w) {
+    char vqf_path[1024]; vqf_path[0] = 0;
+    if (vqf_is_file(model_dir)) {
+        snprintf(vqf_path, sizeof(vqf_path), "%s", model_dir);
+    } else if (!vqf_dir_find(model_dir, vqf_path, sizeof(vqf_path))) {
+        printf("[MOE-EP] FAIL: no model.vqf under %s\n", model_dir);
+        return -1;
+    }
+    memset(w, 0, sizeof(*w));
+    if (vqf_load(w, vqf_path) != 0) {
+        printf("[MOE-EP] FAIL: vqf_load %s\n", vqf_path);
+        return -1;
+    }
+    return 0;
+}
+
+/* --moe-ep-coord：M3 多进程 EP 协调者（rank0）。 */
+static int run_moe_ep_coord(const char *model_dir, int nranks, int port) {
+    STModelWeights w;
+    if (moe_ep_load(model_dir, &w) != 0) return 1;
+    st_moe_ep_set_split(g_ep_split);
+    moe_ep_apply_eplb();
+    int rc = st_moe_ep_coord_run(&w, nranks, port);
+    st_weights_free(&w);
+    printf("[MOE-EP-MP] RESULT: %s\n", rc == 0 ? "PASS" : "FAIL");
+    fflush(stdout);
+    return rc;
+}
+
+/* --moe-ep-worker：M3 多进程 EP 工作者（rank r>0）。 */
+static int run_moe_ep_worker(const char *model_dir, int rank, const char *host,
+                             int port, int nranks) {
+    STModelWeights w;
+    if (moe_ep_load(model_dir, &w) != 0) return 1;
+    st_moe_ep_set_split(g_ep_split);
+    moe_ep_apply_eplb();
+    int rc = st_moe_ep_worker_run(&w, rank, host, port, nranks);
+    st_weights_free(&w);
+    return rc;
+}
+
+/* --ep-export-shard：方案 A —— 把全量 VQF 导出为某个 rank 的稀疏专家分片。 */
+static int run_ep_export_shard(const char *model_dir, int rank, int nranks,
+                               const char *out_path) {
+    if (!model_dir || !out_path) {
+        printf("[SHARD] 需要 --model <全量 VQF 目录/文件> 与 --shard-out <输出路径>\n");
+        return 1;
+    }
+    char vqf_path[1024]; vqf_path[0] = 0;
+    if (vqf_is_file(model_dir)) {
+        snprintf(vqf_path, sizeof(vqf_path), "%s", model_dir);
+    } else if (!vqf_dir_find(model_dir, vqf_path, sizeof(vqf_path))) {
+        printf("[SHARD] FAIL: no model.vqf under %s\n", model_dir);
+        return 1;
+    }
+    return vqf_export_ep_shard(vqf_path, rank, nranks, out_path) == 0 ? 0 : 1;
+}
+
+/* ================================================================
  * 私有提交定位（VLLM_MEMDUMP=1，init 后调用；VLLM_MEMDUMP_EXIT=1 直接退出）
  * 枚举 committed private 大区，判定是否与 VQF mmap（COW 私有化）重叠。
  * ================================================================ */
@@ -2645,11 +2760,13 @@ static int run_stream_test(const char *model_dir, int n_tokens) {
     char vqf_path[1024]; vqf_path[0] = 0;
     char tok_dir[1024];
     if (vqf_is_file(model_dir)) {
-        /* --model 直接指向 .vqf：词表取其所在目录 */
+        /* --model 直接指向 .vqf：词表取其所在目录（'/' 与 '\\' 都要认） */
         snprintf(vqf_path, sizeof(vqf_path), "%s", model_dir);
         snprintf(tok_dir, sizeof(tok_dir), "%s", model_dir);
         char *sl = strrchr(tok_dir, '/');
-        if (sl) { *sl = '\0'; if (!tok_dir[0]) snprintf(tok_dir, sizeof(tok_dir), "."); }
+        char *bs = strrchr(tok_dir, '\\');
+        char *sep = (bs && (!sl || bs > sl)) ? bs : sl;
+        if (sep) { *sep = '\0'; if (!tok_dir[0]) snprintf(tok_dir, sizeof(tok_dir), "."); }
         else    snprintf(tok_dir, sizeof(tok_dir), ".");
     } else {
         if (!vqf_dir_find(model_dir, vqf_path, sizeof(vqf_path))) {
@@ -2707,28 +2824,63 @@ static int run_stream_test(const char *model_dir, int n_tokens) {
     int nl_tok   = 198;
     const char *user_prompt =
         "请用中文一句话解释什么是\"逐层加载推理\"。";
-    int prompt_ids[1024]; int pn = 0;
+    /* §9.28 长上下文考察：--stream-ctx N 在 assistant 头之前插入重复填充，把 prompt
+     * 拉到 ~N token（内存工作集随上下文增长）。N=0 → 原固定 ~32 token。 */
+    #define STREAM_MAX_PROMPT 8256
+    int prompt_ids[STREAM_MAX_PROMPT]; int pn = 0;
     int tmp_ids[128]; int n;
     prompt_ids[pn++] = im_start;
     n = qwen_tokenizer_encode(&tok, "system", tmp_ids, 128);
-    for (int i = 0; i < n && pn < 1024; i++) prompt_ids[pn++] = tmp_ids[i];
+    for (int i = 0; i < n && pn < STREAM_MAX_PROMPT; i++) prompt_ids[pn++] = tmp_ids[i];
     prompt_ids[pn++] = nl_tok;
     n = qwen_tokenizer_encode(&tok, "You are a helpful assistant.", tmp_ids, 128);
-    for (int i = 0; i < n && pn < 1024; i++) prompt_ids[pn++] = tmp_ids[i];
+    for (int i = 0; i < n && pn < STREAM_MAX_PROMPT; i++) prompt_ids[pn++] = tmp_ids[i];
     prompt_ids[pn++] = im_end;
     prompt_ids[pn++] = nl_tok;
     prompt_ids[pn++] = im_start;
     n = qwen_tokenizer_encode(&tok, "user", tmp_ids, 128);
-    for (int i = 0; i < n && pn < 1024; i++) prompt_ids[pn++] = tmp_ids[i];
+    for (int i = 0; i < n && pn < STREAM_MAX_PROMPT; i++) prompt_ids[pn++] = tmp_ids[i];
     prompt_ids[pn++] = nl_tok;
     n = qwen_tokenizer_encode(&tok, user_prompt, tmp_ids, 128);
-    for (int i = 0; i < n && pn < 1024; i++) prompt_ids[pn++] = tmp_ids[i];
+    for (int i = 0; i < n && pn < STREAM_MAX_PROMPT; i++) prompt_ids[pn++] = tmp_ids[i];
+    if (g_stream_ctx > 0) {
+        /* 填充源：优先用真实文本文件（专家多样性优于同一句重复），否则重复 user 句 */
+        int *fit_ids = NULL; int fit_n = 0;
+        if (g_stream_ctx_file && g_stream_ctx_file[0]) {
+            FILE *ff = fopen(g_stream_ctx_file, "rb");
+            if (ff) {
+                fseek(ff, 0, SEEK_END); long sz = ftell(ff); fseek(ff, 0, SEEK_SET);
+                if (sz > 0 && sz < (4L << 20)) {
+                    char *buf = (char *)malloc((size_t)sz + 1);
+                    if (buf && fread(buf, 1, (size_t)sz, ff) == (size_t)sz) {
+                        buf[sz] = 0;
+                        fit_ids = (int *)malloc(sizeof(int) * STREAM_MAX_PROMPT);
+                        if (fit_ids)
+                            fit_n = qwen_tokenizer_encode(&tok, buf, fit_ids, STREAM_MAX_PROMPT);
+                    }
+                    free(buf);
+                }
+                fclose(ff);
+            }
+            printf("[STREAM] ctx-file %s -> %d tokens\n", g_stream_ctx_file, fit_n);
+        }
+        const int *src  = (fit_n > 0) ? fit_ids : tmp_ids;
+        const int  srcn = (fit_n > 0) ? fit_n   : n;
+        while (srcn > 0 && pn < g_stream_ctx - 16) {
+            for (int i = 0; i < srcn && pn < g_stream_ctx - 16; i++)
+                prompt_ids[pn++] = src[i];
+            prompt_ids[pn++] = nl_tok;
+        }
+        free(fit_ids);
+    }
     prompt_ids[pn++] = im_end;
     prompt_ids[pn++] = nl_tok;
     prompt_ids[pn++] = im_start;
     n = qwen_tokenizer_encode(&tok, "assistant", tmp_ids, 128);
-    for (int i = 0; i < n && pn < 1024; i++) prompt_ids[pn++] = tmp_ids[i];
+    for (int i = 0; i < n && pn < STREAM_MAX_PROMPT; i++) prompt_ids[pn++] = tmp_ids[i];
     prompt_ids[pn++] = nl_tok;
+    printf("[STREAM] prompt tokens = %d (--stream-ctx %d)\n", pn, g_stream_ctx);
+    fflush(stdout);
 
     for (int l = 0; l < cfg->n_layers; l++) ist.cache_len[l] = 0;
     ist.seq_len = 0;
@@ -2739,6 +2891,53 @@ static int run_stream_test(const char *model_dir, int n_tokens) {
     if (env_heat && env_heat[0] == '1') st_moe_heat_reset(&w);  /* 真实热度采集 */
     const char *env_single = getenv("VLLM_STREAM_SINGLE");
     int single_prefill = env_single && env_single[0] == '1';
+
+    /* ---- Warmup（--warmup）：跑一轮完整 prefill + 少量 decode 并丢弃 ----
+     * 动机见 §9.40：不预热时计时窗口含 16 GB 权重的页入，与别的读盘进程交错会
+     * 让 MoE GATEUP 差 −37%（冷页代价几乎全砸在随机访问的 gather 上）。
+     * 预热后把 ist 恢复到「刚 init 完」的状态再做计时轮，保证两轮起点一致。
+     * 注意：本轮的 [PREFILL-TIMING]/[PREFILL-KERNELS] 也会打印，解析时取**最后一组**。 */
+    if (g_stream_warmup) {
+        int   *sv_cl = (int   *)malloc((size_t)cfg->n_layers * sizeof(int));
+        float *sv_hd = (float *)malloc((size_t)cfg->dim * sizeof(float));
+        if (!sv_cl || !sv_hd) {
+            printf("[STREAM] WARN: warmup snapshot OOM -> skipped\n");
+        } else {
+            memcpy(sv_cl, ist.cache_len, (size_t)cfg->n_layers * sizeof(int));
+            memcpy(sv_hd, ist.hidden,    (size_t)cfg->dim * sizeof(float));
+            int sv_seq = ist.seq_len, sv_mrope = ist.mrope_pos;
+            double w0 = st_now_sec();
+            int wok = 1;
+            if (single_prefill) {
+                for (int _i = 0; _i < pn; _i++) st_qwen_model_forward(&ist, prompt_ids[_i]);
+            } else {
+                wok = (st_qwen_model_prefill_batch(&ist, prompt_ids, pn) == 0);
+            }
+            int wsteps = g_stream_n < 8 ? g_stream_n : 8;   /* decode 预热步数 */
+            for (int s = 0; wok && s < wsteps; s++) {
+                const float *lg = ist.logits;
+                float best = -1e9f; int bid = 0;
+                for (int t = 0; t < cfg->vocab_size; t++)
+                    if (lg[t] > best) { best = lg[t]; bid = t; }
+                st_qwen_model_forward(&ist, bid);
+            }
+            memcpy(ist.cache_len, sv_cl, (size_t)cfg->n_layers * sizeof(int));
+            memcpy(ist.hidden,    sv_hd, (size_t)cfg->dim * sizeof(float));
+            ist.seq_len = sv_seq; ist.mrope_pos = sv_mrope;
+            printf("[STREAM] warmup %s in %.3fs (discarded: 1 prefill + %d decode)\n",
+                   wok ? "done" : "FAILED", st_now_sec() - w0, wsteps);
+            fflush(stdout);
+            if (!wok) {   /* 预热都跑不动，计时轮没有意义 */
+                free(sv_cl); free(sv_hd);
+                st_qwen_inference_free(&ist);
+                st_weights_free(&w);
+                qwen_tokenizer_free(&tok);
+                return 1;
+            }
+        }
+        free(sv_cl); free(sv_hd);
+    }
+
     t0 = st_now_sec();
     if (single_prefill) {
         /* 逐 token 单步 forward 喂入（与 decode 同一内核，绕开 batch prefill
@@ -3943,12 +4142,77 @@ int main(int argc, char **argv) {
             g_serve_model_id = argv[++i];
         } else if (strcmp(argv[i], "--stream-test") == 0) {
             g_stream_test = 1;   /* AirLLM 型分层驻留验证（纯 VQF） */
+        } else if (strcmp(argv[i], "--warmup") == 0) {
+            /* §9.40：--stream-test 是新进程（rss_after_load ~4 MB），16 GB 权重的
+             * 页入落在计时窗口内；与别的读盘进程（llama-bench 读自己的 gguf）
+             * 交错时 MoE GATEUP 可差 −37%。本开关先跑一轮完整 prefill+decode 并
+             * 丢弃，再恢复到起点做计时轮 → 与 llama-bench 自带 warmup 同口径。 */
+            g_stream_warmup = 1;
         } else if (strcmp(argv[i], "--stream-n") == 0 && i + 1 < argc) {
             g_stream_n = atoi(argv[++i]);
             if (g_stream_n < 1) g_stream_n = 1;
             if (g_stream_n > 64) g_stream_n = 64;
+        } else if (strcmp(argv[i], "--stream-ctx") == 0 && i + 1 < argc) {
+            /* §9.28 长上下文考察：把 prompt 填充到 ~N token（上限 max_seq 内） */
+            g_stream_ctx = atoi(argv[++i]);
+            if (g_stream_ctx < 0) g_stream_ctx = 0;
+            if (g_stream_ctx > 8192) g_stream_ctx = 8192;
+        } else if (strcmp(argv[i], "--stream-ctx-file") == 0 && i + 1 < argc) {
+            /* §9.28：用真实文本文件填充（专家多样性优于同一句重复） */
+            g_stream_ctx_file = argv[++i];
+            if (g_stream_ctx <= 0) g_stream_ctx = 2048;
         } else if (strcmp(argv[i], "--moe-l0") == 0 && i + 1 < argc) {
             g_moe_l0 = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--test-moe-ep") == 0) {
+            g_moe_ep = 1;   /* MoE 专家并行（EP）阶段一自检（M1+M2） */
+        } else if (strcmp(argv[i], "--moe-ep-coord") == 0) {
+            g_moe_ep_coord = 1;   /* M3 多进程 EP 协调者（rank0） */
+        } else if (strcmp(argv[i], "--moe-ep-worker") == 0) {
+            g_moe_ep_worker = 1;  /* M3 多进程 EP 工作者（rank r） */
+        } else if (strcmp(argv[i], "--moe-ep-stream") == 0) {
+            g_moe_ep_stream = 1;  /* EP 接入真实 forward（复用 --stream-test 骨架） */
+            g_stream_test = 1;
+        } else if (strcmp(argv[i], "--ep-export-shard") == 0) {
+            g_ep_export_shard = 1;  /* 导出 EP 专家分片（方案 A） */
+        } else if (strcmp(argv[i], "--shard-out") == 0 && i + 1 < argc) {
+            g_shard_out = argv[++i];
+        } else if (strcmp(argv[i], "--ep-nranks") == 0 && i + 1 < argc) {
+            g_ep_nranks = atoi(argv[++i]);
+            if (g_ep_nranks < 2) g_ep_nranks = 2;
+            if (g_ep_nranks > 16) g_ep_nranks = 16;
+        } else if (strcmp(argv[i], "--ep-rank") == 0 && i + 1 < argc) {
+            g_ep_rank = atoi(argv[++i]);
+            if (g_ep_rank < 0) g_ep_rank = 0;   /* 0 合法：分片导出用 rank0 */
+        } else if (strcmp(argv[i], "--ep-port") == 0 && i + 1 < argc) {
+            g_ep_port = atoi(argv[++i]);
+            if (g_ep_port < 1) g_ep_port = 29500;
+        } else if (strcmp(argv[i], "--ep-split") == 0 && i + 1 < argc) {
+            g_ep_split = atoi(argv[++i]);
+            if (g_ep_split < 0) g_ep_split = 0;
+        } else if (strcmp(argv[i], "--eplb") == 0 && i + 1 < argc) {
+            const char *v = argv[++i];
+            g_eplb = (strcmp(v, "auto") == 0 || strcmp(v, "1") == 0) ? 1 : 0;
+        } else if (strcmp(argv[i], "--eplb-heat") == 0 && i + 1 < argc) {
+            g_eplb_heat = argv[++i];
+        } else if (strcmp(argv[i], "--eplb-cap") == 0 && i + 1 < argc) {
+            const char *v = argv[++i];
+            g_eplb_ncap = 0;
+            while (*v && g_eplb_ncap < 16) {
+                char *end = NULL;
+                double d = strtod(v, &end);
+                if (end == v) break;
+                if (d > 0.0) g_eplb_cap[g_eplb_ncap++] = d;
+                v = end;
+                while (*v == ',' || *v == ' ') v++;
+            }
+        } else if (strcmp(argv[i], "--ep-rank-bench") == 0 && i + 1 < argc) {
+            g_ep_rank_bench = atoi(argv[++i]);   /* §9.26 单 rank 独占 FFN 基准 */
+        } else if (strcmp(argv[i], "--ep-bench-nranks") == 0 && i + 1 < argc) {
+            g_ep_bench_nranks = atoi(argv[++i]);
+            if (g_ep_bench_nranks < 1) g_ep_bench_nranks = 1;
+            if (g_ep_bench_nranks > 16) g_ep_bench_nranks = 16;
+        } else if (strcmp(argv[i], "--ep-host") == 0 && i + 1 < argc) {
+            g_ep_host = argv[++i];
         } else if (strcmp(argv[i], "--threads") == 0 && i + 1 < argc) {
             g_serve_threads = atoi(argv[++i]);
             if (g_serve_threads < 1) g_serve_threads = 1;
@@ -4066,6 +4330,21 @@ int main(int argc, char **argv) {
         g_serve_port = 8080;
     }
 
+    /* §9.21/9.22：s16 轨默认已开，但它是「声明分叉」，会破坏 EP 的跨机 + 跨 ISA
+     * 位级一致。任一 EP 模式启用时在此强制关闭。位置很关键：必须早于首次读取
+     * 该开关（actq16_env 会静态缓存），且必须早于各 EP 分支的提前 return——
+     * 否则 --test-moe-ep / --moe-ep-stream 会漏掉强制。
+     * （EP 虚拟 rank 路径 moe_ep_contrib 恒走精确 f32，单机参考若走 s16 则 M2 必失败。） */
+    if (g_moe_ep || g_moe_ep_coord || g_moe_ep_worker || g_moe_ep_stream ||
+        g_ep_rank_bench >= 0) {
+#ifdef _WIN32
+        _putenv("VLLM_ACTQ16=0");          /* Windows CRT（MinGW/MSVC）专有 */
+#else
+        setenv("VLLM_ACTQ16", "0", 1);     /* POSIX（Linux / aarch64 板端） */
+#endif
+        printf("[MOE-EP] VLLM_ACTQ16 forced 0 (exact track) for EP bit-level identity\n");
+    }
+
     if (g_stream_test) {
         /* AirLLM 型分层驻留验证：仅自研 VQF（--model 目录含 model.vqf）。
          * VLLM_VQF_STREAM=N 控制驻留档位；0/缺省 = 全驻留 baseline。 */
@@ -4073,7 +4352,23 @@ int main(int argc, char **argv) {
             printf("[STREAM] 需要 --model <含 model.vqf 的目录或 .vqf 文件>\n");
             return 1;
         }
-        return run_stream_test(g_serve_model_dir, g_stream_n);
+        if (g_moe_ep_stream) {
+            /* M3.5：EP 接入真实 forward。transport 先建（等 worker），此后
+             * forward 内 FFN 段自动走 EP；结束后发哨兵收尾。 */
+            st_moe_ep_set_split(g_ep_split);
+            moe_ep_apply_eplb();
+            if (st_moe_ep_root_begin(g_ep_nranks, g_ep_port) != 0) {
+                printf("[MOE-EP-FWD] FAIL: transport 建立失败（N=%d port=%d）\n",
+                       g_ep_nranks, g_ep_port);
+                return 1;
+            }
+            printf("[MOE-EP-FWD] forward 内 FFN 走 EP（N=%d port=%d）\n",
+                   g_ep_nranks, g_ep_port);
+            fflush(stdout);
+        }
+        int rc_stream = run_stream_test(g_serve_model_dir, g_stream_n);
+        if (g_moe_ep_stream) st_moe_ep_root_end();
+        return rc_stream;
     }
 
     if (g_moe_l0 >= 0) {
@@ -4083,6 +4378,67 @@ int main(int argc, char **argv) {
             return 1;
         }
         return run_moe_l0_test(g_serve_model_dir, g_moe_l0);
+    }
+
+    if (g_moe_ep) {
+        /* MoE 专家并行（EP）阶段一自检：M1 段几何 + M2 虚拟 rank 位级一致 */
+        if (!g_serve_model_dir) {
+            printf("[MOE-EP] 需要 --model <含 model.vqf 的目录>\n");
+            return 1;
+        }
+        return run_moe_ep_test(g_serve_model_dir, 8);
+    }
+
+    if (g_ep_export_shard) {
+        /* 方案 A：导出某个 rank 的稀疏专家分片（离线工具，不跑推理） */
+        if (!g_serve_model_dir) {
+            printf("[SHARD] 需要 --model <全量 VQF 目录>\n");
+            return 1;
+        }
+        return run_ep_export_shard(g_serve_model_dir, g_ep_rank, g_ep_nranks,
+                                   g_shard_out);
+    }
+
+    if (g_moe_ep_coord) {
+        /* M3 多进程 EP 协调者（rank0）：需先起 N-1 个 --moe-ep-worker */
+        if (!g_serve_model_dir) {
+            printf("[MOE-EP-MP] 需要 --model <含 model.vqf 的目录>\n");
+            return 1;
+        }
+        return run_moe_ep_coord(g_serve_model_dir, g_ep_nranks, g_ep_port);
+    }
+
+    if (g_moe_ep_worker) {
+        /* M3 多进程 EP 工作者（rank r>0）：--ep-host 换板 IP 即跨机协同 */
+        if (!g_serve_model_dir) {
+            printf("[MOE-EP-MP] 需要 --model <含 model.vqf 的目录>\n");
+            return 1;
+        }
+        return run_moe_ep_worker(g_serve_model_dir, g_ep_rank, g_ep_host,
+                                 g_ep_port, g_ep_nranks);
+    }
+
+    if (g_ep_rank_bench >= 0) {
+        /* §9.26 单板串行法：单 rank 独占 FFN 基准（只读本 rank 段）。
+         * 用法：--ep-rank-bench R --ep-bench-nranks N（N=1 → 单板全做；
+         *       N=2 → 双板各半，R∈{0,1}）。串行跑 R=0 与 R=1 即得双板外推。 */
+        if (!g_serve_model_dir) {
+            printf("[EP-BENCH] 需要 --model <含 model.vqf 的目录或 .vqf 文件>\n");
+            return 1;
+        }
+        STModelWeights w;
+        if (moe_ep_load(g_serve_model_dir, &w) != 0) return 1;
+        st_moe_ep_set_split(g_ep_split);
+        moe_ep_apply_eplb();
+        int n = (g_ep_bench_nranks > 0) ? g_ep_bench_nranks : g_ep_nranks;
+        int reps = 5;
+        { const char *rs = getenv("VLLM_EP_BENCH_REPS");
+          if (rs && rs[0]) { int v = atoi(rs); if (v > 0) reps = v; } }
+        int rc = st_moe_ep_rank_bench(&w, n, g_ep_rank_bench, 0, reps);
+        st_weights_free(&w);
+        printf("[EP-BENCH] RESULT: %s\n", rc == 0 ? "PASS" : "FAIL");
+        fflush(stdout);
+        return rc;
     }
 
     if (g_serve_port >= 0) {

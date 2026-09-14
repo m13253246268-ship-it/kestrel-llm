@@ -59,6 +59,7 @@ set(VLLM_SOURCES
     src/core/vllm_fhe.c
     src/core/vllm_ckks.c
     src/core/vllm_ntt.c
+    src/core/vllm_ep.c
     src/common/vllm_device.c
     src/common/vllm_crypto.c
     src/serve/vllm_http.c
@@ -91,6 +92,7 @@ set(VLLM_HEADERS
     include/core/vllm_fhe.h
     include/core/vllm_ckks.h
     include/core/vllm_ntt.h
+    include/core/vllm_ep.h
     include/serve/vllm_http.h
     include/serve/vllm_server.h
     include/serve/vllm_batch.h

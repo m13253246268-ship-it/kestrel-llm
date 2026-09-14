@@ -20,6 +20,8 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <psapi.h>   /* GetProcessMemoryInfo（WorkingSet=RSS 采样） */
+#include <io.h>       /* _get_osfhandle/_fileno（EP 分片稀疏标记） */
+#include <winioctl.h> /* FSCTL_SET_SPARSE（EP 分片稀疏标记） */
 #ifndef MADV_DONTNEED
 #define MADV_DONTNEED 0
 #endif
@@ -1203,4 +1205,219 @@ void vqf_stream_willneed_to(int keep) {
         }
     }
 
+}
+
+/* ================================================================
+ * EP 专家分片导出（方案 A）—— 稀疏分片，布局与源 VQF 逐字节同构
+ * 方案锚点：资料/分布式专家提取_实施方案.md
+ *
+ * 目标：每个 rank 只需自己那份专家权重（部署/磁盘），并使"专家=可独立分发单元"。
+ *
+ * 关键设计（**引擎零改动**）：分片不是新格式 —— header / directory /
+ * data_offset / file_len / flags / arch 全部照抄源文件，只在数据区**物化本 rank
+ * 拥有的专家字节区间**，其余留空洞：
+ *   - gate/up：每层专家 = `per*me` 连续行 → 字节区间连续，整段搬运；
+ *   - down   ：专家按 32 列块散布在 4 行组内 → 逐行组搬 `cbe*72` 字节；
+ *   - 其余张量（attn/router/embed/lm/norm/vision）整块照抄。
+ * 于是分片是**合法 VQF**：`vqf_load` 与 EP 路径无需任何改动即可加载 —— 它只会读
+ * 到自己 rank 的专家段（已物化），他人的段是空洞（按 rank 过滤，从不被读）。
+ *
+ * 空洞：NTFS 需 FSCTL_SET_SPARSE、ext4 天然稀疏 → 磁盘占用 ≈ 自己的份额。
+ * 传输提示：跨机拷贝须用保留空洞的方式（Linux `cp --sparse=always` / `tar -S`），
+ * `scp` 会把空洞当 0 发送。
+ *
+ * 边界：
+ *   - 仅明文 VQF（加密为 COW 解密语义，拒绝）；
+ *   - 仅处理 q4_gate/q4_up/q4_down（EP 支持的 q4_4x4 轨）；q8_ 与 x8_ 系列若存在
+ *     则整块照抄（分片仍正确，但那部分不省盘）；
+ *   - 源若带 SM2 签名，sig 块照抄但已不对应新内容 → 派生件须自行重签；
+ *   - 尾部 FNV 按分片自身内容重算（与加载器同规则）。
+ * ================================================================ */
+static int shard_seek(FILE *fp, uint64_t off) {
+#ifdef _WIN32
+    return _fseeki64(fp, (long long)off, SEEK_SET);
+#else
+    return fseeko(fp, (off_t)off, SEEK_SET);
+#endif
+}
+
+/* Windows：给输出打稀疏标记，避免"seek 越写越分配"（NTFS 默认非稀疏）。 */
+static int shard_set_sparse(FILE *fp) {
+#ifdef _WIN32
+    intptr_t osf = _get_osfhandle(_fileno(fp));
+    if (osf == -1) return -1;
+    DWORD ret = 0;
+    if (!DeviceIoControl((HANDLE)osf, FSCTL_SET_SPARSE, NULL, 0, NULL, 0, &ret, NULL))
+        return -1;
+#else
+    (void)fp;
+#endif
+    return 0;
+}
+
+/* 把 src 的 [src_off, +n) 拷到 out 的 dst_off（分块，避免大缓冲）。 */
+static int shard_copy(FILE *out, uint64_t dst_off, const uint8_t *src,
+                      uint64_t src_off, uint64_t n,
+                      uint8_t *scratch, size_t cap) {
+    uint64_t done = 0;
+    while (done < n) {
+        size_t k = (n - done > (uint64_t)cap) ? cap : (size_t)(n - done);
+        memcpy(scratch, src + src_off + done, k);
+        if (shard_seek(out, dst_off + done) != 0) return -1;
+        if (fwrite(scratch, 1, k, out) != k) return -1;
+        done += k;
+    }
+    return 0;
+}
+
+int vqf_export_ep_shard(const char *src_path, int rank, int nranks, const char *out_path) {
+    printf("[SHARD] 导出 EP 分片: rank=%d/%d\n  src=%s\n  out=%s\n",
+           rank, nranks, src_path, out_path);
+    fflush(stdout);
+
+    st_mmap_t m;
+    if (st_mmap_open(&m, 0, src_path) != 0) {
+        fprintf(stderr, "[SHARD] FAIL: mmap %s\n", src_path);
+        return -1;
+    }
+    const VQFHeader *h = (const VQFHeader *)m.data;
+    FILE *out = NULL;
+    uint8_t *scratch = NULL;
+    int rc = -1;
+    int n_expert_tensors = 0;
+    uint64_t materialized = 0;
+
+    if (m.len < sizeof(VQFHeader) || h->magic != VQF_MAGIC) {
+        fprintf(stderr, "[SHARD] FAIL: 非 VQF（magic 不符）\n"); goto done;
+    }
+    if (h->flags & VQF_FLAG_ENC) {
+        fprintf(stderr, "[SHARD] FAIL: 加密 VQF 不支持分片\n"); goto done;
+    }
+    const VQFArch *a = &h->arch;
+    int ne = (int)a->n_experts, me = (int)a->moe_ffn, d = (int)a->dim;
+    int ff = (int)a->ffn_dim, nl = (int)a->n_layers;
+    if (ne <= 0 || me <= 0 || d <= 0 || ff <= 0 || nl <= 0 ||
+        (uint64_t)ne * (uint64_t)me != (uint64_t)ff) {
+        fprintf(stderr, "[SHARD] FAIL: 非 MoE 或 arch 几何不成立\n"); goto done;
+    }
+    if (nranks < 1 || rank < 0 || rank >= nranks || (ne % nranks) != 0) {
+        fprintf(stderr, "[SHARD] FAIL: rank=%d/nranks=%d 非法（须整除 ne=%d）\n",
+                rank, nranks, ne); goto done;
+    }
+    if ((me & 31) || (d & 31)) {
+        fprintf(stderr, "[SHARD] FAIL: 几何不满足 32 列块对齐\n"); goto done;
+    }
+
+    int per = ne / nranks;
+    uint64_t layerB = (uint64_t)Q4_BYTES((uint64_t)ff * (uint64_t)d);
+    uint64_t expB   = (uint64_t)Q4_BYTES((uint64_t)per * (uint64_t)me * (uint64_t)d);
+    uint64_t gdB    = (uint64_t)(ff >> 5) * 72;               /* down：4 行组跨度 */
+    uint64_t cbeRun = (uint64_t)((per * me) >> 5) * 72;       /* down：本 rank 列块连续长 */
+    uint64_t cb0    = (uint64_t)((rank * per * me) >> 5) * 72;
+    uint64_t expOff = (uint64_t)Q4_BYTES(
+        (uint64_t)rank * (uint64_t)per * (uint64_t)me * (uint64_t)d);
+    size_t dir_off = (sizeof(VQFHeader) + 63) & ~(size_t)63;
+    const VQFTensor *dir = (const VQFTensor *)((const uint8_t *)m.data + dir_off);
+
+    scratch = (uint8_t *)malloc(1u << 20);
+    if (!scratch) { fprintf(stderr, "[SHARD] FAIL: OOM\n"); goto done; }
+    out = st_fopen(out_path, "wb+");
+    if (!out) { fprintf(stderr, "[SHARD] FAIL: 打开输出失败 %s\n", out_path); goto done; }
+    if (shard_set_sparse(out) != 0)
+        fprintf(stderr, "[SHARD] 警告: 稀疏标记失败（磁盘占用可能为全量）\n");
+
+    /* 1) 头 + 目录照抄（保证 data_offset/file_len/flags/arch/version 同构） */
+    if (shard_copy(out, 0, (const uint8_t *)m.data, 0,
+                   (uint64_t)h->data_offset, scratch, 1u << 20) != 0) {
+        fprintf(stderr, "[SHARD] FAIL: 写头部\n"); goto done;
+    }
+    materialized += (uint64_t)h->data_offset;
+
+    /* 2) 逐张量：q4 专家三件只物化本 rank 区间，其余整块照抄 */
+    for (uint32_t i = 0; i < h->n_tensors; i++) {
+        const VQFTensor *t = &dir[i];
+        if ((uint64_t)t->offset + t->bytes > h->file_len) {
+            fprintf(stderr, "[SHARD] FAIL: 张量 %s 越界\n", t->name); goto done;
+        }
+        int is_gate_up = (strcmp(t->name, "q4_gate") == 0 ||
+                          strcmp(t->name, "q4_up") == 0);
+        int is_down    = (strcmp(t->name, "q4_down") == 0);
+        if (is_gate_up) {
+            for (int l = 0; l < nl; l++) {
+                uint64_t off = t->offset + (uint64_t)l * layerB + expOff;
+                if (shard_copy(out, off, (const uint8_t *)m.data, off, expB,
+                               scratch, 1u << 20) != 0) {
+                    fprintf(stderr, "[SHARD] FAIL: 写 %s l=%d\n", t->name, l); goto done;
+                }
+            }
+            materialized += (uint64_t)nl * expB;
+            n_expert_tensors++;
+        } else if (is_down) {
+            for (int l = 0; l < nl; l++) {
+                uint64_t lb = t->offset + (uint64_t)l * layerB;
+                for (int rg = 0; rg < (d >> 2); rg++) {
+                    uint64_t off = lb + (uint64_t)rg * gdB + cb0;
+                    if (shard_copy(out, off, (const uint8_t *)m.data, off, cbeRun,
+                                   scratch, 1u << 20) != 0) {
+                        fprintf(stderr, "[SHARD] FAIL: 写 q4_down l=%d rg=%d\n", l, rg);
+                        goto done;
+                    }
+                }
+            }
+            materialized += (uint64_t)nl * (uint64_t)(d >> 2) * cbeRun;
+            n_expert_tensors++;
+        } else {
+            if (shard_copy(out, t->offset, (const uint8_t *)m.data, t->offset,
+                           t->bytes, scratch, 1u << 20) != 0) {
+                fprintf(stderr, "[SHARD] FAIL: 写 %s\n", t->name); goto done;
+            }
+            materialized += t->bytes;
+        }
+    }
+
+    /* 3) 尾部 FNV-1a（覆盖目录 + 数据区，与加载器同规则）：从分片自身回读，
+     *    空洞读作 0，与引擎 VLLM_VQF_CHECK=1 的校验口径一致。 */
+    {
+        uint64_t fnv = 0xcbf29ce484222325ull;
+        fnv = vqf_fnv_update(fnv, (const uint8_t *)m.data + dir_off,
+                             (size_t)h->n_tensors * sizeof(VQFTensor));
+        uint64_t total = h->file_len - h->data_offset;
+        uint64_t done = 0;
+        while (done < total) {
+            size_t k = (total - done > (uint64_t)(1u << 20)) ? (1u << 20)
+                                                            : (size_t)(total - done);
+            if (shard_seek(out, h->data_offset + done) != 0) {
+                fprintf(stderr, "[SHARD] FAIL: FNV seek\n"); goto done;
+            }
+            if (fread(scratch, 1, k, out) != k) {
+                fprintf(stderr, "[SHARD] FAIL: FNV 回读\n"); goto done;
+            }
+            fnv = vqf_fnv_update(fnv, scratch, k);
+            done += k;
+        }
+        if (shard_seek(out, h->file_len) != 0 ||
+            fwrite(&fnv, 1, sizeof(fnv), out) != sizeof(fnv)) {
+            fprintf(stderr, "[SHARD] FAIL: 写尾部 FNV\n"); goto done;
+        }
+        materialized += sizeof(fnv);
+    }
+
+    printf("[SHARD] OK: 专家张量 %d 个已切片；物化 %.2f GiB / 逻辑 %.2f GiB "
+           "（稀疏空洞 %.2f GiB 不占盘）\n",
+           n_expert_tensors,
+           (double)materialized / 1073741824.0,
+           (double)(h->file_len + 8) / 1073741824.0,
+           (double)(h->file_len + 8 - materialized) / 1073741824.0);
+    printf("[SHARD] 几何: ne=%d per=%d me=%d d=%d nl=%d；expB=%.3f MB，"
+           "down 列带 run=%llu B stride=%llu B\n",
+           ne, per, me, d, nl, (double)expB / 1048576.0,
+           (unsigned long long)cbeRun, (unsigned long long)gdB);
+    fflush(stdout);
+    rc = 0;
+
+done:
+    if (out) fclose(out);
+    free(scratch);
+    st_mmap_close(&m);
+    return rc;
 }

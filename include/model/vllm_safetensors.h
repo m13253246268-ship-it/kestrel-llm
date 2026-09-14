@@ -463,6 +463,60 @@ int st_qwen_model_prefill_batch(STQwenInferenceState *st,
 void st_moe_heat_reset(const STModelWeights *w);
 void st_moe_heat_save(const char *path);
 
+/* MoE 专家并行（EP）· 阶段一自检（方案锚点：资料/分布式专家提取_实施方案.md）
+ *   M1 专家段一等化：由 VQF 目录几何导出 (层,专家) → gate/up 连续段 & down
+ *      列带描述符，并用文件元数据独立交叉校验（目录 offset ↔ 引擎直挂指针、
+ *      rows ↔ nl*ff、bytes ↔ nl*layerB、expB 整页对齐），非自证。
+ *   M2 虚拟 rank 位级一致：专家按 rank 均分，各 rank 只算自己拥有的被选专家、
+ *      产出完整 d 维贡献 C_j，协调者按 j 升序归约；结果须与单机
+ *      st_moe_ffn_sparse_q4 位级一致（A≡C）。
+ * 仅明文 MoE VQF；仅 f32 精确轨（VLLM_ACTQ/FUSE/DN_D2 须关）。返回 0 = 全 PASS。 */
+int st_moe_ep_selftest(STModelWeights *w, int nranks_max);
+
+/* MoE 专家并行（EP）· 阶段一多进程（M3）：同机多进程 → 阶段二跨机协同。
+ * transport 经 vllm_ep.h 抽象；阶段一 host=127.0.0.1，阶段二换板 IP 即跨机。
+ *   rank0 协调者：持有 router，广播 {x_ffn,sel,pr}，按 j 升序归约并位级对拍；
+ *   rank r>0 工作者：只算本 rank 拥有的被选专家，回传完整 d 维贡献 C_j。
+ * 返回 0 = 全 PASS。调用前须已 vqf_load（仅明文 q4_4x4 MoE）。 */
+int st_moe_ep_coord_run(STModelWeights *w, int nranks, int port);
+int st_moe_ep_worker_run(STModelWeights *w, int rank, const char *host,
+                         int port, int nranks);
+
+/* MoE EP 接入真实 forward（协调者侧，M3.5）：
+ *   st_moe_ep_root_begin() 在跑测试前建立 transport（不等模型）；此后 forward 内
+ *   的 FFN 段自动改走 EP（惰性绑定几何）；st_moe_ep_root_end() 发结束哨兵并关闭。
+ * 未调用 begin 时，forward 行为与改动前**完全一致**（零回归）。 */
+int  st_moe_ep_root_begin(int nranks, int port);
+void st_moe_ep_root_end(void);
+
+/* 非对称专家分片（M5 实证，N==2）：split>0 时 rank0 拥 [0,split)、rank1 拥
+ * [split,ne)；split<=0 回退均分。两侧进程（协调者 + 工作者）须设同一值。 */
+void st_moe_ep_set_split(int split);
+
+/* MoE EP · EPLB（专家并行负载均衡，§9.25）：把专家→rank 从「静态均分/手工切分」
+ * 升级为「按实测热度 + 各 rank 算力自动求任意置换」，使各 rank 完成时间趋同。
+ * 纪律：只改「谁算」不改「怎么算」——每个 C_j 仍由唯一 rank 用同一原始点积核产出、
+ * 协调者仍按 j 升序归约 → A≡C 位级一致保持。跨机由协调者在会话启动时经 transport
+ * 广播同一张表（两侧同表）。
+ *   st_moe_ep_eplb_config：配置（on=0 关闭；heat_path 为 l:e:count 热度文件；
+ *                          cap 为各 rank 算力权重，ncap 项，空/NULL 视为全 1）。
+ *   st_moe_ep_eplb_on    ：是否启用，供握手决定是否传表。
+ *   st_moe_ep_eplb_build ：按热度+算力贪心 LPT 建表（任意置换）；owner_out 需 ≥ne 项。
+ *   st_moe_ep_set_owner_tbl：安装/清除 owner 表（ne 项 uint8，值∈[0,nranks)）。 */
+void st_moe_ep_eplb_config(int on, const char *heat_path, const double *cap, int ncap);
+int  st_moe_ep_eplb_on(void);
+int  st_moe_ep_eplb_build(int ne, int nranks, uint8_t *owner_out);
+void st_moe_ep_set_owner_tbl(const uint8_t *tbl, int ne);
+
+/* 单板串行法（§9.26）：单 rank「独占」FFN 基准。
+ * 在一块板上串行测「某 rank 独占时」的每层 FFN 计算时延（跨机 EP 时每块板独占
+ * 自己的核 + 带宽，故该值 ≈ 跨机时该 rank 的时延；同机并发是错误代理，§9.11）。
+ * 只读本 rank 拥有的专家段 → 常驻集 ≈「加载该 rank 分片」的常驻集（内存等价，
+ * 磁盘/I/O 不等价）。nranks=1 → rank0 拥全部专家（单板全做，必然含 I/O）；
+ * nranks=2 → 双板各半。reps 为每层重复次数（取 min）。返回 0 = 成功。 */
+int st_moe_ep_rank_bench(STModelWeights *w, int nranks, int rank,
+                         int layers_max, int reps);
+
 /**
  * Phase-2 L3 cold-block Q4 disk eviction (--l3-evict). Called after prefill by
  * both the bench path and the HTTP serve path. Packs cold KV blocks into the

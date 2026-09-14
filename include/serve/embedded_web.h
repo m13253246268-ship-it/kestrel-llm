@@ -7,7 +7,7 @@
 /* embedded admin.html (96445 bytes) */
 const char *embedded_admin_html(size_t *len);
 
-/* embedded chat.html (45952 bytes) */
+/* embedded chat.html (45956 bytes) */
 const char *embedded_chat_html(size_t *len);
 
 #endif /* VLLM_EMBEDDED_WEB_H */

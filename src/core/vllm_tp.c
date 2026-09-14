@@ -301,7 +301,28 @@ int vllm_tp_init(int nthreads) {
         }
         if (nthreads <= 0) {
             long nc = st_num_cpus();
+#if ST_ARCH_X86
+            /* §9.45：x86 默认线程数 = **逻辑处理器数 − 2**（不再沿用板端的 4 线程上限）。
+             * 取 nc 是依据「本内核停顿/端口受限」——IPC≈1.4、`_mm_prefetch` 与真载入式
+             * 预取均无效、只吃到内存屋顶（实测 46–55 GB/s）的 8.6% —— 所以 SMT 逻辑核
+             * 有实打实收益；再 −2 是给调用者/OS 留余量，见下。
+             * 实测（Ryzen 7 9800X3D 8C/16T，同二进制交错，每轮通配清场）：
+             * ① 批式/流式（--stream-n 16 --stream-ctx 512 --warmup，prefill 总时 ms）：
+             *    t4 15970 / t8 9355 / t12 7189 / t14 6750 / t16 6732 / t24 10142
+             *    ⇒ t14 与 t16 无差别（0.3%），t12 起进入平台期；t24 因超订反而退化 48%。
+             * ② 服务端（--serve --batch-max 8，8 并发 mt=24，tools/moe_serve_bench.py，
+             *    预热后 r2–r4 均值 tok/s）：
+             *    t4 12.9 / t8 17.0 / t10 19.0 / t12 20.9 / t14 22.6 / t16 15.8
+             *    ⇒ **占满全部逻辑核会断崖**：15 个池线程 + 调用者（提交 batch 的 HTTP worker）
+             *    挤满同一批逻辑核，调用者在两个 region 之间被抢占整段调度量子（与上面
+             *    「spin 饿死 caller，10–26 ms/region」同机理）；留 2 个核即恢复。
+             * 两条路径的共同最优 = nc−2，故此处取单一默认值，不做按入口分支。
+             * 各档 `text md5` + TOKIDS **逐位相同**（并行按 idx 静态切分，不改任何浮点步序）。
+             * 板端（RK3588 4×A76+4×A55）保持 4：A55 小核会拖慢 GEMM。 */
+            nthreads = (nc > 2) ? (int)(nc - 2) : (int)nc;
+#else
             nthreads = (nc > 4) ? 4 : (int)nc;   /* RK3588 A76-only default */
+#endif
             if (nthreads <= 0) nthreads = 4;
         }
     }
