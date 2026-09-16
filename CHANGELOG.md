@@ -255,6 +255,74 @@ git push github gh:master && git checkout master
 `gh` 相对 master 落后几个提交**本身不是问题**（它就是这样被维护的）；真正会出问题的是
 "两侧内容不再满足上述不变量"，而那由 `verify_ref.py` 逐文件强制校验。
 
+### 8. 「GitHub 上那份代码到底能不能编译、能不能跑」——真拉一份下来验（同日追加）
+
+§4 只到 git 层面（`ls-tree` / `cat-file`）证明了"内容相同"，没回答**可编译性**。本轮补上：
+真从 GitHub 克隆一份，两侧各自构建并跑起来。
+
+**通道（先说清怎么拉的）**：板端到 github.com **不通** —— `curl https://github.com/` 逾时、
+`git ls-remote https://…` 挂死、`Failed to connect to github.com:443 after 21052 ms`；只有
+`api.github.com` 通（`code=200, time=0.45 s`）。所以改为**本地拉 GitHub、再把同一份树送板端**。
+
+全量克隆卡在 `Receiving objects: 96% (944/983)`（同一条 SSH 通道，pack 才 ~2.5 MiB），
+改 `--depth 1 --branch master` 后一次成功（1.44 MiB，rc=0）：
+
+| 项 | 值 |
+|---|---|
+| remote | `git@github.com:m13253246268-ship-it/kestrel-llm.git` |
+| HEAD | `8422e7311895f6831c696cd55e80844f282375d0` |
+| TREE | `862b2c786b3228f1260109fae7b227c187767f75` |
+| branch / dirty / tracked | `master` / 0 / **425** |
+| 门面命名 | `README.md`（英文门面）+ `README.zh-CN.md` 在，**`README.en.md` 不在**，`wiki/Home.md` 在 |
+
+**x86 侧**（用门面树自带的 `tools/build/check_x64.ps1`；`-OutDir` 必须指向纯 ASCII 路径，
+以绕开 MinGW `ld` 打不开非 ASCII 输出路径的既有缺陷）：
+
+```
+=== [1/3] build x64 ===   rc=0
+--test-l3       PASS=16 FAIL=0   -> OK
+--test-sparse   PASS=9  FAIL=0   -> OK
+sha256 = E50FB5685AA08B2A615E703942FB47F89367A11436DE04EFB9BFDFFCF9DB1AC0
+X64 CHECK PASSED
+```
+
+**aarch64 侧**（`git archive` 打包 → scp → 解到全新目录 `/mnt/emmc/gh_verify_8422e73`；
+tar 两侧 md5 `b490b1445cd0f6dc7fce113562bf3ef3` / 10,158,080 B 回验一致）：
+
+```
+build_rc=0   exe_size=920712   exe_md5=cf3b3e10bb175af602dd0843e2abbb51
+--test-l3      rc=0 PASS=17 SKIP=0 FAIL=0   -> L3 self-test PASSED (0 failures)
+--test-sparse  rc=0 PASS=9  FAIL=0          -> Sparse self-test PASSED (9 checks)
+--bench-mixed  rc=0
+--npu-selftest rc=0
+```
+
+x86 数是 16 PASS（(1b)「P2 restore NEON vs scalar」在 x86 打 `[SKIP]`），aarch64 是 17 ——
+差的是那一项，不是回归。
+
+**端到端生成**（默认线程档，不设 `OMP_NUM_THREADS` / `VLLM_THREADS`，`--stream-test` 502-token 上下文）：
+
+```
+stream_rc=0   prompt_tokens=502
+prefill 502 tokens in 8.610s (58 tok/s) [batch]
+decoded 23 tokens, 86 ms/tok (11.69 tok/s)
+ids_md5 = 5f6f3007950b0f4ae43c3411ec4b3139
+stray=0   oom=0
+```
+
+`ids_md5` 与既有 502-token 基线的 `5f6f3007…` **逐位相同** ⇒ 门面树（i18n 互换后）与 `master`
+在**数值行为上不可区分**，而不只是 git 对象相同。
+
+**踩到的两个坑（都是验证方的，不是仓库缺陷）**：
+
+| 坑 | 现象 | 真因 / 修法 |
+|---|---|---|
+| 手搓 `git archive` 忘关 `autocrlf` | 板端 `build_rk3588.sh` 第 32 行 `set -euo pipefail` 报 `pipefail: invalid option name`（实际是 `pipefail\r`），`build_rc=2`、`NO_BINARY` | 与 §5 同根：本机 `core.autocrlf` 会让 `git archive` 把 LF 转 CRLF。**仓库内容本身是 LF**（克隆工作区 CR 计数 = 0）。显式 `git -c core.autocrlf=false archive` 后 tar 由 10,260,480 B 降到 10,158,080 B —— 正好是去掉的那 102,400 个 CR。**凡是对外发 tar / 做导出，必须带这个参数**；这是 §5 那条 bug 的第二次现身 |
+| `pkill -f gh_verify_run.sh` | ssh 立刻断连（退出码 -1），脚本根本没起来 | `-f` 匹配**整条命令行**，把 ssh 自己也算进去了。探针与清理一律用自排除写法：`gh_verify_ru[n]` |
+
+板上留存证据：`/mnt/emmc/kv2h2/gh_verify_run.log`、`ids.sh`，源码树 `/mnt/emmc/gh_verify_8422e73`（15 MB）。
+本轮**未改仓库内容**（门面树的 x86/aarch64 两侧复验通过，无须修）。
+
 ---
 
 ## 2026-09-16（交叉验证）— 从 gitee 全新克隆到板端编译，暴露并修复 2 处只有 ARM 才显现的缺陷
