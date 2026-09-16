@@ -5,6 +5,89 @@
 
 ---
 
+## 2026-09-16（下半场）— 30B-A3B MoE 8K 上下文可行性验证（组合⑤）
+
+### 0. 这一轮要回答的问题
+
+**15.9 GB 内存的 RK3588 板，能不能吃下 30B-A3B MoE 模型的 8K 上下文**，
+并且逐层驻留 + 组合①（L3 驱逐 × 前缀复用）+ **组合⑤（MoE 专属优化开关）**同时开着。
+
+**结论（先给答案）**：**能。** 峰值 VmHWM **2.92 GB**、RSS **1.09 GB**，对 15.9 GB 板余量充足；
+L3 驱逐/回填与进程内前缀复用在 MoE 上同样生效，turn2 靠复用 7212 token 前缀把 852 s 压到 75 s。
+
+### 1. 口径声明（**本档不是基准，不可与 §7 表混比**）
+
+| # | 边界 | 说明 |
+|---|---|---|
+| 1 | 无对照、无 A/B | 只有 1 轮 × 2 turn，**没有 llama.cpp 对照，也没有同档交错 A/B** ⇒ 绝对值不与 §7 的 2K/4K/8K/16K 权重公平 A/B 同列 |
+| 2 | 近似轨未对拍 | 组合⑤ 的 `VLLM_ACTQ=1` 走 q4 MoE int8-dot **近似轨**（日志 `[ACTQ] … approximate track ON`）；本轮**未做 ACTQ 开/关精度对拍** ⇒ 只证明"能跑通、能出内容"，**不构成数值质量结论** |
+| 3 | 无 usage 字段 | 两轮响应 `usage={}`（`finish_reason=stop`，正文 126 / 127 字符），生成 token 数取不到 ⇒ **decode t/s 无法精确给出，本档不报 decode 速率** |
+| 4 | 预热非算力 | 首次预热（3 段 ≈53 token）耗 **213 s**，是逐层冷读 16.8 GB 权重的代价 |
+| 5 | 同进程两轮 | 两轮在同一引擎进程内完成（与 `kv2_run2.sh` 每轮 3 个 turn 的结构一致），turn2 靠**进程内**前缀复用，非重载 |
+
+### 2. 配置
+
+- **必须 `VLLM_VQF_STREAM=1`**：16.45 GB 权重 > 15.9 GB RAM，全层驻留放不下。
+- 组合⑤ = `VLLM_ACTQ=1 VLLM_MOE_BATCH=1`（专家激活量化 + 专家批量，仅对 q4 MoE 权重有意义）。
+- 其余与 §7 的 8B 档同口径：`OMP_NUM_THREADS=4 VLLM_THREADS=4 VLLM_NPU_FORCE_CPU=1 VLLM_L3_PREFIX_REUSE=1 VLLM_TP_SPIN=1`，
+  `--threads 4 --sparse-attn --sparse-k 32 --l3-evict --l3-ratio 0.75 --l3-min-seq 128 --prefill-batch 256`。
+- 提示词 600 段（≈7217 token）；生成 `max_tokens=64 temperature=0 top_p=1`。
+- **VQF 头未改动**：`patched=0`（`max_seq` 本来就是 8192），`md5_vqf_before=d4e3c3ae…`。
+  **不要**对 30B 沿用 16K 档那套 `--set 20480`。
+- governor 跑前 `ondemand` → 脚本顶回 `performance`（与 8B 8K 档同口径）；温度 29.6 °C。
+
+### 3. 结果
+
+| 项 | turn1 | turn2（复用 7212 token 前缀） |
+|---|---|---|
+| 墙钟 | **852.45 s** | **74.69 s**（**11.4×**） |
+| `prefill_ms` | 795.3 s（7217 tok） | 23.8 s（只 prefill 新增 **23** token） |
+| `prompt` | 7217 | 7235 |
+| 响应 | OK / 48098 B | OK / 48198 B |
+| RSS / VmHWM | 1.15 GB / **2.67 GB** | 1.09 GB / **2.92 GB** |
+
+prefill 分解（引擎侧 `[PREFILL-TIMING]`，turn1 整段）：
+`n=7178 total=781829.9ms | GEMM=523834.2ms(67.0%) ATTN=251126.6ms(32.1%) OTHER=6869.1ms(0.9%)`，
+其中 `[PREFILL-KERNELS] GATEUP=459707.5ms（占 GEMM 87.8%）` ⇒ **MoE 专家 GEMM 是主开销**。
+（`DOWN=0.0ms` 是 MoE 路径的既有口径，不是缺测。）
+
+### 4. 关键证据行
+
+```
+[VQF] MoE v3: experts=128 top_k=8 moe_ffn=768 shared=0 ffn_dim=98304 router=48.0MB (f32 resident) experts=q4
+[VQF-STREAM] enabled keep=1 nl=48 segs=11 per-layer=334.1MB data=16847.2MB resident~808.4MB
+[ACTQ] VLLM_ACTQ=1: q4 MoE int8-dot approximate track ON (l=0, d=2048 nbG=64)
+[L3] evicted 8112 blocks -> /mnt/emmc/moe8k_l3_u65bbfe41 (cursor=158.44 MB, seq=7217, keep=39,
+      ratio=0.75, packed_now=8112, total_packed=8112), freed 1267.5 MB from RAM
+[L3] restored 8112 prefix blocks from Q4 payload (prefix=7212)
+[KV-PREFIX] reuse 7212-token KV prefix, prefill rest
+[PREFILL-TIMING] n=23 total=17057.7ms          ← turn2 只算新增 23 token
+```
+
+即：16.45 GB 权重在逐层下只常驻 **808 MB**；8K 的 KV 由 L3 驱逐出 **1267 MB** 到盘上
+（盘上 cursor 158.44 MB）；turn2 回填 8112 块后直接复用 7212 token 前缀。
+
+### 5. harness 的两处修复（本轮自查发现，已修在归档 harness 内）
+
+| 位置 | 问题 | 处理 |
+|---|---|---|
+| `moe8k.sh` 头字段解析 | `awk '/dim /{print $3}'` **同时命中 `dim` 与 `head_dim`** ⇒ `DIM="2048\n128"`，随后 `[ "$DIM" -ge 512 ]` 报 `Illegal number` 而**恒假**，守卫失效 | 改为按行首字段名锚定。板端实测：旧式 `OLD_GUARD=fail / Illegal number: 2048`，新式 `NEW_GUARD=pass`。本档 `patched=0`，**结果未受影响** |
+| `moe8k.sh` 收尾抽数 | 写的是 `python3 "$H/pk.sh"`，而 `pk.sh` 是 shell 脚本 ⇒ `SyntaxError`，抽数那步空跑 | 改为 `sh "$H/pk.sh"`；数据未丢，本档 `prefill_ms` 为事后单独抽取 |
+
+### 6. 归档
+
+新增 `docs/bench/20260916-rk3588-moe-8k/`：`run.log`（harness 主日志）、`moe_8k_serve.log`（引擎日志）、
+`moe_8k_t1.json` / `moe_8k_t2.json`（两轮响应）、`harness/moe8k.sh`（已修版本）、`MANIFEST.txt`（口径 + 复现步骤 + 入库 md5）。
+引擎二进制 md5 = `a1b6707de9c925536df980f35aae6a1e`，**与本轮 §7 复测用的是同一份**。
+
+### 7. 已知遗留
+
+- 未做 **ACTQ 开/关精度对拍** —— 这是本档最大的未闭合项（只有它才把"能跑"升级成"能用"）。
+- 未测 30B MoE 的 16K（L3 与 KV 体量按 8K 外推风险未知），也未与 llama.cpp 做 30B 对照。
+- `/mnt/emmc` 跑前已用 **96%（剩 1.2 GB）**：再跑大档前需先清盘（L3 目录本档占 159 MB）。
+
+---
+
 ## 2026-09-16 — L3 长上下文链路：插桩定位 + 三处修复 + 全档重测
 
 ### 0. 这一轮要回答的问题
