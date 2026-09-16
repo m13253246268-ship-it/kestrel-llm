@@ -1,15 +1,17 @@
-﻿﻿﻿﻿# check_x64.ps1 - x86「可验证」回归：构建 + L3/Sparse 自检计数
+﻿# check_x64.ps1 - x86「可验证」回归：构建 + L3/Sparse 自检计数
 #
 # 目的：把「引擎在 x86 上能编译、且数值自检与 ARM 同源」固化成一条命令，
 #       不再依赖"上次手工跑过"的口头证据。
-#       ARM 侧同口径期望值：--test-l3 16/16、--test-sparse 9/9（板端实测一致）。
+#       期望值：--test-l3 16 PASS / 0 FAIL、--test-sparse 9/9。
+#       x86 无 NEON，(1b)「P2 restore NEON vs scalar bitwise」一项打 [SKIP] 而非
+#       [PASS]（不计入 PASS 数；FAIL 必须为 0）。
 #
 # 用法：
 #   powershell -ExecutionPolicy Bypass -File tools\build\check_x64.ps1
 #   powershell -ExecutionPolicy Bypass -File tools\build\check_x64.ps1 -Gcc <gcc路径> -OutDir .\build-x64
 #   （-Gcc / -OutDir 省略时透传给 build_x64.ps1 的同名回退规则）
 # 退出码：
-#   0 = 构建成功 且 --test-l3 16/16 且 --test-sparse 9/9
+#   0 = 构建成功 且 --test-l3 16 PASS/0 FAIL 且 --test-sparse 9/9
 #   1 = 构建失败 或 任一项出现 FAIL / 条数不符
 #
 # 边界（照实标注）：本脚本只证明「可编译 + 自检通过 + 与 ARM 同为 16/9 条」，
@@ -52,7 +54,7 @@ function Invoke-SelfTest([string]$flag, [int]$want) {
     return $ok
 }
 
-Write-Host '=== [2/3] self-tests (ARM 同口径: 16 / 9) ==='
+Write-Host '=== [2/3] self-tests (x86 口径: 16 PASS + 1 SKIP / 9) ==='
 $a = Invoke-SelfTest '--test-l3' 16
 $b = Invoke-SelfTest '--test-sparse' 9
 

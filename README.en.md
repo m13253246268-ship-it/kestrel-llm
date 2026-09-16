@@ -102,6 +102,7 @@ Numbers in this chapter come from two sources, and each subsection heading state
 
 1. **Controlled A/B (reproducible to within 1%)** -- the `--stream-test` basis. On the same board, with the same model file, the **old build** (compiled here from the previous Gitee source commit `ffd0b92`) and the **new build** (this release's source) were run **interleaved within a single session**, 2 rounds per configuration, with temperature and per-core frequency sampled at every point. **Sections 1 and 4 belong here.**
 2. **New points (single-shot, not controlled)** -- serve-style bases (sections 2 / 3 / 5). The matching old-build points were not re-measured, because a single old-build 30B serve point takes 15-40 minutes. These tables **describe this release only and are not an old-vs-new comparison**.
+3. **Cross-engine comparison (weight-fair A/B, section 7)** -- same board, **the same 4-bit quantized weights**, each side free to use its own optimizations, compared tier by tier against **llama.cpp** (3 rounds each at 2K / 4K, 2 at 8K, 1 at 16K). This is the only "against a third-party engine" basis in this chapter and **must not be mixed with the first two** (this release vs the previous release, or this release against itself).
 
 **Measurement environment**: RK3588 (Orange Pi 5 Plus, 15.9 GB RAM, `governor=performance`). Old build sha256 `76d5bffb8c6fb280...`, new build `078349be598e13ef...`. Temperature stayed within **30.5-47.2 C** and the A76 / A55 cores held **2,304,000 / 1,800,000 kHz** throughout -- **there was no downclocking**, so the old-vs-new differences do not come from temperature or frequency.
 
@@ -129,6 +130,7 @@ Numbers in this chapter come from two sources, and each subsection heading state
 |---|---|---|
 | **30B-A3B (MoE, q4, 17.66 GB)** | **decode 1.74-3.72x faster; prefill 1.21x (cold, better I/O overlap) to 5.44x (warm)** | unchanged (+0.1-1.0%) |
 | **8B (dense, q4, 6.60 GB)** | **no change** -- 24 points agree point by point, max deviation 1.0% | unchanged |
+| **8B vs llama.cpp (long context, section 7)** | **prefill: 1.32x slower at 2K -> 1.15x slower at 4K -> 1.11x faster at 8K -> 1.60x faster at 16K; decode: full 1.07x faster at 2K -> 3.63x faster at 16K; multi-turn reuse turns: this release 1.33-3.4x faster across the board (lead grows with context)** | peak at 16K 6.71-10.15 GB vs llama.cpp 10.77 GB (at 2K: 1.46-4.90 GB vs 8.71 GB) |
 
 ---
 
@@ -164,7 +166,7 @@ Peak VmHWM: full 12,705,354 -> **12,722,536 kB (+0.14%)**; per-layer 708,162 -> 
 | per-layer | t4 / warm | 1.707 s | 1.724 s | 320 | 318 |
 | per-layer | t8 / warm | 2.220 s | 2.209 s | 581 | 582 |
 
-**Everything is within 1.0% -- 8B is completely unchanged in this release** (see section 7). Peak VmHWM: full about 4,226.7 MB, per-layer about 593.2 MB (identical for both builds); per-layer saves **7.12x** versus full.
+**Everything is within 1.0% -- 8B is completely unchanged in this release** (see section 8). Peak VmHWM: full about 4,226.7 MB, per-layer about 593.2 MB (identical for both builds); per-layer saves **7.12x** versus full.
 
 > Basis: both models run `--stream-n 32`, but 8B reaches EOS early and **actually emits 29 tokens** (30B emits 32). "Cold" = `sync; echo 3 > /proc/sys/vm/drop_caches` before each point; "warm" = no `drop_caches`, and each warm point is preceded by a discarded warm-up run (`--stream-n 16`) so both builds start from the same cache state.
 
@@ -312,7 +314,88 @@ The time in "trade time for memory" scales with weight size divided by storage b
 
 ---
 
-### 7) Honest boundaries
+### 7) Long context: weight-fair A/B against llama.cpp (full re-test on **2026-09-16**)
+
+**This is the only "against a third-party engine" basis in this chapter** and must not be mixed with sections 1-6 (this release vs the previous release, or this release against itself).
+
+**What changed since the previous round (read before citing)**: the 2026-09-15 round used `md5_exe=71f8f53e...`; this round uses the fixed build `md5_exe=a1b6707d...` (tokenizer vocab index + L3 whole-block write + NEON restore kernels). **Both sides of all four tiers were re-measured in the same session in this round** (still interleaved, still `drop_caches` before every arm), so they replace the previous round wholesale. The previous round's figures remain in the 2026-09-15 archive, and its statements such as "the reuse turn is the one item still lost" are **withdrawn** -- see conclusions 4 / 5. Rounds: 3 each at 2K / 4K, 2 at 7.2K, 1 at 16K.
+
+**How fairness is enforced (four points, all verifiable)**
+
+| Aspect | What was done |
+|---|---|
+| Same weight source, same quant class | Both sides use **the same Qwen3-VL-8B weights**. This release's `q4` VQF is about **4.25 bpw** on the text path (group-16 Q4); llama.cpp used **Q4_0 (4.50 bpw)**, **not Q4_K_M** (the latter is 4.9 bpw with more expensive dequantization and would flatter this release) |
+| Weight evidence | This round's three md5s: `md5_exe=a1b6707d...` (previous round `71f8f53e...`), `md5_gguf=96fb8a5e...` (unchanged throughout), `md5_vqf=b6d8d1d7...` (the historical 16K snapshot is `f8ca1002...`; the difference is **only the `max_seq` metadata field in the VQF header** -- the weight body is byte-identical). Note: `kv2_run2.sh` had a defect (missing `mkdir -p /tmp/kv2`, so the md5 lines never reached `summary.txt`); fixed this round, and the three md5s are recorded in the archive's `MANIFEST.txt` |
+| Each side runs its own optimizations | This release: `--sparse-attn --sparse-k 32 --l3-evict --l3-ratio 0.75 --l3-min-seq 128 --prefill-batch 256` plus `VLLM_L3_PREFIX_REUSE=1 VLLM_TP_SPIN=1`, in both per-layer and full-residency modes; llama.cpp: `llama-server -t 4 -ngl 0` with its **default prompt cache** (log: `selected slot by LCP similarity`) |
+| Same protocol | **4 threads on both sides**; before every arm, `sync; echo 3 > /proc/sys/vm/drop_caches`, then one **throwaway warm-up request**, then the timed turns; **no interleaving** |
+
+**Request shape**: one long Chinese passage (repeated to the target length per tier) plus 3 follow-up questions; turns 2 and 3 append to the prefix, so **prefix reuse always hits**; `temperature=0`, `max_tokens=64`. This round: **3 rounds** each at 2K / 4K and **2 rounds** at 8K (the third was stopped on request); tables use the median of the per-round turn-1 values. 16K was not re-measured this round.
+
+**Raw artifacts**: this round [`docs/bench/20260916-rk3588-llama-ab/`](docs/bench/20260916-rk3588-llama-ab/MANIFEST.txt), previous round [`docs/bench/20260915-rk3588-llama-ab/`](docs/bench/20260915-rk3588-llama-ab/MANIFEST.txt) — the raw source of every number in this section (per-arm per-round `json`, engine logs, `summary.txt`, `REPORT.txt`, plus the board-side scripts that produced them and the md5 evidence list). This section only interprets; **cite figures by checking them against the raw artifacts**.
+
+**prefill (incremental-token basis, t/s, higher is better)**
+
+| Tier (actual prompt tokens) | llama.cpp Q4_0 | This release, per-layer | This release, full | Lead |
+|---|---|---|---|---|
+| 2.0K (1,996-2,034) | **17.61** | 13.23 | 13.36 | 0.75x (1.32-1.33x slower) |
+| 4.0K (3,976-4,014) | **14.61** | 12.68 | 12.71 | 0.87x (1.15x slower) |
+| 7.2K (7,216-7,254) | 11.02-11.18 | 12.30-12.38 | **12.31-12.38** | **1.11-1.12x** |
+| 16K (15,616-15,654) | 7.25 | 11.61 | **11.68** | **1.60 / 1.61x** |
+
+**decode (t/s, higher is better)**
+
+| Tier | llama.cpp Q4_0 | This release, per-layer | This release, full | Lead |
+|---|---|---|---|---|
+| 2.0K | **2.61** | 2.28 | 2.79 | full **1.07x** (per-layer 1.14x slower) |
+| 4.0K | 1.50 | 2.16 | **2.54** | **1.69 / 1.44x** |
+| 7.2K | 0.94 | 1.94-1.97 | **2.27-2.28** | **2.41-2.43 / 2.02-2.10x** |
+| 16K | 0.48 | 1.42 | **1.74** | **2.96 / 3.63x** |
+
+**Peak memory (VmHWM, GB; the maximum within each tier)**
+
+| Tier | llama.cpp Q4_0 | This release, per-layer | This release, full |
+|---|---|---|---|
+| 2.0K | 8.71 | **1.46** | 4.90 |
+| 4.0K | 9.00 | **2.22** | 5.66 |
+| 7.2K | 9.49 | **3.47** | 6.91 |
+| 16K | **10.77** | **6.71** | 10.15 |
+
+**multi-turn reuse turns (prefill latency of turns 2 / 3, lower is better; both sides hit prefix reuse)**
+
+| Tier | llama.cpp | This release, per-layer | This release, full | Lead |
+|---|---|---|---|---|
+| 2.0K | 4.79-4.92 s | 3.34-3.60 s | **3.28-3.60 s** | **1.33-1.50x** |
+| 4.0K | 8.40-8.55 s | 4.10-4.45 s | **4.05-4.35 s** | **1.92-2.11x** |
+| 7.2K | 14.43-15.26 s | 5.52-5.76 s | **5.40-5.70 s** | **2.50-2.83x** |
+| 16K | 29.52-29.56 s | 8.68-9.23 s | **8.85-9.01 s** | **3.2-3.4x** |
+
+> **Tier and build basis**: 3 rounds each at 2K / 4K, 2 at 7.2K, 1 at 16K; **both sides of every tier were measured in the same 2026-09-16 session** (both per-layer and full residency). The 16K tier ran under **`governor=ondemand`** (the other three under `performance` -- the board was rebooted in between; the governor has since been set back to `performance`), so its absolute values may be ~5-8% conservative; **the within-tier two-sided comparison is unaffected**.
+
+**Five conclusions**
+
+1. **The decode crossover still sits just above 1K**: sparse pruning only kicks in past `seq_len > g_sparse_k * g_sparse_block = 1024`, so below that threshold this release pays full dense attention for nothing. **Full residency** already leads by **1.07x** at 2.0K -> **1.69x** at 4.0K -> **2.41x** at 7.2K -> **3.63x** at 16K; **per-layer residency** is still 1.14x slower at 2.0K but **ahead from 4.0K** (1.44x) -> 2.02-2.10x at 7.2K -> **2.96x** at 16K.
+2. **The prefill crossover sits between 4K and 8K**: 1.32-1.33x slower at 2.0K -> 1.15x slower at 4.0K -> **1.11-1.12x** faster at 7.2K -> **1.60-1.61x** faster at 16K.
+3. **The real source of the gap is the decay rate**: from 2.0K to 16K, this release loses **12.2%** on prefill (13.23 -> 11.61 per-layer) and **37.7%** on decode (2.28 -> 1.42); llama.cpp loses **58.8%** (17.61 -> 7.25) and **81.6%** (2.61 -> 0.48). llama.cpp decays more steeply (the previous round measured its 16K prefill decaying **within a single request**: 17.72 -> 14.61 -> 12.40 -> 10.79 -> 9.59 -> 8.62 t/s), while this release stays flat.
+4. **The multi-turn reuse turn now goes to this release across the board** (the previous round had it 1.10-1.25x behind; **that conclusion is withdrawn**): **1.33-1.50x** at 2.0K, **1.92-2.11x** at 4.0K, **2.50-2.83x** at 7.2K, **3.2-3.4x** at 16K -- the lead grows monotonically with context (at 16K the previous round was still 1.07x behind). Attributable to three fixes in this release, each measured separately:
+   - **tokenizer vocab index** (the dominant residual in reuse turns): bit-exact regression 1548 cases / 0 mismatches; with it removed, the unattributed residual drops from **10.38 s -> 0.16 s** at 7.2K and **2.74 s -> 0.03 s** at 2.0K.
+   - **L3 eviction whole-block write**: `write` **3.478 s -> 0.062 s (-98.2%)**; whole eviction phase **4.742 s -> 1.271 s (-73%)**.
+   - **L3 restore NEON kernels**: `store` **0.665 s -> 0.483 s**, `dequant` **0.179 s -> 0.117 s**, `restore` wall clock **0.848 s -> 0.630 s**.
+   - Combined (2.0K, same-session A/B): turn2 TTFT **6.630 s -> 3.845 s (-42%)**, turn3 **6.522 s -> 3.588 s (-45%)**; turn-1 prefill compute differs by 0.2% and turn-2 GEMM by 0.4%, and the output text is identical.
+5. **Two attributions in the previous round were wrong; corrected here** (the original artifacts remain untouched in the 2026-09-15 archive):
+   - "`[L3] restored 13176 prefix blocks` = **515 MB in about 28 s** (roughly 20 MB/s, decompression-bound)" — **the 515 MB figure itself was right; the error was tying it to 28 s**. 515 MB *is* the on-disk Q4 payload: 13176 blocks x 40 KB ~= 515 MB, consistent with this round's measured slope (1692 blocks = 66.09 MB, 6120 blocks = 239 MB, about 39 KB/block). But **28 s was the order of magnitude of the whole reuse turn, and the L3 restore was nowhere near filling it**: this round measures a restore-stage wall clock of **0.630 s** at 2.0K, extrapolating linearly by block count to about **5-6 s** at 16K (bounded by write bandwidth, not "decompression"), so the "roughly 20 MB/s" derived from 28 s is void as well. The real dominant term in that reuse turn was the tokenizer's linear vocab scan (about 2.7 s at 2.0K, 10.4 s at 7.2K; about 21 s at 16K by token count, consistent with the measured 30.2-32.3 s).
+   - "**The one item still lost is the multi-turn reuse turn**" — see conclusion 4; on that basis this release now leads.
+
+**Boundaries (must be quoted together with this section)**
+
+- **Rounds and build basis**: 3 rounds each at 2K / 4K, 2 at 7.2K (the third was stopped on request), 1 at 16K; **all four tiers were measured with this round's build `a1b6707d...`**, both sides interleaved in one session. Per-round spread: prefill <=1.0%, decode <=3.5%, reuse-turn latency <=5.1% (worst case is 7.2K llama turn 3, and that tier has only 2 rounds). **The 16K tier ran under `governor=ondemand`** (the other three under `performance`), so its absolute values may be ~5-8% conservative; both sides of that tier shared the same governor, so the comparison holds.
+- **Running 16K requires editing the VQF header's `max_seq` field** (8192 -> 20480, 4 bytes; the engine reads `max_seq` from the VQF header and there is no runtime switch). The field is **metadata** and does not change weight values. This round proved the whole edit end to end: md5 `b6d8d1d7...` before -> `f8ca1002...` after (byte-identical to the previous round's historical 16K snapshot, which confirms only those 4 bytes moved) -> after `--restore`, both the md5 and `max_seq` are back to baseline (`b6d8d1d7...` / 8192).
+- **End-to-end turn latency is not comparable**: the two sides stop at different token counts (llama.cpp often emits only 6-17 tokens, this release 40-64). This section therefore uses **per-token rates and prefill latency only** and does not quote end-to-end seconds — note that `turn* total_s` in `summary.txt` includes decode; the "reuse turn latency" here is the response's `metrics.prefill_ms`.
+- **This section is a performance comparison only, with no bit-identical cross-check**: the two sides' output text agrees for the first few turns and diverges afterwards (sampling and template differences), which does not affect these conclusions.
+- **32K / 64K were not measured.** KV costs about **264 KB/token** in practice (derived from `[L3] freed ... MB / prefix tokens`): at 16K this release's full-residency peak is 10.14 GB and llama.cpp's is 10.77 GB, both close to the 15.9 GB limit; going longer requires solving KV residency first (this release can use `--l3-evict` and per-layer residency; llama.cpp has no equivalent on this board).
+
+---
+
+### 8) Honest boundaries
 
 - **8B is unchanged in this release, and that is expected**: 8B is a **dense** model, so every decode token reads all 6.15 GiB of weights and it is **bandwidth-bound**; this release optimizes **unpacking compute**, which does not help 8B. 30B-A3B is **MoE** and activates only the top-8 experts per token (about 1.6 GB), making it **compute-bound**, hence the large gain.
   > Caveat: 6.6 GB / 0.185 s implies 35.7 GB/s, above the 25.74 GB/s recorded earlier, so the "8B is bandwidth-bound" explanation **still needs a direct bandwidth measurement for confirmation**; treat it as the current best explanation.
@@ -451,6 +534,47 @@ VLLM_VQF_SIGN_PRIV='<64hex>' ./vqf_conv --model <safetensors-dir> --convert-vqf 
 
 ---
 
+## FHE Ciphertext Inference Chain Drivers (`tools/drivers/`)
+
+On top of the engine's RNS-CKKS core (`src/core/vllm_ntt.c` / `vllm_ckks.c` / `vllm_tp.c`), this repository
+ships **layer-chain drivers** that run a model layer by layer on ciphertexts
+(each layer = one `lay` forward hop + one `boot` bootstrap refresh):
+
+```bash
+# lay / fin (layer chain, 112 primes)
+gcc -O2 -fopenmp -Wno-implicit-function-declaration \
+    -I include -I include/core -I include/common \
+    -DCKKS_N=2048 -DCKKS_NPRIMES=112 -DBB=32 -DGG=32 \
+    src/core/vllm_ntt.c src/core/vllm_ckks.c src/core/vllm_tp.c \
+    tools/drivers/t23_m3p.c -o t23lay -lm
+
+# boot (2100 primes; a large stack is required)
+gcc -O2 -fopenmp -Wno-implicit-function-declaration '-Wl,--stack,33554432' \
+    -I include -I include/core -I include/common \
+    -DCKKS_N=2048 -DCKKS_NPRIMES=2100 -DBB=32 -DGG=32 \
+    src/core/vllm_ntt.c src/core/vllm_ckks.c src/core/vllm_tp.c \
+    tools/drivers/t23_chain.c -o t23boot -lm
+```
+
+- **Usage, judging criteria, data-directory convention and the measured thread-count conclusions**:
+  see [`tools/drivers/README.md`](tools/drivers/README.md)
+  (**scope matters**: within a layer, the `[A+B]` segment is fastest at 4 threads; over a full hop, `boot`
+  is ~20% faster at 8 threads; and the thread count is a *result variable* — `NT=4` and `NT=8` ciphertexts
+  are not bit-identical).
+- **Data is not shipped**: the repo excludes the ~7 GB data package; generate it with
+  [`tools/preproc/`](tools/preproc/) (the exported weights have been SHA256-verified byte-for-byte against
+  the published results).
+- **Run / pack / verify scripts and the relay guide**: [`tools/relay/`](tools/relay/)
+  (per-tool usage, judging criteria, data-directory convention).
+- **Archive output directory** is produced on demand by
+  [`tools/relay/collect_results.ps1`](tools/relay/collect_results.ps1) (default `results/L0-4/`, not tracked);
+- **Community relay**: layers 0–4 are done and the remaining 23 layers are open for community compute —
+  the relay post, operating manual, measured-data appendix and the **layer 0–4 hand-off archive
+  (Release asset)** live in the coordination repo
+  [`kestrel-fhe-relay`](https://gitee.com/pei-xiaoguang/kestrel-fhe-relay).
+
+---
+
 ## Weight Protection
 
 **Producer side** (done by `vqf_convert/`; the two can be combined):
@@ -583,7 +707,8 @@ third-party project runtime is ever shipped with the engine.
 ├── tools/                     # in-house tooling
 │   ├── bench/                 # benchmarks + streaming latency probe
 │   │   ├── bench_value.sh     # per-layer value bench: A/B memory + warm stability + page-cache evidence (see Performance §4)
-│   │   └── bench_http_probe.py  # zero-dependency streaming HTTP latency probe (TTFT/tpot/peak VmHWM), called by the above
+│   │   ├── bench_http_probe.py  # zero-dependency streaming HTTP latency probe (TTFT/tpot/peak VmHWM), called by the above
+│   │   └── patch_vqf_max_seq.py # read/write the VQF header max_seq_len (--dump / --set N / --restore), see Performance §7
 │   ├── build/                 # build + code generation
 │   │   ├── gen_embedded_web.py  # HTML → embedded byte-array generator (re-run after page edits)
 │   │   ├── build_vocab_bin.py   # tokenizer.json → vocab.bin (byte-decoding fixed)
@@ -595,9 +720,12 @@ third-party project runtime is ever shipped with the engine.
 │   ├── npu/                   # npu_export_ops.py: RK3588 operator-level NPU model export
 │   ├── kernels/               # extract_llama_asm.py + llama_gemm_q4_0_4x4_asm.c (MIT)
 │   ├── preproc/               # FHE ciphertext-chain data preprocessing scripts
-│   └── drivers/               # FHE ciphertext-chain drivers (t23_m3p.c / t23_chain.c)
+│   ├── drivers/               # FHE ciphertext-chain drivers (t23_m3p.c / t23_chain.c)
+│   └── relay/                 # ciphertext-chain relay scripts: run / pack / verify / accuracy check
 ├── vqf_convert/               # standalone conversion tool (safetensors/GGUF → VQF v2)
 └── docs/                      # technical docs / benchmark reports / security specs (Chinese)
+    └── bench/                 # raw benchmark archive: one directory per measurement set, named YYYYMMDD-platform-topic
+        └── 20260915-rk3588-llama-ab/   # raw artifacts behind Performance §7 (json / logs / summary / board scripts), see its MANIFEST.txt
 ```
 
 ---
@@ -611,6 +739,7 @@ third-party project runtime is ever shipped with the engine.
 | [docs/优化配置与边界说明.md](docs/优化配置与边界说明.md) | Mechanisms, gains and honest boundaries of each optimization tier (including effective combos and the x86 cross-check basis; **some figures are v0 / warm-cache**) |
 | [docs/KV缓存v2-惰性分配与分层驻留方案.md](docs/KV缓存v2-惰性分配与分层驻留方案.md) | KV lazy allocation, L3 tiered residency and coexistence with P3 prefix reuse (L3 eviction + prefix reuse) |
 | [docs/权重保护与可验证推理方案.md](docs/权重保护与可验证推理方案.md) | Three lines of defense: VQF at-rest encryption, SM2 supply-chain signature, inference attestation (schema 3, bound to the raw request body) — relationships, end-to-end usage and the unified security boundary |
+| [docs/bench/](docs/bench/20260915-rk3588-llama-ab/MANIFEST.txt) | **Raw benchmark archive**: the raw artifacts behind each measurement in the main text (per-round response json, engine logs, `summary.txt`, `REPORT.txt`) plus the board-side scripts that produced them and the md5 evidence list; one directory per measurement set, entry point is the `MANIFEST.txt` inside |
 
 ---
 

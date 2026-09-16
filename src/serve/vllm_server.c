@@ -1,5 +1,5 @@
 /* ================================================================
- * vllm_server.c - OpenAI-compatible API server for vllm_kestrel
+ * vllm_server.c - OpenAI-compatible API server for vllm_shs
  *
  * Routes /v1/models, /health and /v1/chat/completions (with SSE
  * streaming) against the engine's Qwen inference state.
@@ -455,6 +455,12 @@ static void ist_reset(VLLMServerCtx *ctx, int keep_lcp) {
     int reuse = (ctx->prefix_kv || ctx->disk_kv) &&
                 keep_lcp >= PREFIX_KV_MIN_LCP && prefix_kv_allowed() &&
                 keep_lcp <= st->cache_len[0];
+    if (getenv("VLLM_DEBUG_PREFIX"))
+        fprintf(stderr,
+                "[KV-PREFIX-DBG] ist_reset keep_lcp=%d cache_len0=%d "
+                "prefix_kv=%d disk_kv=%d allowed=%d l3_evict=%d reuse=%d\n",
+                keep_lcp, st->cache_len[0], ctx->prefix_kv, ctx->disk_kv,
+                prefix_kv_allowed(), g_l3_evict, reuse);
     /* P3：L3 开时前缀块可能已被驱逐（k_cache[l][b] == NULL），而 prefill 的
      * 打包路径读不了 NULL 块 —— 这正是硬门存在的原因。复用前先把
      * [0, keep_lcp) 的行从 Q4 载荷重建回 RAM（纯解压，无重算）。
@@ -462,7 +468,13 @@ static void ist_reset(VLLMServerCtx *ctx, int keep_lcp) {
      * 返回 0 = 本来就没有缺失块（L3 未驱逐 / 已全部驻留），照常复用。
      * L3 关时无需重建（prefix_kv_allowed() 已放行，块从未被释放）。 */
     if (reuse && g_l3_evict) {
+        /* VLLM_L3_PROF=1：回填是一个独立阶段，墙钟 + 子项分开统计。
+         * 先开 scope（fetch/fill 的子项只在回填窗口内计入），再清零计数。 */
+        int prof = l3_prof_on();
+        double t_r0 = 0.0;
+        if (prof) { l3_prof_reset(); l3_prof_scope(1); t_r0 = l3_prof_now(); }
         int rs = l3_restore_prefix(st, keep_lcp);
+        if (prof) { l3_prof_scope(0); l3_prof_report("l3-restore", l3_prof_now() - t_r0); }
         if (rs < 0) {
             fprintf(stderr, "[KV-PREFIX] L3 restore incomplete -> full prefill "
                             "(prefix=%d, evicted=%d)\n", keep_lcp, st->l3.evicted);
@@ -736,7 +748,7 @@ static void handle_models(VLLMServerCtx *ctx, VHttpResponse *resp) {
     vjson_obj_set(m, "id", vjson_new_string(ctx->model_id ? ctx->model_id : "qwen3-vl-8b"));
     vjson_obj_set(m, "object", vjson_new_string("model"));
     vjson_obj_set(m, "created", vjson_new_number((double)unix_now()));
-    vjson_obj_set(m, "owned_by", vjson_new_string("vllm_kestrel"));
+    vjson_obj_set(m, "owned_by", vjson_new_string("vllm_shs"));
     vjson_array_push(data, m);
     vjson_obj_set(root, "data", data);
     size_t n = vjson_serialize(root, body, 2048);
@@ -1135,6 +1147,31 @@ static int decode_loop(VLLMServerCtx *ctx, double temperature, double top_p,
             st_qwen_model_forward(st, id);
         } else {
             /* Normal single-token decode step. */
+            /* 插桩（VLLM_DEBUG_LOGITS=1）：把本步 logits 打成一行指纹，用来判
+             * 「同一输入 → logits 是否逐位相同」。指纹 = FNV-1a over raw bytes
+             * （能分辨 -0.0/+0.0 这类位级差异），另附 top-2 id 与差值：
+             *   指纹相同而选中 token 不同 → 采样侧问题；
+             *   指纹不同 → 数值侧问题，margin 量级说明是否 near-tie 翻转。
+             * 第一个 decode 步的 logits 就是 prefill 的产物，故首行即 prefill 指纹。 */
+            if (getenv("VLLM_DEBUG_LOGITS")) {
+                const unsigned char *lb = (const unsigned char *)st->logits;
+                unsigned long long h = 1469598103934665603ULL;
+                for (size_t bi = 0; bi < (size_t)vc * sizeof(float); bi++) {
+                    h ^= lb[bi];
+                    h *= 1099511628211ULL;
+                }
+                int b1 = 0, b2 = -1;
+                for (int i = 1; i < vc; i++)
+                    if (st->logits[i] > st->logits[b1]) b1 = i;
+                for (int i = 0; i < vc; i++)
+                    if (i != b1 && (b2 < 0 || st->logits[i] > st->logits[b2])) b2 = i;
+                fprintf(stderr,
+                        "[LOGITS-DBG] seq=%d gen=%d fnv=%016llx top1=%d top2=%d "
+                        "margin=%.9g\n",
+                        st->seq_len, gen, h, b1, (b2 < 0 ? -1 : b2),
+                        (b2 < 0 ? 0.0 : (double)(st->logits[b1] - st->logits[b2])));
+                fflush(stderr);
+            }
             id = sample_token_pk(st->logits, vc, (float)temperature,
                                  (float)top_p, (float)min_p, top_k);
             if (id == tok->eos_id || id == tok->im_end_id) { finish = "stop"; done = 1; break; }
@@ -1383,11 +1420,19 @@ static int run_completion(VLLMServerCtx *ctx, const char *prompt,
         if (ctx->prefix_kv && prefix_kv_allowed() && !ctx->last_was_mm &&
             ctx->last_n > 0) {
             int l = kv_lcp(ctx->last_ids, ctx->last_n, ids, n_ids);
-            /* 必须 l < n_ids: 若新 prompt 被上次 KV 完全覆盖(l == n_ids), prefill
-             * rest=0 不会刷新 logits, decode 首步会采样到上次请求末尾的陈旧 logits
-             * (预测 eos) → 立即停止 → 空响应。回退全量 prefill 保证正确。 */
-            if (l >= PREFIX_KV_MIN_LCP && l < n_ids && l <= st->cache_len[0])
-                keep = l;
+            /* l == n_ids（新 prompt 与上次完全相同）不能直接 keep = n_ids：
+             * prefill rest=0 不刷新 logits，decode 首步会采样到上次请求末尾的
+             * 陈旧 logits（预测 eos）→ 空响应。改为保留到 n_ids-1，只重算最后
+             * 一个 token —— 前缀 KV 全部复用，同时刷新 logits。 */
+            if (l >= PREFIX_KV_MIN_LCP && l <= st->cache_len[0]) {
+                keep = (l >= n_ids) ? (n_ids - 1) : l;
+                if (getenv("VLLM_DEBUG_PREFIX"))
+                    fprintf(stderr,
+                            "[KV-PREFIX-DBG] last_n=%d n_ids=%d lcp=%d "
+                            "cache_len0=%d keep=%d exact_repeat=%d\n",
+                            ctx->last_n, n_ids, l, st->cache_len[0], keep,
+                            (l >= n_ids) ? 1 : 0);
+            }
         }
         if (keep == 0 && ctx->disk_kv && !g_l3_evict && !ctx->last_was_mm) {
             char dk_path[576];
@@ -3079,7 +3124,7 @@ static char *anthropic_from_openai(VLLMServerCtx *ctx, const char *openai_body) 
     const char *fr = ch ? vjson_str(vjson_obj_get(ch, "finish_reason")) : NULL;
     const char *stop_reason = (fr && strcmp(fr, "length") == 0) ? "max_tokens" : "end_turn";
     int in_tok = 0, out_tok = 0;
-    /* vllm_kestrel 的 OpenAI 响应把指标放在顶层 "metrics"（usage 是空对象）。 */
+    /* vllm_shs 的 OpenAI 响应把指标放在顶层 "metrics"（usage 是空对象）。 */
     const VJson *met = vjson_obj_get(j, "metrics");
     if (met) {
         const VJson *mj = vjson_obj_get(met, "prompt_tokens");
@@ -3096,7 +3141,7 @@ static char *anthropic_from_openai(VLLMServerCtx *ctx, const char *openai_body) 
         }
     }
     VJson *root = vjson_new_object();
-    vjson_obj_set(root, "id", vjson_new_string("msg_vllm_kestrel"));
+    vjson_obj_set(root, "id", vjson_new_string("msg_vllm_shs"));
     vjson_obj_set(root, "type", vjson_new_string("message"));
     vjson_obj_set(root, "role", vjson_new_string("assistant"));
     vjson_obj_set(root, "model", vjson_new_string(ctx->model_id ? ctx->model_id : "qwen3-vl-8b"));
@@ -3253,7 +3298,7 @@ static void handle_health(VLLMServerCtx *ctx, VHttpResponse *resp) {
 
 /* ---------- /v1/attest (可验证推理的公开参数) ----------
  * 下发设备公钥 + 算法/schema/SM2 用户 ID，供验证方（对话页的浏览器内自验、
- * tools/security/verify_attest.py）离线复算与验签；不含任何机密（私钥永不离开设备）。*/
+ * tools/verify_attest.py）离线复算与验签；不含任何机密（私钥永不离开设备）。*/
 static void handle_attest_info(VLLMServerCtx *ctx, VHttpResponse *resp) {
     char *body = (char *)malloc(1024);
     if (!body) { json_error(resp, 500, "Out of memory"); return; }
@@ -3397,7 +3442,7 @@ static void server_handler(const VHttpRequest *req, VHttpResponse *resp,
     } else if (strcmp(req->path, "/chat") == 0 || strcmp(req->path, "/chat/") == 0) {
         handle_chat_page(resp);
     } else if (strcmp(req->path, "/") == 0) {
-        static const char info[] = "{\"status\":\"ok\",\"server\":\"vllm_kestrel\"}";
+        static const char info[] = "{\"status\":\"ok\",\"server\":\"vllm_shs\"}";
         resp->status = 200;
         resp->content_type = "application/json";
         resp->body = info;

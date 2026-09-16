@@ -1,4 +1,4 @@
-﻿﻿﻿﻿# build_x64.ps1 - Windows x64 (MinGW-w64) 构建脚本（x86「可验证」副产物）
+﻿# build_x64.ps1 - Windows x64 (MinGW-w64) 构建脚本（x86「可验证」副产物）
 #
 # 定位：主树为双架构（aarch64-Linux 一级目标 + x86-64/MinGW 副分支）。x86 构建
 #       只用于「可编译 + 自检与 ARM 同口径」的回归，**不作性能基准**
@@ -48,7 +48,7 @@ $src = @(
   'src/main.c',
   'src/core/vllm_superpos.c','src/core/vllm_attention.c','src/core/vllm_scheduler.c',
   'src/core/vllm_transformer.c','src/core/vllm_tokenizer.c','src/core/vllm_matmul.c',
-  'src/core/vllm_tp.c','src/core/vllm_l3.c','src/core/vllm_fhe.c','src/core/vllm_ckks.c',
+  'src/core/vllm_tp.c','src/core/vllm_ep.c','src/core/vllm_l3.c','src/core/vllm_fhe.c','src/core/vllm_ckks.c',
   'src/core/vllm_ntt.c',
   'src/common/vllm_device.c','src/common/vllm_crypto.c',
   'src/serve/vllm_http.c','src/serve/vllm_server.c','src/serve/vllm_batch.c',

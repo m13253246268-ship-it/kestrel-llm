@@ -1,0 +1,512 @@
+TAG=full SEGS=165,330,600 ROUNDS=3 ENGINES=vllm,llama STREAMS=1,0 TH=4 NTOK=64
+START=2026-09-15 13:01:09
+gov=performance
+md5_exe=71f8f53eeee56d13c2ec0f4170536921
+md5_gguf=96fb8a5e2281e965c86baf7c97482b5f
+md5_vqf=b6d8d1d7b46fd72225413d41c75eb59f
+[vllm s1 n165 r1] pid=174647 warm_s=73.771324
+turn1 total_s=159.591849 rss_kb=773504 hwm_kb=1352828
+turn2 total_s=14.894978 rss_kb=817120 hwm_kb=1483844
+turn3 total_s=38.929333 rss_kb=886484 hwm_kb=1527564
+[KV-PREFIX] L3 restored 0 block(s) for 39-token prefix
+[KV-PREFIX] reuse 39-token KV prefix, prefill rest
+[PREFILL-TIMING] n=1958 total=131042.4ms | GEMM=92025.6ms(70.2%) ATTN=35897.5ms(27.4%) OTHER=3119.4ms( 2.4%)
+[L3] evicted 1692 blocks -> /mnt/emmc/kv2_l3_full_u65bbfe41 (cursor=66.09 MB, seq=1997, keep=39, ratio=0.75, packed_now=1692, total_packed=1692), freed 528.8 MB from RAM
+[L3] restored 1692 prefix blocks from Q4 payload (prefix=1992)
+[KV-PREFIX] L3 restored 1692 block(s) for 1992-token prefix
+[KV-PREFIX] reuse 1992-token KV prefix, prefill rest
+[PREFILL-TIMING] n=23 total=2449.5ms | GEMM=1518.3ms(62.0%) ATTN=903.9ms(36.9%) OTHER=27.4ms( 1.1%)
+[L3] incremental: retain state (packed_total=1692, cursor=66.09 MB)
+[L3] evicted 1692 blocks -> /mnt/emmc/kv2_l3_full_u65bbfe41 (cursor=66.09 MB, seq=2015, keep=1992, ratio=0.75, packed_now=0, total_packed=1692), freed 528.8 MB from RAM
+[L3] restored 1692 prefix blocks from Q4 payload (prefix=2010)
+[KV-PREFIX] L3 restored 1692 block(s) for 2010-token prefix
+[KV-PREFIX] reuse 2010-token KV prefix, prefill rest
+[PREFILL-TIMING] n=24 total=2072.3ms | GEMM=1225.8ms(59.2%) ATTN=818.8ms(39.5%) OTHER=27.7ms( 1.3%)
+[L3] incremental: retain state (packed_total=1692, cursor=66.09 MB)
+[L3] evicted 1692 blocks -> /mnt/emmc/kv2_l3_full_u65bbfe41 (cursor=67.50 MB, seq=2034, keep=2010, ratio=0.75, packed_now=36, total_packed=1728), freed 528.8 MB from RAM
+[vllm s0 n165 r1] pid=175282 warm_s=73.053450
+turn1 total_s=155.332449 rss_kb=4489192 hwm_kb=5017528
+turn2 total_s=13.660272 rss_kb=4532420 hwm_kb=5089968
+turn3 total_s=29.771433 rss_kb=4602368 hwm_kb=5133764
+[KV-PREFIX] L3 restored 0 block(s) for 39-token prefix
+[KV-PREFIX] reuse 39-token KV prefix, prefill rest
+[PREFILL-TIMING] n=1958 total=132111.3ms | GEMM=92125.5ms(69.7%) ATTN=36721.1ms(27.8%) OTHER=3264.7ms( 2.5%)
+[L3] evicted 1692 blocks -> /mnt/emmc/kv2_l3_full_u65bbfe41 (cursor=66.09 MB, seq=1997, keep=39, ratio=0.75, packed_now=1692, total_packed=1692), freed 528.8 MB from RAM
+[L3] restored 1692 prefix blocks from Q4 payload (prefix=1992)
+[KV-PREFIX] L3 restored 1692 block(s) for 1992-token prefix
+[KV-PREFIX] reuse 1992-token KV prefix, prefill rest
+[PREFILL-TIMING] n=23 total=2234.2ms | GEMM=1403.9ms(62.8%) ATTN=804.6ms(36.0%) OTHER=25.8ms( 1.2%)
+[L3] incremental: retain state (packed_total=1692, cursor=66.09 MB)
+[L3] evicted 1692 blocks -> /mnt/emmc/kv2_l3_full_u65bbfe41 (cursor=66.09 MB, seq=2015, keep=1992, ratio=0.75, packed_now=0, total_packed=1692), freed 528.8 MB from RAM
+[L3] restored 1692 prefix blocks from Q4 payload (prefix=2010)
+[KV-PREFIX] L3 restored 1692 block(s) for 2010-token prefix
+[KV-PREFIX] reuse 2010-token KV prefix, prefill rest
+[PREFILL-TIMING] n=24 total=1981.5ms | GEMM=1164.1ms(58.7%) ATTN=790.3ms(39.9%) OTHER=27.1ms( 1.4%)
+[L3] incremental: retain state (packed_total=1692, cursor=66.09 MB)
+[L3] evicted 1692 blocks -> /mnt/emmc/kv2_l3_full_u65bbfe41 (cursor=67.50 MB, seq=2034, keep=2010, ratio=0.75, packed_now=36, total_packed=1728), freed 528.8 MB from RAM
+[llama n165 r1] ctx=3169 pid=175391 warm_s=2.373994
+turn1 total_s=124.609931 rss_kb=9135884 hwm_kb=9135884
+turn2 total_s=6.686010 rss_kb=9136144 hwm_kb=9136144
+turn3 total_s=28.982167 rss_kb=9136404 hwm_kb=9136404
+2.37.955.433 I slot print_timing: id  2 | task 35 | prompt eval time =    4731.01 ms /    24 tokens (  197.13 ms per token,     5.07 tokens per second)
+2.37.955.439 I slot print_timing: id  2 | task 35 |        eval time =    1908.02 ms /     6 tokens (  381.60 ms per token,     2.62 tokens per second)
+2.37.955.440 I slot print_timing: id  2 | task 35 |       total time =    6639.03 ms /    30 tokens
+2.37.955.442 I slot print_timing: id  2 | task 35 |    graphs reused =         35
+2.37.955.536 I slot      release: id  2 | task 35 | stop processing: n_tokens = 2019, truncated = 0
+2.38.023.867 I slot get_availabl: id  2 | task -1 | selected slot by LCP similarity, f_sim_best = 0.988 (> 0.100 thold), f_keep = 0.995
+2.38.023.953 I slot launch_slot_: id  2 | task 42 | processing task, is_child = 0
+3.06.958.911 I slot print_timing: id  2 | task 42 | prompt eval time =    4776.78 ms /    24 tokens (  199.03 ms per token,     5.02 tokens per second)
+3.06.958.918 I slot print_timing: id  2 | task 42 |        eval time =   24158.12 ms /    64 tokens (  383.46 ms per token,     2.61 tokens per second)
+3.06.958.919 I slot print_timing: id  2 | task 42 |       total time =   28934.89 ms /    88 tokens
+3.06.958.921 I slot print_timing: id  2 | task 42 |    graphs reused =         96
+3.06.959.015 I slot      release: id  2 | task 42 | stop processing: n_tokens = 2095, truncated = 0
+[vllm s1 n165 r2] pid=175533 warm_s=74.139285
+turn1 total_s=159.395899 rss_kb=771192 hwm_kb=1353700
+turn2 total_s=14.778544 rss_kb=817496 hwm_kb=1484900
+turn3 total_s=38.950551 rss_kb=887060 hwm_kb=1528140
+[KV-PREFIX] L3 restored 0 block(s) for 39-token prefix
+[KV-PREFIX] reuse 39-token KV prefix, prefill rest
+[PREFILL-TIMING] n=1958 total=130714.4ms | GEMM=91734.3ms(70.2%) ATTN=35929.1ms(27.5%) OTHER=3051.0ms( 2.3%)
+[L3] evicted 1692 blocks -> /mnt/emmc/kv2_l3_full_u65bbfe41 (cursor=66.09 MB, seq=1997, keep=39, ratio=0.75, packed_now=1692, total_packed=1692), freed 528.8 MB from RAM
+[L3] restored 1692 prefix blocks from Q4 payload (prefix=1992)
+[KV-PREFIX] L3 restored 1692 block(s) for 1992-token prefix
+[KV-PREFIX] reuse 1992-token KV prefix, prefill rest
+[PREFILL-TIMING] n=23 total=2287.3ms | GEMM=1456.3ms(63.7%) ATTN=804.8ms(35.2%) OTHER=26.2ms( 1.1%)
+[L3] incremental: retain state (packed_total=1692, cursor=66.09 MB)
+[L3] evicted 1692 blocks -> /mnt/emmc/kv2_l3_full_u65bbfe41 (cursor=66.09 MB, seq=2015, keep=1992, ratio=0.75, packed_now=0, total_packed=1692), freed 528.8 MB from RAM
+[L3] restored 1692 prefix blocks from Q4 payload (prefix=2010)
+[KV-PREFIX] L3 restored 1692 block(s) for 2010-token prefix
+[KV-PREFIX] reuse 2010-token KV prefix, prefill rest
+[PREFILL-TIMING] n=24 total=2026.1ms | GEMM=1209.4ms(59.7%) ATTN=789.2ms(39.0%) OTHER=27.4ms( 1.4%)
+[L3] incremental: retain state (packed_total=1692, cursor=66.09 MB)
+[L3] evicted 1692 blocks -> /mnt/emmc/kv2_l3_full_u65bbfe41 (cursor=67.50 MB, seq=2034, keep=2010, ratio=0.75, packed_now=36, total_packed=1728), freed 528.8 MB from RAM
+[vllm s0 n165 r2] pid=176274 warm_s=72.896306
+turn1 total_s=154.445919 rss_kb=4489384 hwm_kb=5017720
+turn2 total_s=13.571009 rss_kb=4532348 hwm_kb=5089896
+turn3 total_s=30.076022 rss_kb=4602560 hwm_kb=5133956
+[KV-PREFIX] L3 restored 0 block(s) for 39-token prefix
+[KV-PREFIX] reuse 39-token KV prefix, prefill rest
+[PREFILL-TIMING] n=1958 total=131144.0ms | GEMM=91868.4ms(70.1%) ATTN=36071.3ms(27.5%) OTHER=3204.3ms( 2.4%)
+[L3] evicted 1692 blocks -> /mnt/emmc/kv2_l3_full_u65bbfe41 (cursor=66.09 MB, seq=1997, keep=39, ratio=0.75, packed_now=1692, total_packed=1692), freed 528.8 MB from RAM
+[L3] restored 1692 prefix blocks from Q4 payload (prefix=1992)
+[KV-PREFIX] L3 restored 1692 block(s) for 1992-token prefix
+[KV-PREFIX] reuse 1992-token KV prefix, prefill rest
+[PREFILL-TIMING] n=23 total=2196.0ms | GEMM=1389.4ms(63.3%) ATTN=781.2ms(35.6%) OTHER=25.4ms( 1.2%)
+[L3] incremental: retain state (packed_total=1692, cursor=66.09 MB)
+[L3] evicted 1692 blocks -> /mnt/emmc/kv2_l3_full_u65bbfe41 (cursor=66.09 MB, seq=2015, keep=1992, ratio=0.75, packed_now=0, total_packed=1692), freed 528.8 MB from RAM
+[L3] restored 1692 prefix blocks from Q4 payload (prefix=2010)
+[KV-PREFIX] L3 restored 1692 block(s) for 2010-token prefix
+[KV-PREFIX] reuse 2010-token KV prefix, prefill rest
+[PREFILL-TIMING] n=24 total=2168.4ms | GEMM=1232.2ms(56.8%) ATTN=907.8ms(41.9%) OTHER=28.4ms( 1.3%)
+[L3] incremental: retain state (packed_total=1692, cursor=66.09 MB)
+[L3] evicted 1692 blocks -> /mnt/emmc/kv2_l3_full_u65bbfe41 (cursor=67.50 MB, seq=2034, keep=2010, ratio=0.75, packed_now=36, total_packed=1728), freed 528.8 MB from RAM
+[llama n165 r2] ctx=3169 pid=176369 warm_s=2.467798
+turn1 total_s=124.730700 rss_kb=9135780 hwm_kb=9135780
+turn2 total_s=6.976084 rss_kb=9136040 hwm_kb=9136040
+turn3 total_s=29.037335 rss_kb=9136300 hwm_kb=9136300
+2.38.468.465 I slot print_timing: id  2 | task 35 | prompt eval time =    5021.15 ms /    24 tokens (  209.21 ms per token,     4.78 tokens per second)
+2.38.468.472 I slot print_timing: id  2 | task 35 |        eval time =    1907.87 ms /     6 tokens (  381.57 ms per token,     2.62 tokens per second)
+2.38.468.473 I slot print_timing: id  2 | task 35 |       total time =    6929.01 ms /    30 tokens
+2.38.468.474 I slot print_timing: id  2 | task 35 |    graphs reused =         35
+2.38.468.564 I slot      release: id  2 | task 35 | stop processing: n_tokens = 2019, truncated = 0
+2.38.539.165 I slot get_availabl: id  2 | task -1 | selected slot by LCP similarity, f_sim_best = 0.988 (> 0.100 thold), f_keep = 0.995
+2.38.539.245 I slot launch_slot_: id  2 | task 42 | processing task, is_child = 0
+3.07.529.436 I slot print_timing: id  2 | task 42 | prompt eval time =    4826.59 ms /    24 tokens (  201.11 ms per token,     4.97 tokens per second)
+3.07.529.443 I slot print_timing: id  2 | task 42 |        eval time =   24163.53 ms /    64 tokens (  383.55 ms per token,     2.61 tokens per second)
+3.07.529.445 I slot print_timing: id  2 | task 42 |       total time =   28990.13 ms /    88 tokens
+3.07.529.446 I slot print_timing: id  2 | task 42 |    graphs reused =         96
+3.07.529.541 I slot      release: id  2 | task 42 | stop processing: n_tokens = 2095, truncated = 0
+[vllm s1 n165 r3] pid=176488 warm_s=74.321755
+turn1 total_s=159.648928 rss_kb=772980 hwm_kb=1355104
+turn2 total_s=14.773421 rss_kb=816916 hwm_kb=1483832
+turn3 total_s=39.303688 rss_kb=883272 hwm_kb=1527368
+[KV-PREFIX] L3 restored 0 block(s) for 39-token prefix
+[KV-PREFIX] reuse 39-token KV prefix, prefill rest
+[PREFILL-TIMING] n=1958 total=130963.0ms | GEMM=92108.0ms(70.3%) ATTN=35724.4ms(27.3%) OTHER=3130.7ms( 2.4%)
+[L3] evicted 1692 blocks -> /mnt/emmc/kv2_l3_full_u65bbfe41 (cursor=66.09 MB, seq=1997, keep=39, ratio=0.75, packed_now=1692, total_packed=1692), freed 528.8 MB from RAM
+[L3] restored 1692 prefix blocks from Q4 payload (prefix=1992)
+[KV-PREFIX] L3 restored 1692 block(s) for 1992-token prefix
+[KV-PREFIX] reuse 1992-token KV prefix, prefill rest
+[PREFILL-TIMING] n=23 total=2300.6ms | GEMM=1454.8ms(63.2%) ATTN=819.7ms(35.6%) OTHER=26.1ms( 1.1%)
+[L3] incremental: retain state (packed_total=1692, cursor=66.09 MB)
+[L3] evicted 1692 blocks -> /mnt/emmc/kv2_l3_full_u65bbfe41 (cursor=66.09 MB, seq=2015, keep=1992, ratio=0.75, packed_now=0, total_packed=1692), freed 528.8 MB from RAM
+[L3] restored 1692 prefix blocks from Q4 payload (prefix=2010)
+[KV-PREFIX] L3 restored 1692 block(s) for 2010-token prefix
+[KV-PREFIX] reuse 2010-token KV prefix, prefill rest
+[PREFILL-TIMING] n=24 total=2376.9ms | GEMM=1360.8ms(57.3%) ATTN=986.0ms(41.5%) OTHER=30.0ms( 1.3%)
+[L3] incremental: retain state (packed_total=1692, cursor=66.09 MB)
+[L3] evicted 1692 blocks -> /mnt/emmc/kv2_l3_full_u65bbfe41 (cursor=67.50 MB, seq=2034, keep=2010, ratio=0.75, packed_now=36, total_packed=1728), freed 528.8 MB from RAM
+[vllm s0 n165 r3] pid=176591 warm_s=72.721392
+turn1 total_s=154.030118 rss_kb=4489132 hwm_kb=5017468
+turn2 total_s=13.631541 rss_kb=4532360 hwm_kb=5089908
+turn3 total_s=30.161655 rss_kb=4602572 hwm_kb=5133968
+[KV-PREFIX] L3 restored 0 block(s) for 39-token prefix
+[KV-PREFIX] reuse 39-token KV prefix, prefill rest
+[PREFILL-TIMING] n=1958 total=130997.4ms | GEMM=91855.3ms(70.1%) ATTN=35947.9ms(27.4%) OTHER=3194.2ms( 2.4%)
+[L3] evicted 1692 blocks -> /mnt/emmc/kv2_l3_full_u65bbfe41 (cursor=66.09 MB, seq=1997, keep=39, ratio=0.75, packed_now=1692, total_packed=1692), freed 528.8 MB from RAM
+[L3] restored 1692 prefix blocks from Q4 payload (prefix=1992)
+[KV-PREFIX] L3 restored 1692 block(s) for 1992-token prefix
+[KV-PREFIX] reuse 1992-token KV prefix, prefill rest
+[PREFILL-TIMING] n=23 total=2247.2ms | GEMM=1409.6ms(62.7%) ATTN=811.8ms(36.1%) OTHER=25.9ms( 1.2%)
+[L3] incremental: retain state (packed_total=1692, cursor=66.09 MB)
+[L3] evicted 1692 blocks -> /mnt/emmc/kv2_l3_full_u65bbfe41 (cursor=66.09 MB, seq=2015, keep=1992, ratio=0.75, packed_now=0, total_packed=1692), freed 528.8 MB from RAM
+[L3] restored 1692 prefix blocks from Q4 payload (prefix=2010)
+[KV-PREFIX] L3 restored 1692 block(s) for 2010-token prefix
+[KV-PREFIX] reuse 2010-token KV prefix, prefill rest
+[PREFILL-TIMING] n=24 total=2190.4ms | GEMM=1241.4ms(56.7%) ATTN=920.4ms(42.0%) OTHER=28.6ms( 1.3%)
+[L3] incremental: retain state (packed_total=1692, cursor=66.09 MB)
+[L3] evicted 1692 blocks -> /mnt/emmc/kv2_l3_full_u65bbfe41 (cursor=67.50 MB, seq=2034, keep=2010, ratio=0.75, packed_now=36, total_packed=1728), freed 528.8 MB from RAM
+[llama n165 r3] ctx=3169 pid=176679 warm_s=2.393309
+turn1 total_s=125.550630 rss_kb=9135960 hwm_kb=9135960
+turn2 total_s=6.660302 rss_kb=9136220 hwm_kb=9136220
+turn3 total_s=28.915828 rss_kb=9136480 hwm_kb=9136480
+2.38.866.653 I slot print_timing: id  2 | task 35 | prompt eval time =    4737.78 ms /    24 tokens (  197.41 ms per token,     5.07 tokens per second)
+2.38.866.659 I slot print_timing: id  2 | task 35 |        eval time =    1906.91 ms /     6 tokens (  381.38 ms per token,     2.62 tokens per second)
+2.38.866.660 I slot print_timing: id  2 | task 35 |       total time =    6644.68 ms /    30 tokens
+2.38.866.662 I slot print_timing: id  2 | task 35 |    graphs reused =         35
+2.38.866.753 I slot      release: id  2 | task 35 | stop processing: n_tokens = 2019, truncated = 0
+2.38.937.099 I slot get_availabl: id  2 | task -1 | selected slot by LCP similarity, f_sim_best = 0.988 (> 0.100 thold), f_keep = 0.995
+2.38.937.160 I slot launch_slot_: id  2 | task 42 | processing task, is_child = 0
+3.07.806.306 I slot print_timing: id  2 | task 42 | prompt eval time =    4727.93 ms /    24 tokens (  197.00 ms per token,     5.08 tokens per second)
+3.07.806.313 I slot print_timing: id  2 | task 42 |        eval time =   24141.17 ms /    64 tokens (  383.19 ms per token,     2.61 tokens per second)
+3.07.806.315 I slot print_timing: id  2 | task 42 |       total time =   28869.10 ms /    88 tokens
+3.07.806.316 I slot print_timing: id  2 | task 42 |    graphs reused =         96
+3.07.806.412 I slot      release: id  2 | task 42 | stop processing: n_tokens = 2095, truncated = 0
+[vllm s1 n330 r1] pid=177056 warm_s=73.949797
+turn1 total_s=318.814155 rss_kb=1021324 hwm_kb=2087372
+turn2 total_s=24.302203 rss_kb=1068204 hwm_kb=2278488
+turn3 total_s=42.526272 rss_kb=1118652 hwm_kb=2321760
+[KV-PREFIX] L3 restored 0 block(s) for 39-token prefix
+[KV-PREFIX] reuse 39-token KV prefix, prefill rest
+[PREFILL-TIMING] n=3938 total=275385.9ms | GEMM=183804.6ms(66.7%) ATTN=85583.4ms(31.1%) OTHER=5998.0ms( 2.2%)
+[L3] evicted 3348 blocks -> /mnt/emmc/kv2_l3_full_u65bbfe41 (cursor=130.78 MB, seq=3977, keep=39, ratio=0.75, packed_now=3348, total_packed=3348), freed 1046.2 MB from RAM
+[L3] restored 3348 prefix blocks from Q4 payload (prefix=3972)
+[KV-PREFIX] L3 restored 3348 block(s) for 3972-token prefix
+[KV-PREFIX] reuse 3972-token KV prefix, prefill rest
+[PREFILL-TIMING] n=23 total=2401.4ms | GEMM=1421.4ms(59.2%) ATTN=954.3ms(39.7%) OTHER=25.7ms( 1.1%)
+[L3] incremental: retain state (packed_total=3348, cursor=130.78 MB)
+[L3] evicted 3348 blocks -> /mnt/emmc/kv2_l3_full_u65bbfe41 (cursor=130.78 MB, seq=3995, keep=3972, ratio=0.75, packed_now=0, total_packed=3348), freed 1046.2 MB from RAM
+[L3] restored 3348 prefix blocks from Q4 payload (prefix=3990)
+[KV-PREFIX] L3 restored 3348 block(s) for 3990-token prefix
+[KV-PREFIX] reuse 3990-token KV prefix, prefill rest
+[PREFILL-TIMING] n=24 total=2338.6ms | GEMM=1243.4ms(53.2%) ATTN=1067.1ms(45.6%) OTHER=28.1ms( 1.2%)
+[L3] incremental: retain state (packed_total=3348, cursor=130.78 MB)
+[L3] evicted 3384 blocks -> /mnt/emmc/kv2_l3_full_u65bbfe41 (cursor=132.19 MB, seq=4014, keep=3990, ratio=0.75, packed_now=36, total_packed=3384), freed 1057.5 MB from RAM
+[vllm s0 n330 r1] pid=177186 warm_s=72.971247
+turn1 total_s=311.406023 rss_kb=4738704 hwm_kb=5796984
+turn2 total_s=23.073747 rss_kb=4781964 hwm_kb=5885168
+turn3 total_s=35.654790 rss_kb=4834608 hwm_kb=5929260
+[KV-PREFIX] L3 restored 0 block(s) for 39-token prefix
+[KV-PREFIX] reuse 39-token KV prefix, prefill rest
+[PREFILL-TIMING] n=3938 total=274239.6ms | GEMM=182565.9ms(66.6%) ATTN=85764.4ms(31.3%) OTHER=5909.3ms( 2.2%)
+[L3] evicted 3348 blocks -> /mnt/emmc/kv2_l3_full_u65bbfe41 (cursor=130.78 MB, seq=3977, keep=39, ratio=0.75, packed_now=3348, total_packed=3348), freed 1046.2 MB from RAM
+[L3] restored 3348 prefix blocks from Q4 payload (prefix=3972)
+[KV-PREFIX] L3 restored 3348 block(s) for 3972-token prefix
+[KV-PREFIX] reuse 3972-token KV prefix, prefill rest
+[PREFILL-TIMING] n=23 total=2364.3ms | GEMM=1384.2ms(58.5%) ATTN=954.7ms(40.4%) OTHER=25.4ms( 1.1%)
+[L3] incremental: retain state (packed_total=3348, cursor=130.78 MB)
+[L3] evicted 3348 blocks -> /mnt/emmc/kv2_l3_full_u65bbfe41 (cursor=130.78 MB, seq=3995, keep=3972, ratio=0.75, packed_now=0, total_packed=3348), freed 1046.2 MB from RAM
+[L3] restored 3348 prefix blocks from Q4 payload (prefix=3990)
+[KV-PREFIX] L3 restored 3348 block(s) for 3990-token prefix
+[KV-PREFIX] reuse 3990-token KV prefix, prefill rest
+[PREFILL-TIMING] n=24 total=2146.2ms | GEMM=1154.9ms(53.8%) ATTN=964.2ms(44.9%) OTHER=27.1ms( 1.3%)
+[L3] incremental: retain state (packed_total=3348, cursor=130.78 MB)
+[L3] evicted 3384 blocks -> /mnt/emmc/kv2_l3_full_u65bbfe41 (cursor=132.19 MB, seq=4014, keep=3990, ratio=0.75, packed_now=36, total_packed=3384), freed 1057.5 MB from RAM
+[llama n330 r1] ctx=5314 pid=177311 warm_s=2.372896
+turn1 total_s=280.449924 rss_kb=9432896 hwm_kb=9432896
+turn2 total_s=11.700057 rss_kb=9433420 hwm_kb=9433420
+turn3 total_s=50.340813 rss_kb=9433944 hwm_kb=9433944
+5.18.755.784 I slot print_timing: id  2 | task 19 | prompt eval time =    8357.63 ms /    24 tokens (  348.23 ms per token,     2.87 tokens per second)
+5.18.755.790 I slot print_timing: id  2 | task 19 |        eval time =    3284.73 ms /     6 tokens (  656.95 ms per token,     1.52 tokens per second)
+5.18.755.791 I slot print_timing: id  2 | task 19 |       total time =   11642.35 ms /    30 tokens
+5.18.755.793 I slot print_timing: id  2 | task 19 |    graphs reused =         18
+5.18.755.951 I slot      release: id  2 | task 19 | stop processing: n_tokens = 3999, truncated = 0
+5.18.834.131 I slot get_availabl: id  2 | task -1 | selected slot by LCP similarity, f_sim_best = 0.994 (> 0.100 thold), f_keep = 0.997
+5.18.834.216 I slot launch_slot_: id  2 | task 26 | processing task, is_child = 0
+6.09.118.760 I slot print_timing: id  2 | task 26 | prompt eval time =    8480.81 ms /    24 tokens (  353.37 ms per token,     2.83 tokens per second)
+6.09.118.767 I slot print_timing: id  2 | task 26 |        eval time =   41803.66 ms /    64 tokens (  663.55 ms per token,     1.51 tokens per second)
+6.09.118.768 I slot print_timing: id  2 | task 26 |       total time =   50284.46 ms /    88 tokens
+6.09.118.770 I slot print_timing: id  2 | task 26 |    graphs reused =         80
+6.09.118.933 I slot      release: id  2 | task 26 | stop processing: n_tokens = 4075, truncated = 0
+[vllm s1 n330 r2] pid=177470 warm_s=73.290595
+turn1 total_s=319.958281 rss_kb=1023444 hwm_kb=2084308
+turn2 total_s=24.566383 rss_kb=1068788 hwm_kb=2278976
+turn3 total_s=42.653429 rss_kb=1119620 hwm_kb=2322272
+[KV-PREFIX] L3 restored 0 block(s) for 39-token prefix
+[KV-PREFIX] reuse 39-token KV prefix, prefill rest
+[PREFILL-TIMING] n=3938 total=276678.0ms | GEMM=184480.8ms(66.7%) ATTN=86027.2ms(31.1%) OTHER=6169.9ms( 2.2%)
+[L3] evicted 3348 blocks -> /mnt/emmc/kv2_l3_full_u65bbfe41 (cursor=130.78 MB, seq=3977, keep=39, ratio=0.75, packed_now=3348, total_packed=3348), freed 1046.2 MB from RAM
+[L3] restored 3348 prefix blocks from Q4 payload (prefix=3972)
+[KV-PREFIX] L3 restored 3348 block(s) for 3972-token prefix
+[KV-PREFIX] reuse 3972-token KV prefix, prefill rest
+[PREFILL-TIMING] n=23 total=2576.6ms | GEMM=1468.0ms(57.0%) ATTN=1082.1ms(42.0%) OTHER=26.6ms( 1.0%)
+[L3] incremental: retain state (packed_total=3348, cursor=130.78 MB)
+[L3] evicted 3348 blocks -> /mnt/emmc/kv2_l3_full_u65bbfe41 (cursor=130.78 MB, seq=3995, keep=3972, ratio=0.75, packed_now=0, total_packed=3348), freed 1046.2 MB from RAM
+[L3] restored 3348 prefix blocks from Q4 payload (prefix=3990)
+[KV-PREFIX] L3 restored 3348 block(s) for 3990-token prefix
+[KV-PREFIX] reuse 3990-token KV prefix, prefill rest
+[PREFILL-TIMING] n=24 total=2316.0ms | GEMM=1234.7ms(53.3%) ATTN=1053.4ms(45.5%) OTHER=27.9ms( 1.2%)
+[L3] incremental: retain state (packed_total=3348, cursor=130.78 MB)
+[L3] evicted 3384 blocks -> /mnt/emmc/kv2_l3_full_u65bbfe41 (cursor=132.19 MB, seq=4014, keep=3990, ratio=0.75, packed_now=36, total_packed=3384), freed 1057.5 MB from RAM
+[vllm s0 n330 r2] pid=177598 warm_s=73.253050
+turn1 total_s=313.648304 rss_kb=4738680 hwm_kb=5796960
+turn2 total_s=23.513844 rss_kb=4781940 hwm_kb=5885144
+turn3 total_s=35.698822 rss_kb=4834584 hwm_kb=5929236
+[KV-PREFIX] L3 restored 0 block(s) for 39-token prefix
+[KV-PREFIX] reuse 39-token KV prefix, prefill rest
+[PREFILL-TIMING] n=3938 total=276430.0ms | GEMM=183544.6ms(66.4%) ATTN=86737.0ms(31.4%) OTHER=6148.4ms( 2.2%)
+[L3] evicted 3348 blocks -> /mnt/emmc/kv2_l3_full_u65bbfe41 (cursor=130.78 MB, seq=3977, keep=39, ratio=0.75, packed_now=3348, total_packed=3348), freed 1046.2 MB from RAM
+[L3] restored 3348 prefix blocks from Q4 payload (prefix=3972)
+[KV-PREFIX] L3 restored 3348 block(s) for 3972-token prefix
+[KV-PREFIX] reuse 3972-token KV prefix, prefill rest
+[PREFILL-TIMING] n=23 total=2705.6ms | GEMM=1458.0ms(53.9%) ATTN=1220.8ms(45.1%) OTHER=26.9ms( 1.0%)
+[L3] incremental: retain state (packed_total=3348, cursor=130.78 MB)
+[L3] evicted 3348 blocks -> /mnt/emmc/kv2_l3_full_u65bbfe41 (cursor=130.78 MB, seq=3995, keep=3972, ratio=0.75, packed_now=0, total_packed=3348), freed 1046.2 MB from RAM
+[L3] restored 3348 prefix blocks from Q4 payload (prefix=3990)
+[KV-PREFIX] L3 restored 3348 block(s) for 3990-token prefix
+[KV-PREFIX] reuse 3990-token KV prefix, prefill rest
+[PREFILL-TIMING] n=24 total=2134.5ms | GEMM=1145.1ms(53.6%) ATTN=962.5ms(45.1%) OTHER=26.9ms( 1.3%)
+[L3] incremental: retain state (packed_total=3348, cursor=130.78 MB)
+[L3] evicted 3384 blocks -> /mnt/emmc/kv2_l3_full_u65bbfe41 (cursor=132.19 MB, seq=4014, keep=3990, ratio=0.75, packed_now=36, total_packed=3384), freed 1057.5 MB from RAM
+[llama n330 r2] ctx=5314 pid=177731 warm_s=2.442903
+turn1 total_s=281.652495 rss_kb=9432628 hwm_kb=9432628
+turn2 total_s=11.865303 rss_kb=9433152 hwm_kb=9433152
+turn3 total_s=50.560059 rss_kb=9433676 hwm_kb=9433676
+5.20.169.671 I slot print_timing: id  2 | task 19 | prompt eval time =    8546.60 ms /    24 tokens (  356.11 ms per token,     2.81 tokens per second)
+5.20.169.685 I slot print_timing: id  2 | task 19 |        eval time =    3294.91 ms /     6 tokens (  658.98 ms per token,     1.52 tokens per second)
+5.20.169.687 I slot print_timing: id  2 | task 19 |       total time =   11841.51 ms /    30 tokens
+5.20.169.688 I slot print_timing: id  2 | task 19 |    graphs reused =         18
+5.20.169.846 I slot      release: id  2 | task 19 | stop processing: n_tokens = 3999, truncated = 0
+5.20.249.879 I slot get_availabl: id  2 | task -1 | selected slot by LCP similarity, f_sim_best = 0.994 (> 0.100 thold), f_keep = 0.997
+5.20.249.960 I slot launch_slot_: id  2 | task 26 | processing task, is_child = 0
+6.10.751.812 I slot print_timing: id  2 | task 26 | prompt eval time =    8528.24 ms /    24 tokens (  355.34 ms per token,     2.81 tokens per second)
+6.10.751.818 I slot print_timing: id  2 | task 26 |        eval time =   41973.53 ms /    64 tokens (  666.25 ms per token,     1.50 tokens per second)
+6.10.751.820 I slot print_timing: id  2 | task 26 |       total time =   50501.77 ms /    88 tokens
+6.10.751.821 I slot print_timing: id  2 | task 26 |    graphs reused =         80
+6.10.751.983 I slot      release: id  2 | task 26 | stop processing: n_tokens = 4075, truncated = 0
+[vllm s1 n330 r3] pid=177882 warm_s=74.007469
+turn1 total_s=321.206213 rss_kb=1019864 hwm_kb=2084312
+turn2 total_s=24.215539 rss_kb=1064760 hwm_kb=2279588
+turn3 total_s=42.230855 rss_kb=1118464 hwm_kb=2324132
+[KV-PREFIX] L3 restored 0 block(s) for 39-token prefix
+[KV-PREFIX] reuse 39-token KV prefix, prefill rest
+[PREFILL-TIMING] n=3938 total=277792.1ms | GEMM=184593.9ms(66.5%) ATTN=87019.8ms(31.3%) OTHER=6178.4ms( 2.2%)
+[L3] evicted 3348 blocks -> /mnt/emmc/kv2_l3_full_u65bbfe41 (cursor=130.78 MB, seq=3977, keep=39, ratio=0.75, packed_now=3348, total_packed=3348), freed 1046.2 MB from RAM
+[L3] restored 3348 prefix blocks from Q4 payload (prefix=3972)
+[KV-PREFIX] L3 restored 3348 block(s) for 3972-token prefix
+[KV-PREFIX] reuse 3972-token KV prefix, prefill rest
+[PREFILL-TIMING] n=23 total=2443.1ms | GEMM=1435.5ms(58.8%) ATTN=981.7ms(40.2%) OTHER=25.9ms( 1.1%)
+[L3] incremental: retain state (packed_total=3348, cursor=130.78 MB)
+[L3] evicted 3348 blocks -> /mnt/emmc/kv2_l3_full_u65bbfe41 (cursor=130.78 MB, seq=3995, keep=3972, ratio=0.75, packed_now=0, total_packed=3348), freed 1046.2 MB from RAM
+[L3] restored 3348 prefix blocks from Q4 payload (prefix=3990)
+[KV-PREFIX] L3 restored 3348 block(s) for 3990-token prefix
+[KV-PREFIX] reuse 3990-token KV prefix, prefill rest
+[PREFILL-TIMING] n=24 total=2197.9ms | GEMM=1194.5ms(54.3%) ATTN=976.3ms(44.4%) OTHER=27.1ms( 1.2%)
+[L3] incremental: retain state (packed_total=3348, cursor=130.78 MB)
+[L3] evicted 3384 blocks -> /mnt/emmc/kv2_l3_full_u65bbfe41 (cursor=132.19 MB, seq=4014, keep=3990, ratio=0.75, packed_now=36, total_packed=3384), freed 1057.5 MB from RAM
+[vllm s0 n330 r3] pid=178017 warm_s=73.003188
+turn1 total_s=314.648546 rss_kb=4738716 hwm_kb=5796996
+turn2 total_s=23.424440 rss_kb=4781976 hwm_kb=5885180
+turn3 total_s=35.734836 rss_kb=4834620 hwm_kb=5929272
+[KV-PREFIX] L3 restored 0 block(s) for 39-token prefix
+[KV-PREFIX] reuse 39-token KV prefix, prefill rest
+[PREFILL-TIMING] n=3938 total=277557.0ms | GEMM=183829.1ms(66.2%) ATTN=87505.3ms(31.5%) OTHER=6222.6ms( 2.2%)
+[L3] evicted 3348 blocks -> /mnt/emmc/kv2_l3_full_u65bbfe41 (cursor=130.78 MB, seq=3977, keep=39, ratio=0.75, packed_now=3348, total_packed=3348), freed 1046.2 MB from RAM
+[L3] restored 3348 prefix blocks from Q4 payload (prefix=3972)
+[KV-PREFIX] L3 restored 3348 block(s) for 3972-token prefix
+[KV-PREFIX] reuse 3972-token KV prefix, prefill rest
+[PREFILL-TIMING] n=23 total=2615.3ms | GEMM=1443.1ms(55.2%) ATTN=1145.7ms(43.8%) OTHER=26.6ms( 1.0%)
+[L3] incremental: retain state (packed_total=3348, cursor=130.78 MB)
+[L3] evicted 3348 blocks -> /mnt/emmc/kv2_l3_full_u65bbfe41 (cursor=130.78 MB, seq=3995, keep=3972, ratio=0.75, packed_now=0, total_packed=3348), freed 1046.2 MB from RAM
+[L3] restored 3348 prefix blocks from Q4 payload (prefix=3990)
+[KV-PREFIX] L3 restored 3348 block(s) for 3990-token prefix
+[KV-PREFIX] reuse 3990-token KV prefix, prefill rest
+[PREFILL-TIMING] n=24 total=2344.3ms | GEMM=1205.1ms(51.4%) ATTN=1111.3ms(47.4%) OTHER=27.9ms( 1.2%)
+[L3] incremental: retain state (packed_total=3348, cursor=130.78 MB)
+[L3] evicted 3384 blocks -> /mnt/emmc/kv2_l3_full_u65bbfe41 (cursor=132.19 MB, seq=4014, keep=3990, ratio=0.75, packed_now=36, total_packed=3384), freed 1057.5 MB from RAM
+[llama n330 r3] ctx=5314 pid=178138 warm_s=2.374111
+turn1 total_s=282.285039 rss_kb=9432592 hwm_kb=9432592
+turn2 total_s=11.960868 rss_kb=9433116 hwm_kb=9433116
+turn3 total_s=50.435225 rss_kb=9433640 hwm_kb=9433640
+5.20.912.201 I slot print_timing: id  2 | task 19 | prompt eval time =    8614.85 ms /    24 tokens (  358.95 ms per token,     2.79 tokens per second)
+5.20.912.207 I slot print_timing: id  2 | task 19 |        eval time =    3287.59 ms /     6 tokens (  657.52 ms per token,     1.52 tokens per second)
+5.20.912.209 I slot print_timing: id  2 | task 19 |       total time =   11902.44 ms /    30 tokens
+5.20.912.210 I slot print_timing: id  2 | task 19 |    graphs reused =         18
+5.20.912.365 I slot      release: id  2 | task 19 | stop processing: n_tokens = 3999, truncated = 0
+5.20.990.576 I slot get_availabl: id  2 | task -1 | selected slot by LCP similarity, f_sim_best = 0.994 (> 0.100 thold), f_keep = 0.997
+5.20.990.657 I slot launch_slot_: id  2 | task 26 | processing task, is_child = 0
+6.11.369.426 I slot print_timing: id  2 | task 26 | prompt eval time =    8625.05 ms /    24 tokens (  359.38 ms per token,     2.78 tokens per second)
+6.11.369.433 I slot print_timing: id  2 | task 26 |        eval time =   41753.64 ms /    64 tokens (  662.76 ms per token,     1.51 tokens per second)
+6.11.369.434 I slot print_timing: id  2 | task 26 |       total time =   50378.69 ms /    88 tokens
+6.11.369.435 I slot print_timing: id  2 | task 26 |    graphs reused =         80
+6.11.369.594 I slot      release: id  2 | task 26 | stop processing: n_tokens = 4075, truncated = 0
+[vllm s1 n600 r1] pid=178303 warm_s=73.914090
+turn1 total_s=583.310788 rss_kb=1430196 hwm_kb=3362700
+turn2 total_s=40.463732 rss_kb=1462984 hwm_kb=3587788
+turn3 total_s=68.336981 rss_kb=1534536 hwm_kb=3634320
+[KV-PREFIX] L3 restored 0 block(s) for 39-token prefix
+[KV-PREFIX] reuse 39-token KV prefix, prefill rest
+[PREFILL-TIMING] n=7178 total=515791.4ms | GEMM=332108.6ms(64.4%) ATTN=173397.7ms(33.6%) OTHER=10285.1ms( 2.0%)
+[L3] evicted 6084 blocks -> /mnt/emmc/kv2_l3_full_u65bbfe41 (cursor=237.66 MB, seq=7217, keep=39, ratio=0.75, packed_now=6084, total_packed=6084), freed 1901.2 MB from RAM
+[L3] restored 6084 prefix blocks from Q4 payload (prefix=7212)
+[KV-PREFIX] L3 restored 6084 block(s) for 7212-token prefix
+[KV-PREFIX] reuse 7212-token KV prefix, prefill rest
+[PREFILL-TIMING] n=23 total=2982.8ms | GEMM=1477.1ms(49.5%) ATTN=1478.9ms(49.6%) OTHER=26.7ms( 0.9%)
+[L3] incremental: retain state (packed_total=6084, cursor=237.66 MB)
+[L3] evicted 6120 blocks -> /mnt/emmc/kv2_l3_full_u65bbfe41 (cursor=239.06 MB, seq=7235, keep=7212, ratio=0.75, packed_now=36, total_packed=6120), freed 1912.5 MB from RAM
+[L3] restored 6120 prefix blocks from Q4 payload (prefix=7230)
+[KV-PREFIX] L3 restored 6120 block(s) for 7230-token prefix
+[KV-PREFIX] reuse 7230-token KV prefix, prefill rest
+[PREFILL-TIMING] n=24 total=2808.7ms | GEMM=1252.5ms(44.6%) ATTN=1527.9ms(54.4%) OTHER=28.3ms( 1.0%)
+[L3] incremental: retain state (packed_total=6120, cursor=239.06 MB)
+[L3] evicted 6120 blocks -> /mnt/emmc/kv2_l3_full_u65bbfe41 (cursor=239.06 MB, seq=7254, keep=7230, ratio=0.75, packed_now=36, total_packed=6156), freed 1912.5 MB from RAM
+[vllm s0 n600 r1] pid=178473 warm_s=74.203183
+turn1 total_s=576.797233 rss_kb=5146612 hwm_kb=7080364
+turn2 total_s=38.941332 rss_kb=5179980 hwm_kb=7194636
+turn3 total_s=58.684597 rss_kb=5249540 hwm_kb=7240188
+[KV-PREFIX] L3 restored 0 block(s) for 39-token prefix
+[KV-PREFIX] reuse 39-token KV prefix, prefill rest
+[PREFILL-TIMING] n=7178 total=516981.5ms | GEMM=331051.6ms(64.0%) ATTN=175544.5ms(34.0%) OTHER=10385.3ms( 2.0%)
+[L3] evicted 6084 blocks -> /mnt/emmc/kv2_l3_full_u65bbfe41 (cursor=237.66 MB, seq=7217, keep=39, ratio=0.75, packed_now=6084, total_packed=6084), freed 1901.2 MB from RAM
+[L3] restored 6084 prefix blocks from Q4 payload (prefix=7212)
+[KV-PREFIX] L3 restored 6084 block(s) for 7212-token prefix
+[KV-PREFIX] reuse 7212-token KV prefix, prefill rest
+[PREFILL-TIMING] n=23 total=2759.6ms | GEMM=1399.6ms(50.7%) ATTN=1334.2ms(48.3%) OTHER=25.8ms( 0.9%)
+[L3] incremental: retain state (packed_total=6084, cursor=237.66 MB)
+[L3] evicted 6120 blocks -> /mnt/emmc/kv2_l3_full_u65bbfe41 (cursor=239.06 MB, seq=7235, keep=7212, ratio=0.75, packed_now=36, total_packed=6120), freed 1912.5 MB from RAM
+[L3] restored 6120 prefix blocks from Q4 payload (prefix=7230)
+[KV-PREFIX] L3 restored 6120 block(s) for 7230-token prefix
+[KV-PREFIX] reuse 7230-token KV prefix, prefill rest
+[PREFILL-TIMING] n=24 total=2455.4ms | GEMM=1150.7ms(46.9%) ATTN=1277.7ms(52.0%) OTHER=27.0ms( 1.1%)
+[L3] incremental: retain state (packed_total=6120, cursor=239.06 MB)
+[L3] evicted 6120 blocks -> /mnt/emmc/kv2_l3_full_u65bbfe41 (cursor=239.06 MB, seq=7254, keep=7230, ratio=0.75, packed_now=36, total_packed=6156), freed 1912.5 MB from RAM
+[llama n600 r1] ctx=8824 pid=178657 warm_s=2.403132
+turn1 total_s=677.376107 rss_kb=9953732 hwm_kb=9953732
+turn2 total_s=19.824161 rss_kb=9954784 hwm_kb=9954784
+turn3 total_s=79.095809 rss_kb=9955836 hwm_kb=9955836
+12.03.894.307 I slot print_timing: id  2 | task 33 | prompt eval time =   14410.45 ms /    24 tokens (  600.44 ms per token,     1.67 tokens per second)
+12.03.894.314 I slot print_timing: id  2 | task 33 |        eval time =    5342.73 ms /     6 tokens ( 1068.55 ms per token,     0.94 tokens per second)
+12.03.894.315 I slot print_timing: id  2 | task 33 |       total time =   19753.18 ms /    30 tokens
+12.03.894.317 I slot print_timing: id  2 | task 33 |    graphs reused =         30
+12.03.894.581 I slot      release: id  2 | task 33 | stop processing: n_tokens = 7239, truncated = 0
+12.03.987.433 I slot get_availabl: id  2 | task -1 | selected slot by LCP similarity, f_sim_best = 0.997 (> 0.100 thold), f_keep = 0.998
+12.03.987.497 I slot launch_slot_: id  2 | task 40 | processing task, is_child = 0
+13.23.013.156 I slot print_timing: id  2 | task 40 | prompt eval time =   14442.61 ms /    24 tokens (  601.78 ms per token,     1.66 tokens per second)
+13.23.013.163 I slot print_timing: id  2 | task 40 |        eval time =   64582.96 ms /    61 tokens ( 1076.38 ms per token,     0.93 tokens per second)
+13.23.013.164 I slot print_timing: id  2 | task 40 |       total time =   79025.57 ms /    85 tokens
+13.23.013.166 I slot print_timing: id  2 | task 40 |    graphs reused =         89
+13.23.013.432 I slot      release: id  2 | task 40 | stop processing: n_tokens = 7312, truncated = 0
+[vllm s1 n600 r2] pid=179410 warm_s=74.113091
+turn1 total_s=583.795140 rss_kb=1431796 hwm_kb=3369812
+turn2 total_s=40.121520 rss_kb=1464200 hwm_kb=3588052
+turn3 total_s=67.793451 rss_kb=1534032 hwm_kb=3634968
+[KV-PREFIX] L3 restored 0 block(s) for 39-token prefix
+[KV-PREFIX] reuse 39-token KV prefix, prefill rest
+[PREFILL-TIMING] n=7178 total=516593.3ms | GEMM=332555.7ms(64.4%) ATTN=173679.3ms(33.6%) OTHER=10358.3ms( 2.0%)
+[L3] evicted 6084 blocks -> /mnt/emmc/kv2_l3_full_u65bbfe41 (cursor=237.66 MB, seq=7217, keep=39, ratio=0.75, packed_now=6084, total_packed=6084), freed 1901.2 MB from RAM
+[L3] restored 6084 prefix blocks from Q4 payload (prefix=7212)
+[KV-PREFIX] L3 restored 6084 block(s) for 7212-token prefix
+[KV-PREFIX] reuse 7212-token KV prefix, prefill rest
+[PREFILL-TIMING] n=23 total=2886.1ms | GEMM=1459.2ms(50.6%) ATTN=1400.5ms(48.5%) OTHER=26.4ms( 0.9%)
+[L3] incremental: retain state (packed_total=6084, cursor=237.66 MB)
+[L3] evicted 6120 blocks -> /mnt/emmc/kv2_l3_full_u65bbfe41 (cursor=239.06 MB, seq=7235, keep=7212, ratio=0.75, packed_now=36, total_packed=6120), freed 1912.5 MB from RAM
+[L3] restored 6120 prefix blocks from Q4 payload (prefix=7230)
+[KV-PREFIX] L3 restored 6120 block(s) for 7230-token prefix
+[KV-PREFIX] reuse 7230-token KV prefix, prefill rest
+[PREFILL-TIMING] n=24 total=2488.3ms | GEMM=1189.8ms(47.8%) ATTN=1271.2ms(51.1%) OTHER=27.2ms( 1.1%)
+[L3] incremental: retain state (packed_total=6120, cursor=239.06 MB)
+[L3] evicted 6120 blocks -> /mnt/emmc/kv2_l3_full_u65bbfe41 (cursor=239.06 MB, seq=7254, keep=7230, ratio=0.75, packed_now=36, total_packed=6156), freed 1912.5 MB from RAM
+[vllm s0 n600 r2] pid=179596 warm_s=72.381455
+turn1 total_s=575.828494 rss_kb=5146748 hwm_kb=7080236
+turn2 total_s=39.378036 rss_kb=5179852 hwm_kb=7194508
+turn3 total_s=59.068810 rss_kb=5249412 hwm_kb=7240060
+[KV-PREFIX] L3 restored 0 block(s) for 39-token prefix
+[KV-PREFIX] reuse 39-token KV prefix, prefill rest
+[PREFILL-TIMING] n=7178 total=515380.3ms | GEMM=330532.0ms(64.1%) ATTN=174617.4ms(33.9%) OTHER=10230.9ms( 2.0%)
+[L3] evicted 6084 blocks -> /mnt/emmc/kv2_l3_full_u65bbfe41 (cursor=237.66 MB, seq=7217, keep=39, ratio=0.75, packed_now=6084, total_packed=6084), freed 1901.2 MB from RAM
+[L3] restored 6084 prefix blocks from Q4 payload (prefix=7212)
+[KV-PREFIX] L3 restored 6084 block(s) for 7212-token prefix
+[KV-PREFIX] reuse 7212-token KV prefix, prefill rest
+[PREFILL-TIMING] n=23 total=2859.2ms | GEMM=1419.2ms(49.6%) ATTN=1413.9ms(49.4%) OTHER=26.1ms( 0.9%)
+[L3] incremental: retain state (packed_total=6084, cursor=237.66 MB)
+[L3] evicted 6120 blocks -> /mnt/emmc/kv2_l3_full_u65bbfe41 (cursor=239.06 MB, seq=7235, keep=7212, ratio=0.75, packed_now=36, total_packed=6120), freed 1912.5 MB from RAM
+[L3] restored 6120 prefix blocks from Q4 payload (prefix=7230)
+[KV-PREFIX] L3 restored 6120 block(s) for 7230-token prefix
+[KV-PREFIX] reuse 7230-token KV prefix, prefill rest
+[PREFILL-TIMING] n=24 total=2707.5ms | GEMM=1201.1ms(44.4%) ATTN=1478.4ms(54.6%) OTHER=28.0ms( 1.0%)
+[L3] incremental: retain state (packed_total=6120, cursor=239.06 MB)
+[L3] evicted 6120 blocks -> /mnt/emmc/kv2_l3_full_u65bbfe41 (cursor=239.06 MB, seq=7254, keep=7230, ratio=0.75, packed_now=36, total_packed=6156), freed 1912.5 MB from RAM
+[llama n600 r2] ctx=8824 pid=179769 warm_s=2.371563
+turn1 total_s=670.404083 rss_kb=9953616 hwm_kb=9953616
+turn2 total_s=20.025242 rss_kb=9954668 hwm_kb=9954668
+turn3 total_s=79.221597 rss_kb=9955720 hwm_kb=9955720
+11.57.046.887 I slot print_timing: id  2 | task 33 | prompt eval time =   14611.94 ms /    24 tokens (  608.83 ms per token,     1.64 tokens per second)
+11.57.046.894 I slot print_timing: id  2 | task 33 |        eval time =    5341.38 ms /     6 tokens ( 1068.28 ms per token,     0.94 tokens per second)
+11.57.046.895 I slot print_timing: id  2 | task 33 |       total time =   19953.32 ms /    30 tokens
+11.57.046.896 I slot print_timing: id  2 | task 33 |    graphs reused =         30
+11.57.047.155 I slot      release: id  2 | task 33 | stop processing: n_tokens = 7239, truncated = 0
+11.57.139.891 I slot get_availabl: id  2 | task -1 | selected slot by LCP similarity, f_sim_best = 0.997 (> 0.100 thold), f_keep = 0.998
+11.57.140.001 I slot launch_slot_: id  2 | task 40 | processing task, is_child = 0
+13.16.290.115 I slot print_timing: id  2 | task 40 | prompt eval time =   14601.34 ms /    24 tokens (  608.39 ms per token,     1.64 tokens per second)
+13.16.290.121 I slot print_timing: id  2 | task 40 |        eval time =   64548.65 ms /    61 tokens ( 1075.81 ms per token,     0.93 tokens per second)
+13.16.290.123 I slot print_timing: id  2 | task 40 |       total time =   79149.99 ms /    85 tokens
+13.16.290.124 I slot print_timing: id  2 | task 40 |    graphs reused =         89
+13.16.290.383 I slot      release: id  2 | task 40 | stop processing: n_tokens = 7312, truncated = 0
+[vllm s1 n600 r3] pid=180004 warm_s=74.625918
+turn1 total_s=585.882646 rss_kb=1430196 hwm_kb=3363788
+turn2 total_s=40.296771 rss_kb=1468688 hwm_kb=3590204
+turn3 total_s=67.965550 rss_kb=1534168 hwm_kb=3634976
+[KV-PREFIX] L3 restored 0 block(s) for 39-token prefix
+[KV-PREFIX] reuse 39-token KV prefix, prefill rest
+[PREFILL-TIMING] n=7178 total=518750.8ms | GEMM=333229.0ms(64.2%) ATTN=174958.3ms(33.7%) OTHER=10563.5ms( 2.0%)
+[L3] evicted 6084 blocks -> /mnt/emmc/kv2_l3_full_u65bbfe41 (cursor=237.66 MB, seq=7217, keep=39, ratio=0.75, packed_now=6084, total_packed=6084), freed 1901.2 MB from RAM
+[L3] restored 6084 prefix blocks from Q4 payload (prefix=7212)
+[KV-PREFIX] L3 restored 6084 block(s) for 7212-token prefix
+[KV-PREFIX] reuse 7212-token KV prefix, prefill rest
+[PREFILL-TIMING] n=23 total=2694.2ms | GEMM=1430.2ms(53.1%) ATTN=1238.0ms(46.0%) OTHER=26.0ms( 1.0%)
+[L3] incremental: retain state (packed_total=6084, cursor=237.66 MB)
+[L3] evicted 6120 blocks -> /mnt/emmc/kv2_l3_full_u65bbfe41 (cursor=239.06 MB, seq=7235, keep=7212, ratio=0.75, packed_now=36, total_packed=6120), freed 1912.5 MB from RAM
+[L3] restored 6120 prefix blocks from Q4 payload (prefix=7230)
+[KV-PREFIX] L3 restored 6120 block(s) for 7230-token prefix
+[KV-PREFIX] reuse 7230-token KV prefix, prefill rest
+[PREFILL-TIMING] n=24 total=2600.0ms | GEMM=1212.3ms(46.6%) ATTN=1360.1ms(52.3%) OTHER=27.5ms( 1.1%)
+[L3] incremental: retain state (packed_total=6120, cursor=239.06 MB)
+[L3] evicted 6120 blocks -> /mnt/emmc/kv2_l3_full_u65bbfe41 (cursor=239.06 MB, seq=7254, keep=7230, ratio=0.75, packed_now=36, total_packed=6156), freed 1912.5 MB from RAM
+[vllm s0 n600 r3] pid=181454 warm_s=72.629073
+turn1 total_s=574.733987 rss_kb=5146476 hwm_kb=7080228
+turn2 total_s=38.900617 rss_kb=5179844 hwm_kb=7194500
+turn3 total_s=58.683061 rss_kb=5249404 hwm_kb=7240052
+[KV-PREFIX] L3 restored 0 block(s) for 39-token prefix
+[KV-PREFIX] reuse 39-token KV prefix, prefill rest
+[PREFILL-TIMING] n=7178 total=514594.2ms | GEMM=330429.3ms(64.2%) ATTN=173973.6ms(33.8%) OTHER=10191.3ms( 2.0%)
+[L3] evicted 6084 blocks -> /mnt/emmc/kv2_l3_full_u65bbfe41 (cursor=237.66 MB, seq=7217, keep=39, ratio=0.75, packed_now=6084, total_packed=6084), freed 1901.2 MB from RAM
+[L3] restored 6084 prefix blocks from Q4 payload (prefix=7212)
+[KV-PREFIX] L3 restored 6084 block(s) for 7212-token prefix
+[KV-PREFIX] reuse 7212-token KV prefix, prefill rest
+[PREFILL-TIMING] n=23 total=2603.6ms | GEMM=1375.0ms(52.8%) ATTN=1203.2ms(46.2%) OTHER=25.4ms( 1.0%)
+[L3] incremental: retain state (packed_total=6084, cursor=237.66 MB)
+[L3] evicted 6120 blocks -> /mnt/emmc/kv2_l3_full_u65bbfe41 (cursor=239.06 MB, seq=7235, keep=7212, ratio=0.75, packed_now=36, total_packed=6120), freed 1912.5 MB from RAM
+[L3] restored 6120 prefix blocks from Q4 payload (prefix=7230)
+[KV-PREFIX] L3 restored 6120 block(s) for 7230-token prefix
+[KV-PREFIX] reuse 7230-token KV prefix, prefill rest
+[PREFILL-TIMING] n=24 total=2480.9ms | GEMM=1154.5ms(46.5%) ATTN=1299.3ms(52.4%) OTHER=27.1ms( 1.1%)
+[L3] incremental: retain state (packed_total=6120, cursor=239.06 MB)
+[L3] evicted 6120 blocks -> /mnt/emmc/kv2_l3_full_u65bbfe41 (cursor=239.06 MB, seq=7254, keep=7230, ratio=0.75, packed_now=36, total_packed=6156), freed 1912.5 MB from RAM
+[llama n600 r3] ctx=8824 pid=181630 warm_s=2.451323
+turn1 total_s=682.061822 rss_kb=9953432 hwm_kb=9953432
+turn2 total_s=19.996217 rss_kb=9954484 hwm_kb=9954484
+turn3 total_s=79.387787 rss_kb=9955536 hwm_kb=9955536
+12.08.757.014 I slot print_timing: id  2 | task 33 | prompt eval time =   14590.57 ms /    24 tokens (  607.94 ms per token,     1.64 tokens per second)
+12.08.757.021 I slot print_timing: id  2 | task 33 |        eval time =    5333.44 ms /     6 tokens ( 1066.69 ms per token,     0.94 tokens per second)
+12.08.757.022 I slot print_timing: id  2 | task 33 |       total time =   19924.01 ms /    30 tokens
+12.08.757.023 I slot print_timing: id  2 | task 33 |    graphs reused =         30
+12.08.757.285 I slot      release: id  2 | task 33 | stop processing: n_tokens = 7239, truncated = 0
+12.08.852.467 I slot get_availabl: id  2 | task -1 | selected slot by LCP similarity, f_sim_best = 0.997 (> 0.100 thold), f_keep = 0.998
+12.08.852.564 I slot launch_slot_: id  2 | task 40 | processing task, is_child = 0
+13.28.168.212 I slot print_timing: id  2 | task 40 | prompt eval time =   14820.91 ms /    24 tokens (  617.54 ms per token,     1.62 tokens per second)
+13.28.168.218 I slot print_timing: id  2 | task 40 |        eval time =   64494.62 ms /    61 tokens ( 1074.91 ms per token,     0.93 tokens per second)
+13.28.168.220 I slot print_timing: id  2 | task 40 |       total time =   79315.52 ms /    85 tokens
+13.28.168.222 I slot print_timing: id  2 | task 40 |    graphs reused =         89
+13.28.168.485 I slot      release: id  2 | task 40 | stop processing: n_tokens = 7312, truncated = 0
+END=2026-09-15 16:42:44
+KV2_DONE

@@ -21,6 +21,78 @@
 #include <stdint.h>
 
 /* ================================================================
+ * 词表索引：消除 O(文本长度 × vocab_size) 的最长前缀匹配
+ *
+ * 背景：原实现每个 token 位置都对整张词表（151936 条）做一次线性扫描
+ * （见下方 find_longest_match_linear），实测 7212-token 的 prompt 光分词
+ * 就要 ~10.4 s（≈1.44 ms/token；每个词表项约 9.5 ns，花在指针跳转 + memcmp
+ * + cache miss 上）。这是"短追问 + 长前缀"复用轮 TTFT 的最大单项。
+ *
+ * 索引语义必须与线性扫描**逐位一致**：
+ *   - 线性扫描保留"最长、且 id 最小"的那条（`tlen > best_len` 严格比较 ⇒
+ *     等长时先出现者胜 = 最小 id）；
+ *   - 因此索引按 id 升序插入、同串只保留首个（= 最小 id），查询时长度从大到小
+ *     回退，第一个命中的长度即最长匹配。
+ * 两条路径对同一输入必须产出完全相同的 id 序列（回归对照见
+ * tools/bench/tok_ref_check.c，以及引擎内 VLLM_TOK_LINEAR=1 的强制旧路径）。
+ * ================================================================ */
+
+/* FNV-1a：短键够快，且不需要先求长度。 */
+static uint32_t tok_key_hash(const char *s, int len) {
+    uint32_t h = 2166136261u;
+    for (int i = 0; i < len; i++) {
+        h ^= (uint8_t)s[i];
+        h *= 16777619u;
+    }
+    return h;
+}
+
+/* 精确匹配（长度相同且字节全同），返回**最小** id；不在词表内返回 -1。 */
+static int vocab_index_find(const QwenTokenizer *tok, const char *s, int len) {
+    if (!tok->vocab_tab || len <= 0) return -1;
+    uint32_t mask = (uint32_t)tok->vocab_tab_mask;
+    uint32_t h = tok_key_hash(s, len) & mask;
+    for (;;) {
+        int slot = tok->vocab_tab[h];
+        if (slot == 0) return -1;               /* 空槽：键不在表内 */
+        int id = slot - 1;
+        if (tok->str_lens[id] == len &&
+            memcmp(tok->strings[id], s, (size_t)len) == 0) return id;
+        h = (h + 1) & mask;                     /* 容量 ≥ 2×词表，不会走满 */
+    }
+}
+
+static int vocab_index_build(QwenTokenizer *tok) {
+    int cap = 1;
+    while (cap < tok->vocab_size * 2) cap <<= 1;
+    tok->vocab_tab = calloc((size_t)cap, sizeof(int));
+    if (!tok->vocab_tab) return -1;
+    tok->vocab_tab_mask = cap - 1;
+    memset(tok->first_maxlen, 0, sizeof(tok->first_maxlen));
+
+    uint32_t mask = (uint32_t)tok->vocab_tab_mask;
+    for (int id = 0; id < tok->vocab_size; id++) {
+        int len = tok->str_lens[id];
+        const char *s = tok->strings[id];
+        if (!s || len <= 0) continue;
+        uint8_t b0 = (uint8_t)s[0];
+        if (len > tok->first_maxlen[b0]) tok->first_maxlen[b0] = len;
+
+        uint32_t h = tok_key_hash(s, len) & mask;
+        for (;;) {
+            int slot = tok->vocab_tab[h];
+            if (slot == 0) { tok->vocab_tab[h] = id + 1; break; }
+            int other = slot - 1;
+            if (tok->str_lens[other] == len &&
+                memcmp(tok->strings[other], s, (size_t)len) == 0)
+                break;   /* 同串已在表内且 id 更小：保持不动（等长取最小 id） */
+            h = (h + 1) & mask;
+        }
+    }
+    return 0;
+}
+
+/* ================================================================
  * Load vocab.bin binary format
  * ================================================================ */
 
@@ -148,13 +220,31 @@ int qwen_tokenizer_load(QwenTokenizer *tok, const char *model_dir) {
     free(ids);
 
     tok->is_loaded = 1;
+    /* 建词表索引（VLLM_TOK_LINEAR=1 时保持旧线性扫描，用于位级回归对照）。 */
+    const char *lin = getenv("VLLM_TOK_LINEAR");
+    tok->tok_linear = (lin && lin[0] == '1') ? 1 : 0;
+    if (!tok->tok_linear && vocab_index_build(tok) != 0) {
+        fprintf(stderr, "[TOK] vocab index build failed (OOM?) -> linear scan\n");
+        free(tok->vocab_tab);
+        tok->vocab_tab = NULL;
+        tok->tok_linear = 1;
+    }
     printf("[TOK] Loaded %d tokens from vocab.bin (max_len=%d)\n",
            tok->vocab_size, tok->max_str_len);
+    if (tok->tok_linear) {
+        printf("[TOK] match mode: linear scan (VLLM_TOK_LINEAR=1; regression oracle)\n");
+    } else {
+        printf("[TOK] match mode: indexed (slots=%d, %.1f MB, load=%.2f)\n",
+               tok->vocab_tab_mask + 1,
+               (tok->vocab_tab_mask + 1) * 4.0 / 1048576.0,
+               (double)tok->vocab_size / (double)(tok->vocab_tab_mask + 1));
+    }
     return 0;
 }
 
 void qwen_tokenizer_free(QwenTokenizer *tok) {
     if (!tok->is_loaded) return;
+    free(tok->vocab_tab);
     free(tok->strings);
     free(tok->str_lens);
     free(tok->str_data);
@@ -170,12 +260,11 @@ static int is_utf8_cont(unsigned char c) {
     return (c & 0xC0) == 0x80;
 }
 
-/* 在词表里找与 text 前缀相同、且长度不超过 max_len 的最长 token。
- * max_len 用来把匹配限制在"下一个特殊 token 之前"，防止贪心长匹配把特殊
- * token 的首字节吞掉（见 QWEN_SPECIAL_STR 上方注释）。 */
-static int find_longest_match_qwen(QwenTokenizer *tok,
-                                    const char *text, int text_len, int max_len,
-                                    int *match_len) {
+/* 旧实现：全词表线性扫描（保留为位级对照基准，VLLM_TOK_LINEAR=1 时启用）。
+ * 语义 = 「不动点」：本函数的结果就是索引路径必须复刻的参考真值。 */
+static int find_longest_match_linear(QwenTokenizer *tok,
+                                     const char *text, int text_len, int max_len,
+                                     int *match_len) {
     int best_id = -1;
     int best_len = 0;
 
@@ -198,6 +287,39 @@ static int find_longest_match_qwen(QwenTokenizer *tok,
     return best_id;
 }
 
+/* 在词表里找与 text 前缀相同、且长度不超过 max_len 的最长 token。
+ * max_len 用来把匹配限制在"下一个特殊 token 之前"，防止贪心长匹配把特殊
+ * token 的首字节吞掉（见 QWEN_SPECIAL_STR 上方注释）。
+ *
+ * 索引路径：长度从大到小回退，第一个命中的长度即最长匹配；同一长度由索引保证
+ * 取最小 id。与 find_longest_match_linear 逐位同结果（见文件头的证明性注释）。
+ * 起点收紧到 min(max_len, 首字节允许的最长 token, 词表最长 token)：
+ * 没有任何 token 以 text[0] 开头时直接判无匹配，与线性扫描一致。 */
+static int find_longest_match_qwen(QwenTokenizer *tok,
+                                    const char *text, int text_len, int max_len,
+                                    int *match_len) {
+    if (tok->tok_linear || !tok->vocab_tab)
+        return find_longest_match_linear(tok, text, text_len, max_len, match_len);
+
+    *match_len = 0;
+    if (max_len > text_len) max_len = text_len;
+    if (max_len <= 0) return -1;
+
+    int hi = max_len;
+    int bmax = tok->first_maxlen[(uint8_t)text[0]];
+    if (bmax < hi) hi = bmax;
+    if (tok->max_str_len > 0 && tok->max_str_len < hi) hi = tok->max_str_len;
+
+    for (int L = hi; L >= 1; L--) {
+        int id = vocab_index_find(tok, text, L);
+        if (id >= 0) {
+            *match_len = L;
+            return id;
+        }
+    }
+    return -1;
+}
+
 /* ---- 特殊 token 最高优先级匹配 ----------------------------------------
  * 本编码器是"逐位置取最长词表前缀"，不是真正的 BPE。当某个字符合成的二元
  * token 恰好以 '<' 结尾时（词表里存在 ".<"(15757)、"。"+"<"(89393) 这类
@@ -218,8 +340,10 @@ static const char *const QWEN_SPECIAL_STR[] = {
 #define QWEN_N_SPECIAL \
     ((int)(sizeof(QWEN_SPECIAL_STR) / sizeof(QWEN_SPECIAL_STR[0])))
 
-/* 词表里整串精确等于 s 的 token id（长度相同且字节全同），找不到返回 -1。 */
+/* 词表里整串精确等于 s 的 token id（长度相同且字节全同），找不到返回 -1。
+ * 索引不可用时退回线性扫描（语义相同：返回最小 id）。 */
 static int find_exact_token(const QwenTokenizer *tok, const char *s, int len) {
+    if (tok->vocab_tab) return vocab_index_find(tok, s, len);
     for (int i = 0; i < tok->vocab_size; i++) {
         if (!tok->strings[i]) continue;
         if (tok->str_lens[i] != len) continue;
