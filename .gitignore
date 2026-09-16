@@ -17,6 +17,11 @@ vqf_convert/synth/
 /.attest/
 kv_disk/
 *.log
+# 例外：docs/bench/ 下的原始基准证据要随仓库分发（引擎日志是行为证据，见各目录 MANIFEST.txt）
+!docs/bench/**/*.log
+
+# FHE relay working data dir (hardcoded by tools/drivers: sk.bin, weights, ciphertexts, logs)
+/.tmp_tok/
 
 # Python
 __pycache__/

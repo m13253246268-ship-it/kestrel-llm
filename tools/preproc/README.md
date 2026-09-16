@@ -22,6 +22,8 @@
 | 脚本 | 作用 | 产物 |
 |---|---|---|
 | **`_export_weights.py`** | **权重量化无关导出**（safetensors → 驱动读取的 `.bin`） | `tail/w0..w27/`（每层 9 个）+ `tail/embed.bin` + `tail/norm.bin` |
+| **`_embed4.py`** | **lay0 的明文输入**：按 token id 取 embedding 表的行 | `l0/embed4.bin`（4×2048 float32，32768 B） |
+| **`_silu_mode.py`** | **逐层 SiLU 路径开关**：`silu{L}.bin` = `1.0`（直接拟合）/ `0.0`（÷21 折叠） | `tail/silu0..25.bin`（26 个，各 8 B） |
 | `_full_layers.py` | 28 层因果明文前向参考（L0..L25） | `tail/l{L}_*`、`tail/ln{L}_e1/p1.bin`、`tail/m2c{L}_e/p.bin` |
 | `_tail_ref.py` | 末段明文参考（L26/L27 + final norm + lm_head） | `tail/l26_*`、`tail/l27_*`、`tail/xnorm_f.bin`、`tail/logits.bin`、`tail/ln_f.bin`、`tail/m2c_f.bin` |
 | `_adap_scale.py` | 逐层标定折叠系数 `F[L]` 并重生成输入参考 | `tail/scale{L}.bin`、`tail/l0_u1.bin` |
@@ -40,6 +42,12 @@ cd <repo-root>
 
 # 1) 权重与顶层矩阵（必需，最先做）
 python tools/preproc/_export_weights.py
+
+# 1b) lay0 的明文输入 l0/embed4.bin（必需：_full_layers.py / _tail_ref.py / _adap_scale.py 依赖它）
+python tools/preproc/_embed4.py
+
+# 1c) 逐层 SiLU 路径开关 silu{0..25}.bin（必需：缺失会被驱动当作"÷21 折叠"，浅层直接算错）
+python tools/preproc/_silu_mode.py
 
 # 2) 明文参考：全层 + 末段
 python tools/preproc/_full_layers.py
@@ -78,15 +86,26 @@ norm.bin   IDENTICAL   (8,192 B)
 
 ## 6. 已知缺口（诚实说明）
 
-1. **`.tmp_tok/l0/embed4.bin` 无生成脚本**。它是本次测试所用的 4 个 token 经 embedding 查表后的
-   明文输入（4×2048 float32），被 `_full_layers.py` / `_tail_ref.py` / `_adap_scale.py` 依赖。
-   目前需由数据包分发，或按你的实际提示词自行生成（需 tokenizer + 位置编码）。
-2. **`.tmp_tok/l1w/`、`.tmp_tok/l1r/`** 是早期单层（L1）调试流程的专用权重与参考，中间层链（`phase=6`）
+1. **`l0/embed4.bin`（lay0 的明文输入）原本无生成脚本——现已补上**：用
+   [`_embed4.py`](_embed4.py) 生成。它按 token id 取 embedding 表的行，默认
+   `--ids 100,101,102,103`（这 4 个 id 就是已发布数据所用的），产出 **32768 B**、
+   SHA256 前缀 `c945c8fe92cc0595`，与数据包里的 `embed4.bin` **逐字节相同**（已实测复核）。
+   换成自己的提示词：`--ids <你的 4 个 token id>`——那样你得到的是**你自己的一条链**，
+   参考文件必须用 `_full_layers.py` / `_tail_ref.py` **重新生成**，不会再逐字节等于已发布结果。
+2. **`tail/silu{L}.bin`（逐层 SiLU 路径开关）原本也无人生成——现已补上**：用
+   [`_silu_mode.py`](_silu_mode.py)，产出 26 个 8 B 文件（层 0..25），与已发布数据**逐字节相同**（已实测复核）。
+   驱动（`t23_m3p.c:1650-1660`）读它决定 lay{L} 走哪条 SiLU：`1.0` = 直接拟合（浅层，|gate| ≤ 8、锚定 0）；
+   `0.0` **或文件缺失** = ÷21 折叠（M3b 深层路径）。**缺这个文件对浅层是错的**——÷21 拟合有 ~0.0127 DC 偏移，
+   驱动注释自己量化了"浅层小 gate 相对误差 12~35%"。
+   > ⚠️ **危险点：缺文件时驱动不报错**。`RESULT=PASS` 照打，但 `verify_layer` 独立复核会 FAIL
+   > （实测：层 0 缺文件时 `max|err|` 4.2e-2~8.5e-2，超 3e-2 容差；补上后回到 1.27e-3）。
+   > 所以**判据日志不能替代数值复核**，见 [`../relay/README.md`](../relay/README.md)。
+3. **`.tmp_tok/l1w/`、`.tmp_tok/l1r/`** 是早期单层（L1）调试流程的专用权重与参考，中间层链（`phase=6`）
    并不需要；本目录脚本未覆盖，也不影响 0..27 层链的运行。
-3. 脚本内的模型路径（`Modl/...`）与输出路径（`.tmp_tok/...`）是**硬编码**的；换机器需改 `SRC`/`D0`/`OUT` 常量。
+4. **脚本内的模型路径（`Modl/...`）与输出路径（`.tmp_tok/...`）是硬编码**的；换机器需改 `SRC`/`D0`/`OUT` 常量。
 
 ## 7. 相关
 
 - **驱动用法 / 数据目录约定 / 判据**：[`../drivers/README.md`](../drivers/README.md)
-- **运行 / 打包 / 验证脚本**：`arxiv/repo/tools/relay/`
-- **前 5 层跑通结果（含 SHA256 清单与验证步骤）**：`arxiv/results/L0-4/`
+- **运行 / 打包 / 验证脚本**：[`../relay/README.md`](../relay/README.md)
+- **归档产物目录**：`results/L0-4/`（由 `../relay/collect_results.ps1` 生成）
