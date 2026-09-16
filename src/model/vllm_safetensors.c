@@ -18,9 +18,9 @@
  *   Several NEON quantized GEMM/GEMV kernels below derive from llama.cpp
  *   (https://github.com/ggerganov/llama.cpp), redistributed under the MIT
  *   License, Copyright (c) 2023-2026 The ggml authors. The MIT license text
- *   is reproduced at the top of tools/llama_gemm_q4_0_4x4_asm.c.
+ *   is reproduced at the top of tools/kernels/llama_gemm_q4_0_4x4_asm.c.
  *   Derivations (adapted and/or word-for-word ported in-place):
- *     - ggml_gemm_q4_0_4x4_q8_0  -> tools/llama_gemm_q4_0_4x4_asm.c (verbatim
+ *     - ggml_gemm_q4_0_4x4_q8_0  -> tools/kernels/llama_gemm_q4_0_4x4_asm.c (verbatim
  *       mechanical extraction, included at the M4d fast path)
  *     - ggml_gemm_q8_0_4x4_q8_0 NEON segment -> llama_gemm_q8_0_4x4_q8_0_neon()
  *     - ggml_gemv_q4_0_4x4_q8_0 -> q4x4_dot1_group16_gemv() (M4f)
@@ -2293,7 +2293,7 @@ int    g_verify_pos = -1;     /* MRoPE position base for verify-mode prefill:
  * Transparent NPU acceleration (RK3588, opt-in via --npu).
  *
  * The NPU backend (vllm_npu.h) executes per-(layer, projection) int8 GEMM
- * operator models exported by tools/npu_export_ops.py; the safetensors model
+ * operator models exported by tools/npu/npu_export_ops.py; the safetensors model
  * format and the Q8_0/Q4_0 weights are never converted. Dispatch is a pure
  * function of (backend available, model present, FLOPs threshold) - when any
  * condition fails, the CPU (NEON/AVX) kernel runs exactly as before.
@@ -3947,7 +3947,7 @@ static inline void q4x4_dot1_group16_gemv(const uint8_t *__restrict bq,
  *
  * 移植方式：llama.cpp ggml/src/ggml-cpu/arch/arm/repack.cpp 的
  * ggml_gemm_q4_0_4x4_q8_0() 手写 NEON asm（.inst sdot、16 累加器、软件流水
- * 载荷）由 tools/extract_llama_asm.py 机械提取（零转录风险），语义与 generic
+ * 载荷）由 tools/kernels/extract_llama_asm.py 机械提取（零转录风险），语义与 generic
  * 完全一致：
  *   s[row*bs + col] = sum_k W(row,k) * A(col,k)   （nr rows x nc cols）
  * 我方映射（输出 out[token*rows + row]）：
@@ -3958,7 +3958,7 @@ static inline void q4x4_dot1_group16_gemv(const uint8_t *__restrict bq,
  * 与 M4c 不同 -> PPL 需重新验收（流程与 M4c 相同）。residual 在 asm 之后
  * 向量化后加（与 C 路径的 out = residual + matmul 语义一致）。
  * 依据公理：blas_matrix_block_natural_isomorphism（block_matrix_assoc_natural）。 */
-#include "../../tools/llama_gemm_q4_0_4x4_asm.c"
+#include "../../tools/kernels/llama_gemm_q4_0_4x4_asm.c"
 
 typedef struct {
     float *out; const uint8_t *q4_w;
