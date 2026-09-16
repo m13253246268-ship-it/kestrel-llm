@@ -43,7 +43,7 @@
 `_release_verify/_untracked_bak_gitee/`（54 文件），再 `git pull --ff-only`。
 结果 `head/tree = 81cd44b / 069bc4f9…`，与本地 master **逐字节相同**，`dirty=0`。
 
-### 3. GitHub 侧：`gh` 门面分支落后 9 个提交且已分叉，本轮已合并（**尚未推送**）
+### 3. GitHub 侧：`gh` 门面分支落后 9 个提交且已分叉，本轮已合并并推送
 
 `gh` 与 `master` 的 merge-base 是 `4f1ad70`：`gh` 落后 9 个、master 落后 6 个。
 `git merge-tree` 预演显示冲突**只有 3 个文件**，且全部来自那次 i18n 互换本身：
@@ -51,7 +51,17 @@
 
 解析方式不是手工改，而是**用门面约定直接取内容**：新增 `tools/build/make_release.py`，
 把门面约定固化成可执行定义（`git -c core.autocrlf=false archive <ref>` + GitHub 侧 i18n 互换），
-用它产出目标内容来解析冲突。结果 `gh`：`2ed2e08b` → **`331800ce`**（merge 提交，**尚未 push**）。
+用它产出目标内容来解析冲突。`gh` 经两轮合并：
+
+| 轮次 | `gh` 起点 → 终点 | 合入的 master |
+|---|---|---|
+| 1 | `2ed2e08b` → `331800ce` | `81cd44b` |
+| 2 | `331800ce` → **`f2cffd78`** | `4209982` |
+
+**推送前先证是快进**：GitHub 侧 `master = 2ed2e08b`，而 `2ed2e08b` 是 `f2cffd78` 的祖先
+（`git merge-base --is-ancestor` rc=0）⇒ 无覆盖、无 force。随即 `git push github gh:master`，
+远端 `master` 回到 `f2cffd78`。注意 GitHub 上**没有** `gh` 分支：门面只以 `master` 的形式存在，
+`gh` 是本仓库用来维护它的工作分支 —— 这是既定约定，不是遗漏。
 
 ### 4. 验证（git 层面，绕开文件系统）
 
@@ -65,6 +75,18 @@
 | `master` ≡ `make_release.py --facade gitee`（425 文件） | **IDENTICAL**（同上） |
 
 即：门面约定被脚本 **完整** 刻画，`gh` 的合并结果与 master 只差那一层 i18n 互换。
+
+推送/同步闭环上再核一遍**两个端点的 HEAD**（这才是"发布快照"的真正主语）：
+
+| 端点 | HEAD | 与本地的关系 | 工作区 |
+|---|---|---|---|
+| `_release_verify/gitee` | `81cd44b` → 本轮 `pull` 至 `4209982` | ≡ 本地 `master`（tree 逐字节相同） | `dirty=0` |
+| `_release_verify/github` | `2ed2e08b` → 本轮 `pull` 至 `f2cffd78` | ≡ 本地 `gh`（tree 逐字节相同） | `dirty=0` |
+
+github 克隆原先脏 26 项（3 个 `M` + 13 个 `D tools/*` + 10 个未跟踪 `tools/<子目录>/`）——
+与 gitee 克隆当初同型（有人手工放入归档后的 tools 内容而未提交）。处理仍走"先备份再清"：
+未跟踪项移到 `_release_verify/_untracked_bak_github/`，被跟踪文件的脏存成
+`tracked_dirt.patch`（255 KB）后 `reset --hard HEAD`，再 `pull --ff-only`。
 
 ### 5. 顺带修掉脚本自身的两个 bug（都是实测踩出来的）
 
@@ -88,12 +110,30 @@ python3 tools/build/make_release.py --out <目录>/github --facade github --ref 
 的引擎名）已随 `0a77753` 改为 `vllm_kestrel`。GitHub 侧 wiki 链接**仍指向 Gitee**（未做 URL 改写）：
 Gitee 是正式站点；若将来要以 GitHub 为主站，需单独一轮并同步改 `README` / `CONTRIBUTING` / `.github` 模板。
 
-### 7. 待办
+### 7. 闭环状态与后续规矩
 
-- `gh` 的 merge（`331800ce`）**本地就绪但未推送 GitHub**；推送后还需再 `pull` 一次
-  `_release_verify/github` 才算闭环。
-- `_release_verify/_superseded_20260912_gitee_github.tgz`（7.0 MB）是旧克隆工作区的备份，
-  确认无误后可删。
+**两个老问题都已闭合**：
+
+1. **板端源码树**：`4f1ad70` → `fb3008c`，且同路径重建**逐字节复现被验证二进制**（§0），
+   §7 性能结论无需重跑。
+2. **发布快照**：`gh` 合并并推送 GitHub（`f2cffd78`），两份验证克隆各 `pull` 到与本地
+   **逐字节相同**的最新提交；旧克隆备份 `_release_verify/_superseded_20260912_gitee_github.tgz`
+   （7.0 MB）已删（两份克隆可随时重克隆，无信息损失）。
+
+上表记录的是核对当时的哈希；master 其后又前进 1 个提交（即本 CHANGELOG 提交本身），
+故收尾时两侧克隆各再 `pull --ff-only` 一次到本轮最终提交，`dirty=0`。
+
+一个**不变量**取代了逐次追哈希：`gh` ≡ `make_release.py --facade github`（源自 `master`）。
+每次 `master` 有新提交后重跑以下三步即可维持：
+
+```bash
+python3 tools/build/make_release.py --out <tmp>/github --facade github --ref master --clean
+git checkout gh && git merge master          # 冲突只会落在 README*.md / wiki/Home.md
+git push github gh:master && git checkout master
+```
+
+`gh` 相对 master 落后几个提交**本身不是问题**（它就是这样被维护的）；真正会出问题的是
+"两侧内容不再满足上述不变量"，而那由 `verify_ref.py` 逐文件强制校验。
 
 ---
 
