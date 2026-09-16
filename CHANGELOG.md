@@ -5,6 +5,60 @@
 
 ---
 
+## 2026-09-16（交叉验证）— 从 gitee 全新克隆到板端编译，暴露并修复 2 处只有 ARM 才显现的缺陷
+
+### 0. 做法
+
+在板端**独立克隆** gitee（`/mnt/emmc/kestrel_gitee`，**不触碰**被验证树 `/mnt/emmc/kestrel_pull`），
+构建后跑自检，再与本地 x86 对照。脚本 `sh /mnt/emmc/kv2h2/board_build_verify.sh`
+（内部先 `git fetch` + `reset --hard origin/master`，并自证 HEAD / tree / dirty）。
+
+### 1. 暴露的缺陷（**都不是本轮引入，但都只有 ARM 侧才显现**）
+
+| # | 位置 | 现象 | 根因 | 修复 |
+|---|---|---|---|---|
+| 1 | `src/model/vllm_safetensors.c` | 板端 `./build_rk3588.sh` **BUILD_RC=2**：`fatal error: ../../tools/llama_gemm_q4_0_4x4_asm.c: No such file or directory` | `0ac05cc` 把 `tools/` 归档进子目录时把该文件移到 `tools/kernels/`，**漏改了这条 include**。它位于 `#if ST_NEON_DOTPROD` 块内（3806 行起），x86 编不到 ⇒ **此前 x86 全绿把它掩盖了** | 改为 `../../tools/kernels/llama_gemm_q4_0_4x4_asm.c`（`4adeca8`） |
+| 2 | `src/main.c` | 构建与自检都能过，但二进制里带着旧名 banner | `d91c18d` 夹带的旧世代命名里，我上一轮只 grep 了小写 `vllm_shs`，**漏了大写 `vLLM-SHS`**（文件头注释 + 启动 `printf` 共 2 处；banner 是字符串常量、会进二进制） | 改为 `vLLM-Kestrel`（`b3928f8`） |
+
+全仓审计确认 #1 是唯一的功能性 stale 路径（`src/`+`include/` 的 `#include`、CMakeLists、`cmake/`、
+构建脚本全部核对）。#2 修完后 `vLLM-SHS` 全仓为 0，且 `src/main.c` 与板端被验证树**逐字节相同**
+（md5 `58c838f0e66536b34ba61e3e331056b0`）。注：同文件第 4 行 `SHS axiom constraints` 指算法名
+（Superposition Hybrid System），板端同样保留，未改。
+
+### 2. 验证结果
+
+| 项 | 本地 x86（MinGW） | 板端 ARM（RK3588） |
+|---|---|---|
+| 源码自证 | HEAD `b3928f8` / tree `d575ae44…` | 克隆的 HEAD / tree 与本地**逐字节一致**，`dirty=0` |
+| 构建 | `X64 CHECK PASSED` | **`BUILD_RC=0`**，`vllm_kestrel` 916,608 B aarch64 |
+| `--test-l3` | 16 PASS + 1 SKIP(NEON) / **0 FAIL** | **17 PASS / 0 SKIP / 0 FAIL**（含 x86 上被 SKIP 的 NEON 对拍：dequant 0/200、store 0/200 不一致） |
+| `--test-sparse` | 9/9 | 9/9 |
+| 其它 | — | `--bench-mixed`、`--npu-selftest` 均 RC=0 |
+
+本地产物 `vllm_kestrel_x64.exe` 1,236,786 B，md5 `7dc953221c083268e5dd51b5c0740a8b`。
+
+### 3. 板端克隆构建 vs 被验证二进制 `a1b6707d…`：差异已定位到字节
+
+`a1af6d78…`（克隆构建） vs `a1b6707d…`（被验证）：**同为 916,608 B，仅 47 字节不同**：
+
+| 偏移 | 字节数 | 内容 |
+|---|---|---|
+| 668–687 | 20 | `.note.gnu.build-id` 的 ID |
+| 827,258–827,284 | 27 | `.rodata` 中第三方头 `stb_image.h` 的 `assert()` 经 `__FILE__` 嵌入的**源码绝对路径**：`/mnt/emmc/kestrel_pull/…` vs `/mnt/emmc/kestrel_gitee/…` |
+
+构建配置的唯一差异同样只是源码/构建目录的绝对路径（`CMakeCache.txt`、`flags.make`）。
+**收口实验**：在板端**同一路径**原地重建 `kestrel_pull` → **逐字节复现 `a1b6707d…`（`REPRO_OK`）**。
+⇒ 构建可复现；47 字节差异纯由「克隆到哪里」造成，**代码层面 gitee HEAD 与板端被验证源码等价**。
+被验证二进制已备份至 `/mnt/emmc/kv2h2/vllm_kestrel_a1b6707d.bak`。
+
+### 4. 遗留
+
+- 板端 `kestrel_pull` 仍停在 `4f1ad70`（tools 未归档），**刻意不动**：它正是 `a1b6707d` 的来源，
+  且已被证明与 gitee HEAD 代码等价。若要统一，需另起一轮并重跑 §7 基准。
+- 板端 `kestrel_pull` 内有 `src/*.bak_*` 等未跟踪残留；`/mnt/emmc` 余量 975 MB。
+
+---
+
 ## 2026-09-16（收尾）— 修复：`d91c18d` 夹带旧世代命名，导致 x64 断链
 
 ### 0. 问题
