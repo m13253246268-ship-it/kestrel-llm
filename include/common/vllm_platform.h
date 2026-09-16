@@ -373,6 +373,56 @@ ST_INLINE int st_bind_cpu(int cpu_id) {
 }
 #endif
 
+/* Performance (big) CPU set — 线程数默认值与 worker 亲和的共同依据。
+ *
+ * **不假定大核就是 cpu4-7**：那是 RK3588 的布局，换一块 big.LITTLE 板就会错。
+ * 判据取自内核自己算的 /sys/devices/system/cpu/cpuN/cpu_capacity（EAS 用的同一
+ * 组数）：取最大值 maxc，凡 capacity >= maxc/2 的 CPU 计入性能集群。
+ *
+ * 阈值取得粗是**有意**的：RK3588 上两个 A76 对的 scaling_max_freq 并不相同
+ * （cpu4,5 = 2.256 GHz → capacity 1002；cpu6,7 = 2.304 GHz → 1024；A55 = 414），
+ * 按"容量相等"分组会切成 2+2 只得到 2 核，按 50% 切才干净地得到全部 4 个 A76。
+ * 同构机器（容量全相等）→ 全部入选，即用满所有核（这正是我们想要的）。
+ *
+ * 读不到 cpu_capacity（x86、老内核、容器）时返回 0，由调用方回退。
+ * 返回本次解析出的 CPU 个数；cpus 传 NULL 表示只问数量。写入不超过 cap 个。 */
+#define ST_PERF_CPU_MAX 64
+#if defined(_WIN32)
+ST_INLINE int st_perf_cpus(int *cpus, int cap) {
+    long n = st_num_cpus();
+    if (n > ST_PERF_CPU_MAX) n = ST_PERF_CPU_MAX;
+    if (cpus) for (long i = 0; i < n && i < cap; i++) cpus[i] = (int)i;
+    return (int)n;
+}
+#else
+ST_INLINE int st_perf_cpus(int *cpus, int cap) {
+    long n = st_num_cpus();
+    if (n > ST_PERF_CPU_MAX) n = ST_PERF_CPU_MAX;
+    int capv[ST_PERF_CPU_MAX];
+    int maxc = 0, k = 0;
+    for (long i = 0; i < n; i++) {
+        char path[96];
+        int v = 0;
+        snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%ld/cpu_capacity", i);
+        FILE *f = fopen(path, "r");
+        if (f) {
+            if (fscanf(f, "%d", &v) != 1) v = 0;
+            fclose(f);
+        }
+        capv[i] = v;
+        if (v > maxc) maxc = v;
+    }
+    if (maxc <= 0) return 0;              /* 无 cpu_capacity → 交由调用方回退 */
+    for (long i = 0; i < n; i++) {
+        if (capv[i] * 2 >= maxc) {
+            if (cpus && k < cap) cpus[k] = (int)i;
+            k++;
+        }
+    }
+    return k;
+}
+#endif
+
 /* ================================================================
  * 9. Stack size: RK3588/Linux main-thread stack is raised to match the
  *    large local arrays (scores[4096]...). aarch64 must NOT rely on

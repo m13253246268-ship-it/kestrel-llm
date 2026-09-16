@@ -5,6 +5,64 @@
 
 ---
 
+## 2026-09-16（可移植性）— 去掉线程池「最多 4 核」硬编码，改为按内核 cpu_capacity 推导
+
+### 0. 问题：两处 RK3588 专属假设被写进了引擎
+
+`vllm_tp_init()` 的 ARM 分支把默认线程数上限写死：
+
+```c
+nthreads = (nc > 4) ? 4 : (int)nc;   /* RK3588 A76-only default */
+```
+
+这个 `4` 是 **RK3588 的 A76 集群规模**，不是通用事实 —— 换一块 big.LITTLE 板（大核数量、编号都可能不同）就错。同一类假设还有一处：worker 亲和里 `core = 4 + (slot % 4)`，即硬编码"大核是 cpu4-7"。为了后续适配其他 ARM 设备，两处一并去掉。
+
+### 1. 改法：从内核自己的容量数推导「性能集群」
+
+新增 `st_perf_cpus()`（`include/common/vllm_platform.h`）：读 `/sys/devices/system/cpu/cpuN/cpu_capacity`（EAS 用的同一组数），取最大值 `maxc`，凡 `capacity >= maxc/2` 的 CPU 计入性能集群。**默认线程数与 worker 亲和都取自这个集合**；推导不可用时退回"全部逻辑核轮转"，而不是猜一个固定簇。
+
+**50% 这个阈值是实测逼出来的，不是拍的**：
+
+| RK3588 CPU | `cpufreq/cpuinfo_max_freq` | `cpu_capacity` |
+|---|---|---|
+| cpu0-3（A55, part `0xd05`） | 1,800,000 | 414 |
+| cpu4-5（A76, part `0xd0b`） | 2,256,000 | 1002 |
+| cpu6-7（A76, part `0xd0b`） | 2,304,000 | 1024 |
+
+同一个 A76 集群内部**并不同频**（1002 vs 1024）。所以「按容量相等分组、取最大组」只得 2 核，「按 cpufreq policy 取最高频簇」也只得 2 核（`policy6` = cpu6,7）；只有按 50% 切才干净地拿到全部 4 个 A76。同构机器（容量全相等）→ 全选，即用满所有核。
+
+### 2. 板端实测（aarch64，RK3588）
+
+```
+st_perf_cpus()  →  n_cpus=8   perf_n=4   perf_cpus=4 5 6 7
+```
+
+| 场景 | 结果 | 与旧行为 |
+|---|---|---|
+| 不设 env | `tp_threads = 4` | **不变**（推导值恰等于旧硬编码值） |
+| `OMP_NUM_THREADS=8` | `8` | 显式优先，不再被 4 卡住 |
+| `VLLM_THREADS=6` | `6` | 别名照旧生效 |
+| `VLLM_TP_BIND=1` | worker tid0/1/2 → cpu 4/5/6；caller tid3 → cpu 7 | **不变**（`{4,5,6}∪{7}` ≡ 旧 `4+(slot%4)`） |
+| 不设 `VLLM_TP_BIND` | 全核掩码（绑定默认关闭） | 不变 |
+
+构建与自检：`build_rc=0`；`--test-l3` **17 PASS / 0 SKIP / 0 FAIL**；`--test-sparse` 9 PASS / 0 FAIL；`--bench-mixed`、`--npu-selftest` 均 rc=0。x86 侧 `-fsyntax-only` rc=0，且 x86 分支的 `nc-2` 一行未动。
+
+### 3. 边界（照实标注，不夸大）
+
+- **回退不是 4**：`cpu_capacity` 读不到时（老内核 / 容器 / 裁剪过的 sysfs）回退为**全部逻辑核**。RK3588 上该文件存在、推导得 4，故板端零变化；但在没有该文件的板子上默认会吃满所有核 —— 那类设备必须用 `OMP_NUM_THREADS` 显式指定。
+- 本次**只改默认值的来源，未触碰任何计算路径**（并行仍按 idx 静态切分）。板端自检在改后二进制上复测与改前同口径。**未做端到端 `text md5` 对比**（需模型），故不主张"逐位一致"。
+- 板端二进制随之变更为 `b3c03027f2b0747b7bf338f33656c083`（920,712 B；旧 `a1b6707de9c925536df980f35aae6a1e` / 916,608 B）。**这不是位级回归** —— 差 4,104 字节来自新增的推导代码本身。
+
+### 4. 受影响文件
+
+| 文件 | 改动 |
+|---|---|
+| `include/common/vllm_platform.h` | 新增 `st_perf_cpus()` / `ST_PERF_CPU_MAX`（POSIX 读 sysfs；Windows 分支退化为"全部 CPU"） |
+| `src/core/vllm_tp.c` | 线程数默认值去掉 `>4 → 4` 上限；`tp_bind_worker` 改为在推导集合内轮转（含一次性懒解析缓存） |
+| `src/model/vllm_safetensors.c` | 两处 `st_default_threads()` 调用点注释 + `st_default_threads()` 头注释 |
+
+---
+
 ## 2026-09-16（发布面）— 板端源码树归一到 `fb3008c`；发布面核实与 GitHub 门面同步
 
 ### 0. 板端 `kestrel_pull` 已归一（并且把性能结论保住了）

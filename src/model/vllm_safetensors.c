@@ -2096,10 +2096,12 @@ static void wp_parallel_call(void (*fn)(void *ctx), void *ctx) {
     vllm_tp_parcall(fn, ctx);
 }
 
-/* Thread-count default (OMP_NUM_THREADS / VLLM_THREADS env, else 4 threads)
- * is handled by vllm_tp_init(0). RK3588 A76-only default: 4 (the A55 cluster
- * degrades the batched GEMM — measured 34 GFLOPS with 8 threads vs 72 GFLOPS
- * with 4 A76-only). Explicit OMP_NUM_THREADS wins. */
+/* Thread-count default is handled by vllm_tp_init(0): OMP_NUM_THREADS /
+ * VLLM_THREADS env wins, else aarch64 takes the size of the performance (big)
+ * cluster derived from the kernel's cpu_capacity (4 on RK3588 — the four A76;
+ * the A55 cluster degrades the batched GEMM: measured 34 GFLOPS with 8 threads
+ * vs 72 GFLOPS with the 4 A76 only). The "4" is no longer hardcoded, so other
+ * big.LITTLE boards pick their own core count. Explicit OMP_NUM_THREADS wins. */
 static void st_default_threads(void) {
     vllm_tp_init(0);
 }
@@ -15744,7 +15746,7 @@ void st_qwen_model_forward_batch(STQwenInferenceState *const *sts,
     int kv_dim = nkv * hd;  /* 1024 */
     int use_q4 = w->has_q4 && w->q4_q_weight &&
                   (st_dense_q4_first() || !w->has_q8 || !w->q8_q_weight);
-    st_default_threads();   /* RK3588: default 4x A76 (A55 degrades GEMM) */
+    st_default_threads();   /* 默认线程数 = 性能集群规模（RK3588: 4×A76；A55 拖慢 GEMM） */
     int hd8 = hd & ~7;
 
     /* Batch scratch: [nb][d] hidden/normed/residual, [nb][q_rows] q/attn,
@@ -16547,7 +16549,7 @@ int st_qwen_model_prefill_batch(STQwenInferenceState *st,
     /* Mixed precision: --prefill-q8 forces this prefill GEMM onto Q8_0 while
      * decode keeps Q4_0 (see g_st_prefill_q8). */
     const int use_q4 = w->has_q4 && (!g_st_prefill_q8 || !w->q8_q_weight);
-    st_default_threads();   /* RK3588: default 4x A76 (A55 degrades GEMM) */
+    st_default_threads();   /* 默认线程数 = 性能集群规模（RK3588: 4×A76；A55 拖慢 GEMM） */
 
     /* Phase timing accumulators (diagnostic): gemm = QKV+O+gate/up+down,
      * attn = attention, other = norms/MRoPE/KV-store/SiLU. */
