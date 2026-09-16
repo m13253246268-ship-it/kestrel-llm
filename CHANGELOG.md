@@ -80,8 +80,8 @@
 
 | 端点 | HEAD | 与本地的关系 | 工作区 |
 |---|---|---|---|
-| `_release_verify/gitee` | `81cd44b` → 本轮 `pull` 至 `4209982` | ≡ 本地 `master`（tree 逐字节相同） | `dirty=0` |
-| `_release_verify/github` | `2ed2e08b` → 本轮 `pull` 至 `f2cffd78` | ≡ 本地 `gh`（tree 逐字节相同） | `dirty=0` |
+| `_release_verify/gitee` | `81cd44b` → 与 `master` 同步 | ≡ 本地 `master`（tree 逐字节相同） | `dirty=0` |
+| `_release_verify/github` | `2ed2e08b` → `f2cffd78`，再由 `gh` 合并推进 | ≡ 本地 `gh`（tree 逐字节相同） | `dirty=0` |
 
 github 克隆原先脏 26 项（3 个 `M` + 13 个 `D tools/*` + 10 个未跟踪 `tools/<子目录>/`）——
 与 gitee 克隆当初同型（有人手工放入归档后的 tools 内容而未提交）。处理仍走"先备份再清"：
@@ -116,12 +116,14 @@ Gitee 是正式站点；若将来要以 GitHub 为主站，需单独一轮并同
 
 1. **板端源码树**：`4f1ad70` → `fb3008c`，且同路径重建**逐字节复现被验证二进制**（§0），
    §7 性能结论无需重跑。
-2. **发布快照**：`gh` 合并并推送 GitHub（`f2cffd78`），两份验证克隆各 `pull` 到与本地
-   **逐字节相同**的最新提交；旧克隆备份 `_release_verify/_superseded_20260912_gitee_github.tgz`
-   （7.0 MB）已删（两份克隆可随时重克隆，无信息损失）。
+2. **发布快照**：`gh` 合并后 `push github gh:master`（GitHub 侧 `master` 由 `2ed2e08b` 快进而来），
+   两份验证克隆各 `pull` 到与本地 **逐字节相同**的最新提交；旧克隆备份
+   `_release_verify/_superseded_20260912_gitee_github.tgz`（7.0 MB）已删
+   （两份克隆可随时重克隆，无信息损失）。
 
-上表记录的是核对当时的哈希；master 其后又前进 1 个提交（即本 CHANGELOG 提交本身），
-故收尾时两侧克隆各再 `pull --ff-only` 一次到本轮最终提交，`dirty=0`。
+上表记录的是核对**当时**的哈希，刻意不追到"最后一次提交"：写这份文档这个动作本身也会让
+`master` 前进，于是 `gh` 又落后一个提交 —— 追哈希追不完。收尾动作固定为以下三步，做完再各
+`pull --ff-only` 一次，并在**最终头**上重跑两次 `IDENTICAL` 校验。
 
 一个**不变量**取代了逐次追哈希：`gh` ≡ `make_release.py --facade github`（源自 `master`）。
 每次 `master` 有新提交后重跑以下三步即可维持：
