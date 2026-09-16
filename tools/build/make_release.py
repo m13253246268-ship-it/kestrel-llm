@@ -2,17 +2,20 @@
 # -*- coding: utf-8 -*-
 """make_release.py —— 从仓库当前提交导出「发布门面」快照
 
-为什么需要它：`_release_verify/{gitee,github}` 此前是**人肉导出**的
-（`git archive` → 拷到板端编译自检 → 回拷本机），既没有脚本、也没有把规则写下来，
-结果是两份快照世代混乱（tools 已归档、admin 三轨已在，但 ARM include 未修、
-`tok_ref_check.c` 缺、README/wiki 停在 09-12），并且导出树被 Windows 侧
-`core.autocrlf=true` 整树 CRLF 化，与仓库「逐文件全不同」——那才是"56/62 不同"的真因。
-本脚本把规则固化成一条可复现的命令。
+背景（先厘清，别搞错）：`_release_verify/{gitee,github}` **不是**导出树，而是**两份验证克隆**
+（分别 clone Gitee 与 GitHub 远程），用途是核对「站点上真正发布出去的内容」。
+而 GitHub 侧并非 master 的镜像 —— 它由本仓库的 **`gh` 门面分支**承载（GitHub 以英文作门面），
+靠定期把 master 合并进 `gh` 来维护。门面约定此前只活在提交历史里，没有可执行定义；
+本脚本把它固化成一条可复现命令：既能**生成**门面内容，也能用来**校验**
+「`gh` 分支 == master 只差这一层 i18n 互换」。
 
 规则
 ----
-1. 内容 = `git archive HEAD`，即**仅已跟踪文件**、且为**仓库内存储形态（LF）**：
-   不导出 `.git/`、构建产物（`build*/`）、`__pycache__/`、以及任何未跟踪文件。
+1. 内容 = `git -c core.autocrlf=false archive HEAD`，即**仅已跟踪文件**、且为
+   **仓库内存储形态（LF）**；不导出 `.git/`、`build*/`、`__pycache__/`、未跟踪文件。
+   （`core.autocrlf=false` 必须显式给：本仓库 `core.autocrlf=true` 且无 `.gitattributes`，
+   否则 425 个文件里会有 251 个被转成 CRLF —— 那正是历史上导出树"整树 CRLF、
+   与仓库逐文件全不同"的根因。）
 2. `gitee` 门面：原样。Gitee 是正式站点，不改写任何站点 URL。
 3. `github` 门面：**只做 i18n 互换**（GitHub 侧以英文作门面）：
        README.en.md  ->  README.md
@@ -52,13 +55,22 @@ def repo_root():
     return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 
-def export_head(root, dest):
-    """git archive HEAD -> dest（纯 stdlib 解包，LF 按仓库存储形态保留）"""
+def export_head(root, ref, dest):
+    """git archive <ref> -> dest
+
+    注意两件事：
+    1) 必须显式 `core.autocrlf=false`。本仓库 core.autocrlf=true 且无 .gitattributes，
+       否则 `git archive` 会把内容按 CRLF 导出 —— 实测 425 个文件里 251 个被转成 CRLF，
+       与仓库内 blob 的 LF 形态不一致。这正是历史上 `_release_verify` 导出树"整树 CRLF、
+       与仓库逐文件全不同"的根因。
+    2) 必须显式给 ref。若依赖 HEAD，脚本行为会随「当前检出哪个分支」而变 ——
+       在 `gh` 分支上跑 `--facade github` 会因缺 README.en.md 直接失败。
+    """
     with tempfile.NamedTemporaryFile(suffix=".tar", delete=False) as tf:
         tar_path = tf.name
     try:
-        subprocess.run(["git", "-C", root, "archive", "--format=tar",
-                        "-o", tar_path, "HEAD"], check=True)
+        subprocess.run(["git", "-C", root, "-c", "core.autocrlf=false",
+                        "archive", "--format=tar", "-o", tar_path, ref], check=True)
         with tarfile.open(tar_path, "r:") as t:
             try:
                 t.extractall(dest, filter="data")   # Python >= 3.12
@@ -104,6 +116,7 @@ def main():
     ap = argparse.ArgumentParser(description="导出发布门面快照（gitee / github）")
     ap.add_argument("--out", required=True, help="输出目录")
     ap.add_argument("--facade", required=True, choices=["gitee", "github"])
+    ap.add_argument("--ref", default="master", help="导出哪个 ref（默认 master）")
     ap.add_argument("--clean", action="store_true", help="输出目录非空时先清空")
     args = ap.parse_args()
 
@@ -115,11 +128,11 @@ def main():
         shutil.rmtree(dest)
     os.makedirs(dest, exist_ok=True)
 
-    head = subprocess.run(["git", "-C", root, "rev-parse", "HEAD"],
+    head = subprocess.run(["git", "-C", root, "rev-parse", args.ref],
                           check=True, capture_output=True, text=True).stdout.strip()
-    tree = subprocess.run(["git", "-C", root, "rev-parse", "HEAD^{tree}"],
+    tree = subprocess.run(["git", "-C", root, "rev-parse", args.ref + "^{tree}"],
                           check=True, capture_output=True, text=True).stdout.strip()
-    export_head(root, dest)
+    export_head(root, args.ref, dest)
 
     changed = []
     if args.facade == "github":
@@ -127,7 +140,7 @@ def main():
 
     n_files = sum(len(fs) for _, _, fs in os.walk(dest))
     print("[make_release] facade = %s" % args.facade)
-    print("[make_release] source = HEAD %s (tree %s)" % (head[:12], tree[:12]))
+    print("[make_release] source = %s %s (tree %s)" % (args.ref, head[:12], tree[:12]))
     print("[make_release] out    = %s" % dest)
     print("[make_release] files  = %d" % n_files)
     for name, cnt in changed:

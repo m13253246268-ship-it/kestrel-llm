@@ -5,7 +5,7 @@
 
 ---
 
-## 2026-09-16（发布面）— 板端源码树归一到 `fb3008c`；发布快照改为脚本化导出
+## 2026-09-16（发布面）— 板端源码树归一到 `fb3008c`；发布面核实与 GitHub 门面同步
 
 ### 0. 板端 `kestrel_pull` 已归一（并且把性能结论保住了）
 
@@ -22,43 +22,78 @@
    ⇒ **§7 的性能结论仍然有效，不需要重跑基准**（这一点此前是"待定"，现已闭合）。
 4. 自检：`--test-l3` **17 PASS / 0 FAIL**、`--test-sparse` 9/9、`--bench-mixed`、`--npu-selftest` 均 rc=0。
 
-### 1. 发布快照：把规则固化，重新导出
+### 1. 先弄清 `_release_verify/` 是什么（**此前对它的判断是错的**）
 
-`_release_verify/{gitee,github}` 此前是**人肉导出**（`git archive` → 拷板端编译自检 → 回拷本机），
-既没有脚本、规则也没写下来，后果有两个：
+`_release_verify/{gitee,github}` **不是"导出树"，而是两份验证克隆**：
 
-- **世代混乱**：旧快照的「tools 已归档 + admin 三轨已在 + `tools/relay` 在」与
-  「ARM include 未修 + `tools/bench/tok_ref_check.c` 缺 + README/wiki 停在 09-12」**互斥**，
-  对应不上任何单一 commit；
-- **整树 CRLF**：Windows 侧 `core.autocrlf=true` 把导出树全量 CRLF 化，
-  与仓库逐文件"全不同"——这正是此前「src+include 62 个文件里 56 个不同」的**真因**
-  （板端 `fix_crlf.sh` 当时就是为此打的补丁）。
+- `gitee/`  → clone of `https://gitee.com/pei-xiaoguang/kestrel-llm.git`（branch master）
+- `github/` → clone of `git@github.com:m13253246268-ship-it/kestrel-llm.git`（branch master）
 
-新增 `tools/build/make_release.py`，把规则固化成一条可复现命令：
+用途是核对「两个站点上**真正发布出去**的内容」。而 GitHub 侧不是 master 的镜像：它由本仓库的
+**`gh` 门面分支**承载（GitHub 以英文作门面），靠定期把 master 合并进 `gh` 来维护。
 
-| 规则 | 内容 |
+此前「快照是 09-12 世代、`src+include` 62 个文件里 56 个不同、没有 §7」的说法**主语搞错了**：
+那是这两个克隆的**工作区**与仓库的差异，且主因是 `core.autocrlf=true`（克隆在 Windows 上检出
+→ 整树 CRLF），不是任何"净化规则"；真正的落后是「克隆 HEAD 停在 `4f1ad70` / `2ed2e08b`」。
+
+### 2. Gitee 侧：已同步并验证
+
+`_release_verify/gitee` 原先停在 `4f1ad70`，且有 10 个未跟踪目录挡住 `pull`
+（09-15 有人手工放入归档后的 tools 内容而未提交）。处理：把未跟踪项移到
+`_release_verify/_untracked_bak_gitee/`（54 文件），再 `git pull --ff-only`。
+结果 `head/tree = 81cd44b / 069bc4f9…`，与本地 master **逐字节相同**，`dirty=0`。
+
+### 3. GitHub 侧：`gh` 门面分支落后 9 个提交且已分叉，本轮已合并（**尚未推送**）
+
+`gh` 与 `master` 的 merge-base 是 `4f1ad70`：`gh` 落后 9 个、master 落后 6 个。
+`git merge-tree` 预演显示冲突**只有 3 个文件**，且全部来自那次 i18n 互换本身：
+`README.en.md`（gh 侧删除=改名）、`README.md`（内容冲突）、`wiki/Home.md`（自动合并成功）。
+
+解析方式不是手工改，而是**用门面约定直接取内容**：新增 `tools/build/make_release.py`，
+把门面约定固化成可执行定义（`git -c core.autocrlf=false archive <ref>` + GitHub 侧 i18n 互换），
+用它产出目标内容来解析冲突。结果 `gh`：`2ed2e08b` → **`331800ce`**（merge 提交，**尚未 push**）。
+
+### 4. 验证（git 层面，绕开文件系统）
+
+用 `git ls-tree` / `cat-file` 逐文件比对。**刻意不经 tar 解包** —— Windows 侧 tar 会把部分
+非 ASCII 文件名改坏，我据此一度误判出「gh 有 15 个乱码名重复文件」，随后被 `gh-only = 0` 证伪
+（那 15 个是解包产物，GitHub 上并不存在）。
+
+| 比对 | 结果 |
 |---|---|
-| 内容来源 | `git archive HEAD` —— **仅已跟踪文件**，且为**仓库内存储形态（LF）**；不导出 `.git/`、`build*/`、`__pycache__/`、未跟踪文件 |
-| gitee 门面 | 原样（Gitee 是正式站点，不改写任何站点 URL） |
-| github 门面 | **只做 i18n 互换**：`README.en.md`→`README.md`、`README.md`→`README.zh-CN.md`，并同步改写 `wiki/Home.md` 的两条 README 链接 |
-| 不删内容 | `docs/bench/`（`.gitignore` 注释已声明「发布证据要随仓库分发」）与 `CHANGELOG.md` 一并导出——**与旧快照相反**（旧快照手工剔除了这两块，但 README/`MANIFEST` 又引用它们，会留下悬空引用） |
-| 不清路径 | `/mnt/...` 是面向板端的操作说明（引擎跑在 RK3588 上），不是本机路径泄露，照原样导出 |
+| `gh` 分支 ≡ `make_release.py --facade github`（425 文件） | **IDENTICAL**（ref-only 0 / facade-only 0 / content-diff 0） |
+| `master` ≡ `make_release.py --facade gitee`（425 文件） | **IDENTICAL**（同上） |
+
+即：门面约定被脚本 **完整** 刻画，`gh` 的合并结果与 master 只差那一层 i18n 互换。
+
+### 5. 顺带修掉脚本自身的两个 bug（都是实测踩出来的）
+
+| bug | 现象 | 修法 |
+|---|---|---|
+| `git archive` 未关 `autocrlf` | 门面 425 个文件里 **251 个被转成 CRLF**，与仓库 blob 的 LF 不符 —— 这正是历史上"导出树与仓库逐文件全不同"的真因 | 显式 `-c core.autocrlf=false` |
+| 隐式依赖 `HEAD` | 在 `gh` 分支上跑 `--facade github` 会因缺 `README.en.md` 直接失败，gitee 门面也会取错源 | 新增 `--ref`（默认 `master`） |
 
 用法：
 
 ```bash
-python3 tools/build/make_release.py --out <目录>/gitee  --facade gitee  --clean
-python3 tools/build/make_release.py --out <目录>/github --facade github --clean
+python3 tools/build/make_release.py --out <目录>/gitee  --facade gitee  --ref master --clean
+python3 tools/build/make_release.py --out <目录>/github --facade github --ref master --clean
 ```
 
-### 2. 两处「已做 / 未做」的澄清（避免误当成净化）
+### 6. 一处「刻意保留」的澄清（避免误当成净化）
 
-- `vllm_shs` 在旧快照残留 17 处，其中 **15 处是刻意保留的历史证据**
-  （`wiki/性能与基准.md` 6、`wiki/优化配置与边界.md` 3、`tools/bench/bench_value.sh` 3、
-  `tools/bench/bench_http_probe.py` 2、`tools/preproc/_g256_conv.py` 1 —— v0 时期二进制名与板端旧路径），
-  另 2 处（`tools/drivers/README*.md` 的引擎名）随 `0a77753` 改为 `vllm_kestrel`。
-- GitHub 侧 wiki 链接**仍指向 Gitee**（`pei-xiaoguang` 126 处）：**未做** URL 改写。
-  若将来要以 GitHub 为主站，需单独一轮并同步改 `README` / `CONTRIBUTING` / `.github` 模板。
+`vllm_shs` 在发布面残留 15 处是**刻意保留的历史证据**（`wiki/性能与基准.md` 6、
+`wiki/优化配置与边界.md` 3、`tools/bench/bench_value.sh` 3、`tools/bench/bench_http_probe.py` 2、
+`tools/preproc/_g256_conv.py` 1 —— v0 时期二进制名与板端旧路径）；另 2 处（`tools/drivers/README*.md`
+的引擎名）已随 `0a77753` 改为 `vllm_kestrel`。GitHub 侧 wiki 链接**仍指向 Gitee**（未做 URL 改写）：
+Gitee 是正式站点；若将来要以 GitHub 为主站，需单独一轮并同步改 `README` / `CONTRIBUTING` / `.github` 模板。
+
+### 7. 待办
+
+- `gh` 的 merge（`331800ce`）**本地就绪但未推送 GitHub**；推送后还需再 `pull` 一次
+  `_release_verify/github` 才算闭环。
+- `_release_verify/_superseded_20260912_gitee_github.tgz`（7.0 MB）是旧克隆工作区的备份，
+  确认无误后可删。
 
 ---
 
