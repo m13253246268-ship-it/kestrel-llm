@@ -241,7 +241,7 @@ static void test_inference_pipeline(void) {
         .ntt_order = 1024,
     };
 
-    vllm_shs_init(&config);
+    vllm_kestrel_init(&config);
 
     /* Create test requests */
     RequestScheduler sched;
@@ -286,7 +286,7 @@ static void test_inference_pipeline(void) {
     clock_t start = clock();
 
     for (int step = 0; step < 5; step++) {
-        vllm_shs_generate(&g_kvcache, &sched, tokens, &num_tokens);
+        vllm_kestrel_generate(&g_kvcache, &sched, tokens, &num_tokens);
 
         int running = 0, finished = 0;
         for (int i = 0; i < sched.num_requests; i++) {
@@ -301,7 +301,7 @@ static void test_inference_pipeline(void) {
     double elapsed = (double)(end - start) / CLOCKS_PER_SEC;
     printf("[PASS] Inference pipeline: 5 steps in %.3f seconds\n", elapsed);
 
-    vllm_shs_cleanup();
+    vllm_kestrel_cleanup();
 }
 
 /* ================================================================

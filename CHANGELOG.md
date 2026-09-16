@@ -5,6 +5,84 @@
 
 ---
 
+## 2026-09-16（收尾）— 修复：`d91c18d` 夹带旧世代命名，导致 x64 断链
+
+### 0. 问题
+
+`d91c18d`（本轮 L3 改动那次提交）在提交 `src/main.c` / `src/serve/vllm_server.c` /
+`src/model/vllm_safetensors.c` 时，把工作副本里**未提交的旧世代命名**一并带了进去 ——
+这 3 个文件里的引擎符号被写成 `vllm_shs_*`，而定义方
+（`include/core/vllm_superpos.h`、`src/core/vllm_scheduler.c`）仍是 `vllm_kestrel_*`。
+
+**后果：`HEAD` 链不起来。** 实测（x86 MinGW，`tools/build/build_x64.ps1`）：
+
+```
+undefined reference to `vllm_shs_init'
+undefined reference to `vllm_shs_generate'
+undefined reference to `vllm_shs_cleanup'
+collect2.exe: error: ld returned 1 exit status
+```
+
+该提交已推送 gitee，即远程源码一度处于不可链接状态。
+
+### 1. 为什么回改到 `vllm_kestrel`（而不是把引擎改名为 `vllm_shs`）
+
+| 判据 | 结论 |
+|---|---|
+| 仓库**首个提交** `63cba68`（2026-09-05） | 标题即 `feat: 发布 Kestrel (vllm_kestrel) …（双许可）`；仓库从第一天就用 kestrel |
+| 板端被验证的源码树 / 二进制 | `/mnt/emmc/kestrel_pull`，二进制名 `vllm_kestrel`（md5 `a1b6707d…`），其 `main.c` 用 `vllm_kestrel_init` |
+| 签名绑定 | `include/model/vqf_format.h` 的 `VQF_SM2_ID = "vllm-kestrel-vqf"` 是 SM2 的 Z_A 绑定串，已发布 VQF 权重按此 ID 签名 |
+| 全部文档与 harness | README / README.en / wiki / 归档 harness（`kv2_run2.sh`、`moe8k.sh`）一律 kestrel |
+| `vllm_shs` 的实际分布 | 只在**本地未提交的工作副本**（12 个文件）与 2026-09-07 的源码备份 `备份/ARM_SRC_20260907_V0`（该备份 0 处 kestrel），与仓库时间线无关 |
+
+### 2. 改动：只回改行为性/对外可见的 9 处
+
+| 文件 | 处数 | 性质 |
+|---|---|---|
+| `src/main.c` | 3 | `vllm_shs_init/_generate/_cleanup` → `vllm_kestrel_*`（**修链**） |
+| `src/serve/vllm_server.c` | 5 | `owned_by`、响应 `id`、`/health` 的 `server` 三个对外串 + 2 处注释 |
+| `src/model/vllm_safetensors.c` | 1 | 注释里的基准二进制名 `vllm_shs_x64` → `vllm_kestrel_x64`（与板端同一行一致） |
+
+**刻意保留不改**（历史证据，改了反而不准）：`wiki/性能与基准.md`(6) 与 `wiki/优化配置与边界.md`(3)
+里 v0 时期（2026-09-05 测点）的 `./vllm_shs` 命令；`tools/bench/bench_value.sh`(3)、
+`tools/bench/bench_http_probe.py`(2)（板端同款，且探针已同时兼容两个名字）；
+`tools/preproc/_g256_conv.py`(1)（板端旧路径的一次性转换命令）。
+
+**未改动 `VQF_SM2_ID`**：工作副本把它改成了 `"vllm-shs-vqf"`，这会让已签名 VQF **验签失败**（功能性
+改动，非改名）。它随同批旧世代命名一并丢弃。
+
+### 3. 同时丢弃的旧世代改动（未提交）
+
+`git checkout --` 回退 13 个文件：`include/common/vllm_platform.h`、`include/core/vllm_superpos.h`、
+`include/model/vqf_format.h`、`include/npu/vllm_npu.h`、`include/serve/embedded_web.h`、
+`include/serve/vllm_server.h`、`src/common/vllm_crypto.c`、`src/core/vllm_scheduler.c`、
+`src/npu/vllm_npu.c`、`src/serve/admin.html`、`src/serve/chat.html`、`src/serve/embedded_web.c`、
+`src/serve/vllm_admin.c`。
+
+另 5 个文件（`include/core/vllm_ep.h`、`include/model/vqf.h`、`src/core/vllm_ep.c`、
+`src/core/vllm_tp.c`、`src/model/vqf.c`）经 `git hash-object --no-filters` 比对与 `HEAD` **逐字节相同**，
+`git status` 里的 ` M` 只是 `core.autocrlf=true` 的行尾口径噪声，无需处理。
+
+回退前已把全部工作区改动导出为 patch：`.tmp_tok/l3prof/pre_tidy_worktree.patch`（2.94 MB，可回放）。
+
+### 4. 验证
+
+| 项 | 结果 |
+|---|---|
+| 反向验证（换回 HEAD 版 `main.c`） | x64 链接失败，报上述 3 条 `undefined reference`，无产物 |
+| 修复后构建 | `vllm_kestrel_x64.exe` 1,236,786 B，md5 `742fb4e28de8ea33f34623343c102112`；日志中 `error:` / `undefined reference` **零条** |
+| `check_x64.ps1` | **`X64 CHECK PASSED`**（构建 + `--test-l3` 16 PASS + 1 SKIP(NEON) / **0 FAIL** + `--test-sparse` 9/9） |
+
+### 5. 已知遗留
+
+- **板端源码树仍停在 `4f1ad70`**，未同步 `0ac05cc` 的 tools 目录归档（板端 `tools/` 仍是扁平结构）。
+  本次修复不需要动板端（板端本就使用 kestrel），但这条「仓库 vs 板端」的世代差需单独处理 ——
+  此前「板端树 = 仓库」的说法对 `src/main.c` 及 tools 路径并不成立。
+- 仓库外的散落工作副本（`d:\项目\New_vLLM\src`、`d:\项目\New_vLLM\tools`）仍带旧世代命名，
+  不在本仓库范围内，未处理。
+
+---
+
 ## 2026-09-16（下半场）— 30B-A3B MoE 8K 上下文可行性验证（组合⑤）
 
 ### 0. 这一轮要回答的问题

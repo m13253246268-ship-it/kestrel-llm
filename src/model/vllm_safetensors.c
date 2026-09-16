@@ -12536,7 +12536,7 @@ static void st2_gu_cb512(const __m256i *Lv, const __m256i *Hv, const st2_ctx *c,
      * ① 只能收**副本的指针**，绝不能把调用方的 `L`/`H` 数组直接传进来：`L[]` 一旦
      *    逃逸到这个不可内联的函数，GCC 就不再把 `L[ri]`/`H[ri]` 留在寄存器（原
      *    基线的 `&L[0]` 是传给 `static inline` 的 `actq_unpack256s`，GCC 看得穿），
-     *    默认 AVX2 路径凭空慢 ~4.6%（`vllm_shs_x64` 对 `pre950` 交叉对照实测）。
+     *    默认 AVX2 路径凭空慢 ~4.6%（`vllm_kestrel_x64` 对 `pre950` 交叉对照实测）。
      * ② 也**不能改成 8 个 `__m256i` 形参按值传**：本函数带 `target("avx512f")`，
      *    GCC 在 AVX-512 下把向量形参改走 ZMM 寄存器，而调用方没开 AVX-512、仍按
      *    基础 ABI 用隐藏指针传 → **ABI 不匹配，进函数即崩**（实测 prefill 首步崩）。

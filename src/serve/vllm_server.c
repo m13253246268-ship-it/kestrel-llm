@@ -1,5 +1,5 @@
 /* ================================================================
- * vllm_server.c - OpenAI-compatible API server for vllm_shs
+ * vllm_server.c - OpenAI-compatible API server for vllm_kestrel
  *
  * Routes /v1/models, /health and /v1/chat/completions (with SSE
  * streaming) against the engine's Qwen inference state.
@@ -748,7 +748,7 @@ static void handle_models(VLLMServerCtx *ctx, VHttpResponse *resp) {
     vjson_obj_set(m, "id", vjson_new_string(ctx->model_id ? ctx->model_id : "qwen3-vl-8b"));
     vjson_obj_set(m, "object", vjson_new_string("model"));
     vjson_obj_set(m, "created", vjson_new_number((double)unix_now()));
-    vjson_obj_set(m, "owned_by", vjson_new_string("vllm_shs"));
+    vjson_obj_set(m, "owned_by", vjson_new_string("vllm_kestrel"));
     vjson_array_push(data, m);
     vjson_obj_set(root, "data", data);
     size_t n = vjson_serialize(root, body, 2048);
@@ -3124,7 +3124,7 @@ static char *anthropic_from_openai(VLLMServerCtx *ctx, const char *openai_body) 
     const char *fr = ch ? vjson_str(vjson_obj_get(ch, "finish_reason")) : NULL;
     const char *stop_reason = (fr && strcmp(fr, "length") == 0) ? "max_tokens" : "end_turn";
     int in_tok = 0, out_tok = 0;
-    /* vllm_shs 的 OpenAI 响应把指标放在顶层 "metrics"（usage 是空对象）。 */
+    /* vllm_kestrel 的 OpenAI 响应把指标放在顶层 "metrics"（usage 是空对象）。 */
     const VJson *met = vjson_obj_get(j, "metrics");
     if (met) {
         const VJson *mj = vjson_obj_get(met, "prompt_tokens");
@@ -3141,7 +3141,7 @@ static char *anthropic_from_openai(VLLMServerCtx *ctx, const char *openai_body) 
         }
     }
     VJson *root = vjson_new_object();
-    vjson_obj_set(root, "id", vjson_new_string("msg_vllm_shs"));
+    vjson_obj_set(root, "id", vjson_new_string("msg_vllm_kestrel"));
     vjson_obj_set(root, "type", vjson_new_string("message"));
     vjson_obj_set(root, "role", vjson_new_string("assistant"));
     vjson_obj_set(root, "model", vjson_new_string(ctx->model_id ? ctx->model_id : "qwen3-vl-8b"));
@@ -3442,7 +3442,7 @@ static void server_handler(const VHttpRequest *req, VHttpResponse *resp,
     } else if (strcmp(req->path, "/chat") == 0 || strcmp(req->path, "/chat/") == 0) {
         handle_chat_page(resp);
     } else if (strcmp(req->path, "/") == 0) {
-        static const char info[] = "{\"status\":\"ok\",\"server\":\"vllm_shs\"}";
+        static const char info[] = "{\"status\":\"ok\",\"server\":\"vllm_kestrel\"}";
         resp->status = 200;
         resp->content_type = "application/json";
         resp->body = info;
