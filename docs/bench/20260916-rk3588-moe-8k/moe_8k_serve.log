@@ -1,0 +1,77 @@
+  vLLM-Kestrel: Axiom-Guided Exact-Attention         
+  Large Language Model Inference Engine          
+
+[DEV] device overridden: arm-rk3588-opi5 -> RK3588 香橙派 5（ARM 嵌入式）
+[DEV] device=arm-rk3588-opi5 arch=arm64 class=embedded model=RK3588 OPi 5 Plus npu=rk3588-direct recommended_wmode=dual
+[RES] defaults: idle_plan=300s/900s/1800s/3600s w_keep=8 soft=0MB low_lvl=0
+[SERVE] auto-load: loading model /mnt/VQF/qwen3-30B-A3B-q4 (wmode=0)
+[VQF] MoE v3: experts=128 top_k=8 moe_ffn=768 shared=0 ffn_dim=98304 router=48.0MB (f32 resident) experts=q4
+[VQF-STREAM] enabled keep=1 nl=48 segs=11 per-layer=334.1MB data=16847.2MB resident~808.4MB rss=988kB
+[M-A] VQF loaded: /mnt/VQF/qwen3-30B-A3B-q4/model.vqf
+[SERVE] model=/mnt/VQF/qwen3-30B-A3B-q4 dim=2048 layers=48 heads=32 ff=98304 vocab=151936 max_seq=8192
+[TOK] Loaded 151669 tokens from vocab.bin (max_len=256)
+[TOK] match mode: indexed (slots=524288, 2.0 MB, load=0.29)
+[TOK] Special tokens: bos=151643 eos=151645 im_start=151644 im_end=151645 pad=151643
+[SERVE] tokenizer: 151669 tokens (eos=151645 im_end=151645)
+[M-B] tokenizer loaded
+[QWEN] Inference state ready (max_seq=8192).
+[SERVE] inference state ready (max_seq=8192, kv_bs=32)
+[M-T] model load took 180 ms (startup time)
+[SERVE] model ready: /mnt/VQF/qwen3-30B-A3B-q4 (wmode=0, vision=0)
+[OPT] prefix_kv=1 disk_kv=0 sparse_attn=1 sparse_k=32 sparse_block=32 sparse_probe=8 l3_evict=1 l3_prefix_reuse=1 | sparse 剪枝阈值: seq_len > 1024
+
+  [SERVE] OpenAI-compatible API listening on http://0.0.0.0:19200
+  [SERVE] 管理入口: http://0.0.0.0:19200/admin/   (管理页 admin.html)
+  [SERVE] 对话入口: http://0.0.0.0:19200/chat    (对话页 chat.html)
+          GET  /v1/models
+          GET  /health
+          POST /v1/chat/completions  (stream=true SSE supported)
+          POST /v1/completions
+          workers=4 queued_max=16 free_ram_min=512 MB
+[PREFILL] 53/53 tokens done
+[PREFILL-TIMING] n=53 total=213306.3ms | GEMM=213028.6ms(99.9%) ATTN=155.7ms( 0.1%) OTHER=122.0ms( 0.1%)
+[PREFILL-KERNELS] QKV=3980.9ms( 1.9%) O=3147.1ms( 1.5%) GATEUP=205900.7ms(96.7%) DOWN=0.0ms( 0.0%)
+[L3] skipped: seq=53 < l3-min-seq=128 (KV stays in RAM)
+[ACTQ] VLLM_ACTQ=1: q4 MoE int8-dot approximate track ON (l=0, d=2048 nbG=64)
+[KV-PREFIX] L3 restored 0 block(s) for 39-token prefix
+[KV-PREFIX] reuse 39-token KV prefix, prefill rest
+[PREFILL] 256/7178 tokens done
+[PREFILL] 512/7178 tokens done
+[PREFILL] 768/7178 tokens done
+[PREFILL] 1024/7178 tokens done
+[PREFILL] 1280/7178 tokens done
+[PREFILL] 1536/7178 tokens done
+[PREFILL] 1792/7178 tokens done
+[PREFILL] 2048/7178 tokens done
+[PREFILL] 2304/7178 tokens done
+[PREFILL] 2560/7178 tokens done
+[PREFILL] 2816/7178 tokens done
+[PREFILL] 3072/7178 tokens done
+[PREFILL] 3328/7178 tokens done
+[PREFILL] 3584/7178 tokens done
+[PREFILL] 3840/7178 tokens done
+[PREFILL] 4096/7178 tokens done
+[PREFILL] 4352/7178 tokens done
+[PREFILL] 4608/7178 tokens done
+[PREFILL] 4864/7178 tokens done
+[PREFILL] 5120/7178 tokens done
+[PREFILL] 5376/7178 tokens done
+[PREFILL] 5632/7178 tokens done
+[PREFILL] 5888/7178 tokens done
+[PREFILL] 6144/7178 tokens done
+[PREFILL] 6400/7178 tokens done
+[PREFILL] 6656/7178 tokens done
+[PREFILL] 6912/7178 tokens done
+[PREFILL] 7168/7178 tokens done
+[PREFILL] 7178/7178 tokens done
+[PREFILL-TIMING] n=7178 total=781829.9ms | GEMM=523834.2ms(67.0%) ATTN=251126.6ms(32.1%) OTHER=6869.1ms( 0.9%)
+[PREFILL-KERNELS] QKV=34534.9ms( 6.6%) O=29591.8ms( 5.6%) GATEUP=459707.5ms(87.8%) DOWN=0.0ms( 0.0%)
+[L3] evicted 8112 blocks -> /mnt/emmc/moe8k_l3_u65bbfe41 (cursor=158.44 MB, seq=7217, keep=39, ratio=0.75, packed_now=8112, total_packed=8112), freed 1267.5 MB from RAM
+[L3] restored 8112 prefix blocks from Q4 payload (prefix=7212)
+[KV-PREFIX] L3 restored 8112 block(s) for 7212-token prefix
+[KV-PREFIX] reuse 7212-token KV prefix, prefill rest
+[PREFILL] 23/23 tokens done
+[PREFILL-TIMING] n=23 total=17057.7ms | GEMM=14840.0ms(87.0%) ATTN=2199.2ms(12.9%) OTHER=18.5ms( 0.1%)
+[PREFILL-KERNELS] QKV=204.0ms( 1.4%) O=168.9ms( 1.1%) GATEUP=14467.1ms(97.5%) DOWN=0.0ms( 0.0%)
+[L3] incremental: retain state (packed_total=8112, cursor=158.44 MB)
+[L3] evicted 8160 blocks -> /mnt/emmc/moe8k_l3_u65bbfe41 (cursor=159.38 MB, seq=7235, keep=7212, ratio=0.75, packed_now=48, total_packed=8160), freed 1275.0 MB from RAM

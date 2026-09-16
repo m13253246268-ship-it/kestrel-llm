@@ -1,0 +1,95 @@
+20260916 RK3588 长上下文「权重公平 A/B」复测（修复后二进制）原始数据归档
+==============================================================================
+口径全文：README.md 第 7 节（英文 README.en.md §7）/ wiki/性能与基准.md 第 6 节
+本目录只放原始产物，结论与解读一律以上述两处为准，此处不重复、不改数。
+
+本轮与上一轮（20260915 目录）的关系
+------------------------------------------------------------------------------
+上一轮本版二进制 md5_exe = 71f8f53e…；本轮换成修复后二进制 a1b6707d…
+（tokenizer 词表索引 + L3 驱逐整块落盘 + L3 回填 NEON 内核）。
+2K / 4K / 8K 三档的**两侧**数据都在本轮同一会话内重测（仍交错、每 arm 前 drop_caches），
+故这三档可整体替换上一轮；**16K 档本轮未复测**，README/wiki 中该行标 ※ 并沿用上一轮值。
+
+口径偏差（照实记录，不改数）
+------------------------------------------------------------------------------
+* 8K（segs=600）**只跑 2 轮**（第 3 轮按用户指示提前停止）；2K / 4K 各 3 轮。
+  停止动作与时间戳见 harness/kv2_stop_after_r2.sh 与 stop 日志；summary.txt 末尾有
+  `NOTE_STOP=…` 一行留证。
+* 16K 档未跑，因此 VQF 头的 max_seq 全程未改（保持在 8192）。
+
+平台
+------------------------------------------------------------------------------
+RK3588 / Orange Pi 5 Plus，4x A76 + 4x A55，RAM 15.6~15.9 GB，governor=performance
+两侧均 4 线程（--threads 4 / llama.cpp -t 4 -ngl 0）
+每个 arm 启动前 sync; echo 3 > /proc/sys/vm/drop_caches，随后打一发丢弃用预热请求
+
+权重与可执行文件留证
+------------------------------------------------------------------------------
+md5_exe  = a1b6707de9c925536df980f35aae6a1e   本轮引擎 vllm_kestrel
+md5_gguf = 96fb8a5e2281e965c86baf7c97482b5f   llama.cpp 侧 qwen3vl8b-q4_0.gguf（Q4_0 4.50 bpw）
+md5_vqf  = b6d8d1d7b46fd72225413d41c75eb59f   本版 VQF（约 4.25 bpw，group-16 Q4）
+
+  ⚠ harness 缺陷说明：kv2_run2.sh 原版在写 md5 缓存前没有 `mkdir -p /tmp/kv2`，
+  导致重定向失败、三方 md5 从未进入 summary.txt。本轮的 summary.txt 因此**不含 md5 行**，
+  上述三个值是本轮**开测前**（md5_vqf、md5_gguf）与**本轮所用二进制**（md5_exe）实测，
+  且这些文件在整轮测试期间未被改动（未跑 16K ⇒ 未改 VQF 头）。该缺陷已在
+  harness/kv2_run2.sh 中修复（新增一行 `mkdir -p /tmp/kv2`）。
+
+目录
+------------------------------------------------------------------------------
+【根目录】2K / 4K / 8K 三档（SEGS=165,330,600；R=3 / 3 / 2）
+vllm_s{1,0}_{165,330,600}_r{1,2,3}[_t{1,2,3}].json/.log   本版逐层(s1)/全层(s0) 各轮
+llama_{165,330,600}_r{1,2,3}[_t{1,2,3}].json/.log         llama.cpp 各轮
+summary.txt     每轮 total_s / rss_kb / hwm_kb + 引擎侧关键日志行 + NOTE_STOP 偏差留证
+REPORT.txt      harness/kv2_sum2.py 汇总（增量 token 口径成对表 + 复用轮 + 峰值内存）
+harness/        产生上述数据的板端脚本（原样归档）
+【16k-tier/】16K 档（SEGS=1300 ≈ 15.6K token；**1 轮**，第 2 轮按需提前停止）
+  同命名规则：vllm_s{1,0}_1300_r1[_t{1,2,3}].*、llama_1300_r1[_t{1,2,3}].*、
+  summary.txt（含三方 md5 行 + NOTE_STOP）、REPORT.txt
+  ⚠ 本档 governor = **ondemand**（根目录三档为 performance），见 README §7 边界一节
+  ⚠ 该档跑前用 tools/bench/patch_vqf_max_seq.py --set 20480 抬过 VQF 头，跑完已 --restore 回滚并自证
+     （md5 b6d8d1d7… -> f8ca1002… -> b6d8d1d7…，详见 harness 侧 chain16k 日志流程）
+
+文件命名
+------------------------------------------------------------------------------
+{arm}_{tag}_r{round}.log           该 arm 该轮引擎日志，关键行为证据在此
+{arm}_{tag}_r{round}_t{turn}.json  单次请求的原始响应（含 metrics / timings）
+arm：llama        = llama.cpp llama-server（-t 4 -ngl 0，默认前缀缓存）
+     vllm_s1      = 本版逐层（VLLM_VQF_STREAM=1）
+     vllm_s0      = 本版全层
+tag：165 / 330 / 600 = 提示词长文重复段数，实测 prompt 约 1997 / 3977 / 7217 token
+     （README §7 记作 2.0K / 4.0K / 7.2K）
+turn：1 = 首次整段 prefill（本版为整段；turn2/3 为前后缀追加追问，两侧均命中前缀复用）
+      ⚠ turn* total_s 含 decode 时间（本版 40~64 token，llama.cpp 常 6~17 token），
+        故「复用轮时延」一律取响应里的 metrics.prefill_ms（kv2_sum2.py 已如此处理）
+
+harness/ 内容
+------------------------------------------------------------------------------
+kv2_run2.sh           主测试脚本（参数化 SEGS/ROUNDS/TAG/ENGINES/STREAMS；含 arm 启停、
+                      drop_caches、预热丢弃）。**已修复 md5 缓存目录缺失的缺陷**
+kv2_sum2.py           汇总器：解析各轮 json + summary.txt，输出 REPORT.txt（增量 token 口径）
+kv2_chain.sh          自主收尾链：等 full 结束→汇总→抬 max_seq→跑 16K→回滚→汇总 16K
+                      （本轮的 16K 段因用户指示在 8K 第 2 轮后停机而未执行）
+kv2_stop_after_r2.sh  停机看门狗：掐断 kv2_chain.sh，等 8K r2 最后一个 arm 收尾后杀掉
+                      kv2_run2.sh 与两侧引擎，追加 NOTE_STOP，并生成 REPORT.txt
+patch_vqf_max_seq.py  VQF 头 max_seq 读写（--dump/--set N/--restore），与仓库
+                      tools/bench/patch_vqf_max_seq.py 同一份
+
+复现步骤
+------------------------------------------------------------------------------
+0. 注意：kv2_run2.sh 的位置参数顺序为  <SEGS> <ROUNDS> <TAG> [ENGINES] [STREAMS]，
+   SEGS 是**逗号分隔**列表。（20260915 目录的 MANIFEST 曾把顺序写错，特此更正。）
+1. 上传 harness/ 到板端同目录，跑前确认两侧权重 md5 与本文件一致
+2. 2K/4K/8K：sh harness/kv2_run2.sh "165,330,600" 3 full_v2 "vllm,llama" "1,0"
+   （结果落 /mnt/emmc/kv2_full_v2/，L3 目录 /mnt/emmc/kv2_l3_full_v2/）
+   若要复现「8K 只跑 2 轮」，另起 harness/kv2_stop_after_r2.sh 作看门狗
+3. 16K：先 python3 tools/bench/patch_vqf_max_seq.py --set 20480 <model.vqf>
+        再 sh harness/kv2_run2.sh 1300 1 16k_v2 "vllm,llama" "1,0"
+        测完用 --restore 回滚
+4. 汇总：python3 harness/kv2_sum2.py <结果目录>
+
+入库完整性（md5，本地归档 == 板端原文件，2026-09-16 入库时核对）
+------------------------------------------------------------------------------
+eaff5c22e574bf96a6665713e67428c8  summary.txt
+f5d9c939669b1b8bd232a6eb9df30555  REPORT.txt
+7dfc7f667542fa8999bbdb43ff02b68d  harness/kv2_run2.sh（含本轮 mkdir 修复）

@@ -25,6 +25,19 @@ typedef struct {
     char  *str_data;      /* contiguous string storage */
     int    max_str_len;   /* longest token string in bytes */
 
+    /* ---- 词表索引：把"每个位置全量扫 vocab_size 条"降到 O(最长 token 字节数) ----
+     * 键 = token 字节串，值 = 该串的**最小** token id —— 与旧的线性扫描
+     * （严格 `tlen > best_len` 比较 ⇒ 等长时先出现者胜 = 最小 id）逐位一致。
+     * 开放寻址 int 表：0 = 空槽，槽内存 id+1（id 0 是合法 token，不能用 0 当空）。
+     * first_maxlen[b] = 首字节为 b 的最长 token 字节数，用于把"逐长度回退"的
+     * 起点收紧（中文 token 多在 1~3 字节，不必从 max_str_len 一路试下来）。 */
+    int   *vocab_tab;
+    int    vocab_tab_mask;
+    int    first_maxlen[256];
+    /* 1 = 强制走旧线性扫描（env VLLM_TOK_LINEAR=1）。仅用于位级回归对照：
+     * 索引路径与线性路径对同一输入必须产出完全相同的 id 序列。 */
+    int    tok_linear;
+
     /* Special token IDs */
     int    bos_id;
     int    eos_id;

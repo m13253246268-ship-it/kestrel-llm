@@ -906,6 +906,11 @@ void l3_evict_after_prefill(STQwenInferenceState *st, int keep_lcp, int incremen
     STL3State *l3 = &st->l3;
     int diag = l3_diag_on();
     long rss_enter = diag ? l3_diag_rss_kb() : -1;
+    /* VLLM_L3_PROF=1：本函数即"驱逐阶段"，逐段计时，出口打一行 [L3-PROF]。
+     * 早退路径（不驱逐 / 打不开文件）也打，便于对齐"这一跳为什么没开销"。 */
+    int prof = l3_prof_on();
+    double t_phase = 0.0;
+    if (prof) { l3_prof_reset(); t_phase = l3_prof_now(); }
     /* VLLM_L3_MADV=1：evict 释放前先对块做 MADV_DONTNEED（对比档）——
      * 验证残余棘轮是否因 munmap 单独回收滞后，而显式 DONTNEED 丢弃页可即时回落。 */
     static int g_l3_madv = -1;
@@ -958,6 +963,7 @@ void l3_evict_after_prefill(STQwenInferenceState *st, int keep_lcp, int incremen
                                                 st->cfg.n_kv_heads,
                                                 st->cfg.head_dim, st->kv_bs,
                                                 capacity);
+    L3P_T0(t_init);
     uint8_t *pm = NULL;
     size_t pc = 0;
     if (retain) {
@@ -994,6 +1000,7 @@ void l3_evict_after_prefill(STQwenInferenceState *st, int keep_lcp, int incremen
         fprintf(stderr, "[L3] skipped: seq=%d < l3-min-seq=%d (KV stays in RAM)\n",
                 seq_len, g_l3_min_seq);
         free(pm);   /* P1：本轮不驱逐，摘出的镜像不再复用，交还堆 */
+        if (prof) l3_prof_report("l3-evict(skip)", l3_prof_now() - t_phase);
         return;
     }
     if (!retain) {
@@ -1003,10 +1010,12 @@ void l3_evict_after_prefill(STQwenInferenceState *st, int keep_lcp, int incremen
                                 st->cfg.head_dim, st->kv_bs, capacity,
                                 pm, pc) != 0) {
             fprintf(stderr, "[L3] eviction skipped: cannot open %s\n", l3path);
+            if (prof) l3_prof_report("l3-evict(open-fail)", l3_prof_now() - t_phase);
             return;
         }
         pm = NULL; pc = 0;   /* 所有权已转移给 l3（后续早退不得再 free） */
     }
+    L3P_ACC(t_init, ev_init_s);
 
     /* evict 是每轮瞬态标记：先全清（含 b >= n_blocks 的尾部块），再由
      * l3_evict_layer 置位。 */
@@ -1027,6 +1036,7 @@ void l3_evict_after_prefill(STQwenInferenceState *st, int keep_lcp, int incremen
             }
     }
     int round_packed = 0;
+    L3P_T0(t_layer);
     for (int l = 0; l < nl; l++) {
         if (st->k_cache && st->k_cache[l]) {
             round_packed += l3_evict_layer(l3, l, st->k_cache[l], st->v_cache[l],
@@ -1043,6 +1053,7 @@ void l3_evict_after_prefill(STQwenInferenceState *st, int keep_lcp, int incremen
                                               st->kv_bs, st->cfg.n_kv_heads);
         }
     }
+    L3P_ACC(t_layer, ev_evictlayer_s);
 
     /* Mirror the payload into RAM so sparse decode serves evicted blocks from
      * memory: no FILE I/O in the decode hot path (the shared-fp fseek/fread
@@ -1101,6 +1112,7 @@ void l3_evict_after_prefill(STQwenInferenceState *st, int keep_lcp, int incremen
                 (res_f32 + res_q8) / 1048576.0);
         fflush(stderr);
     }
+    L3P_T0(t_free);
     for (int l = 0; l < nl; l++) {
         float **kfl = st->k_cache ? st->k_cache[l] : NULL;   /* P3/P2: nof32 无 f32 块 */
         float **vfl = st->v_cache ? st->v_cache[l] : NULL;
@@ -1138,12 +1150,14 @@ void l3_evict_after_prefill(STQwenInferenceState *st, int keep_lcp, int incremen
             }
         }
     }
+    L3P_ACC(t_free, ev_free_s);
     fprintf(stderr, "[L3] evicted %d blocks -> %s (cursor=%.2f MB, seq=%d, "
                     "keep=%d, ratio=%.2f, packed_now=%d, total_packed=%d), "
                     "freed %.1f MB from RAM\n",
             round_evict, l3path, (double)l3->wcursor / 1048576.0, seq_len,
             keep_lcp, g_l3_ratio, round_packed, l3->evicted,
             (double)freed_bytes / 1048576.0);
+    if (prof) l3_prof_report("l3-evict", l3_prof_now() - t_phase);
     if (diag) {
         fprintf(stderr, "[L3-DIAG] evict exit rss=%ld kB "
                         "(enter %ld kB, delta %ld kB)\n",
@@ -3940,6 +3954,25 @@ static int vllm_serve_main(int port, const char *model_dir_arg, int auto_load) {
         printf("[SERVE] manual-load mode: model NOT loaded yet. Open "
                "http://0.0.0.0:%d/admin/ and press \"加载模型\".\n", port);
         fflush(stdout);
+    }
+
+    /* 插桩：一次性打印长上下文链路的**有效**取值。用来把三种情况分开：
+     *   1) 参数没挂上 / 被别处复位（如 C 案例 --l3-evict 缺 --sparse-attn 被 skip）；
+     *   2) 挂上了但当前上下文太短 —— top-k 只在 KV 块数 > sparse_k 时才剪枝，
+     *      阈值约 seq_len > sparse_k*sparse_block（默认 32*32=1024 token）；
+     *   3) 真正生效。
+     * 每请求的复用判定明细另有 VLLM_DEBUG_PREFIX=1（见 vllm_server.c）。 */
+    {
+        const char *pr = getenv("VLLM_L3_PREFIX_REUSE");
+        fprintf(stderr,
+                "[OPT] prefix_kv=%d disk_kv=%d sparse_attn=%d sparse_k=%d "
+                "sparse_block=%d sparse_probe=%d l3_evict=%d "
+                "l3_prefix_reuse=%d | sparse 剪枝阈值: seq_len > %d\n",
+                ctx.prefix_kv, ctx.disk_kv, g_sparse_attn, g_sparse_k,
+                g_sparse_block, g_sparse_probe, g_l3_evict,
+                (pr && pr[0] == '1') ? 1 : 0,
+                g_sparse_k * g_sparse_block);
+        fflush(stderr);
     }
 
     int rc = vllm_server_run(&ctx, port, g_serve_threads, serve_on_start);

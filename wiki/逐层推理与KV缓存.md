@@ -50,14 +50,14 @@ VQF 单文件仍以 mmap 直挂，但不一次性把全部权重触入内存：�
 | 口径 | 数据 |
 |---|---|
 | 权重常驻（`--stream-test`，冷页缓存 A/B） | 4,189,912 kB → **480,348 kB（8.7×）**；rss_end 487,912 kB |
-| serve 逐层峰值（`enable_thinking=false`、96 token 预算） | **824,192 kB**（0.82 GB，5 次累计高水位） |
-| serve 逐层热态（连续 5 次同请求） | **TTFT 1.95 s、tpot 376.6 ms**，70 token 端到端 27.9 s；波动 **±1.8% / ±0.13%** |
-| 冷态（`drop_caches` 后首次） | TTFT 73.1 s / 端到端 99.7 s（一次性成本，∝ 权重体积 ÷ 介质带宽） |
+| serve 逐层峰值（`enable_thinking=false`、96 token 预算） | **824,152 kB**（0.82 GB，5 次累计高水位） |
+| serve 逐层热态（连续 5 次同请求） | **TTFT 中位 1.734 s、tpot 中位 330.2 ms**；范围 `1.711~1.796 s` / `328.9~330.6 ms`，70 token 端到端约 24.5 s |
+| 冷态（`drop_caches` 后首次） | TTFT 72.613 s / 端到端 95.505 s（一次性成本，∝ 权重体积 ÷ 介质带宽） |
 
 **为什么是 8B**：它的权重 6.15 GiB **小于 15.6 GiB 物理内存**，页缓存装得下，热态稳定性有物理
 保障；而 30B 的 16.4 GiB 装不进，热态需赌运气。**务必用 `--threads 4`**——`--threads 8` 会把
 4 个 A55 小核拉进 GEMM，8B 全层 decode 从 186 ms/tok 退化到 431 ms/tok。一键复现：
-`sh tools/bench_value.sh`。
+`sh tools/bench/bench_value.sh`。
 
 ### 1.4 语义不变与代价
 
@@ -177,7 +177,7 @@ VLLM_ACTQ=1 VLLM_MOE_BATCH=1    # 组合⑤：MoE 专家激活量化 + 专家批
 8B 推荐档一键复现（A/B 内存 + 热态稳定度 + 页缓存证据；仅依赖 Python 3 标准库）：
 
 ```bash
-sh tools/bench_value.sh
+sh tools/bench/bench_value.sh
 # 可覆盖：MODEL_DIR / MODEL_FILE / N_WARM=5 / MAXTOK=96 / THREADS=4 / PORT=18092 / OUT
 ```
 

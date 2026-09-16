@@ -225,6 +225,75 @@ int l3_load_to_mem(STL3State *s);
  * Returns 0 on success, nonzero on failure. */
 int l3_self_test(void);
 
+/* ================================================================
+ * L3 性能插桩（VLLM_L3_PROF=1 开启；未设置时每个埋点只付一次分支判断）
+ *
+ * 目的：回答"L3 长上下文这一跳的时间到底花在哪"——是 Q4 压缩/解压的算力，
+ * 还是逐 payload 的 fseek/fwrite、逐块 mmap、镜像整段回读 I/O。
+ * 用法：调用方在**每个阶段开始**调 l3_prof_reset()，结束时调
+ *       l3_prof_report(tag, wall_s)；wall_s = 该阶段实测墙钟，
+ *       报告里的 unacct = wall - 已归因，用来抓"没被归因的那部分"。
+ * 归属规则（避免重复计数）：
+ *   - pack / q8conv / write / flush 是 evictlayer 的**子项**；
+ *   - fetch_* / dequant / store / scratch 是 fill 的**子项**；
+ *   - report 的 acct 只把**顶层**项相加（init/layer/free、ld_*、alloc/fill）。
+ * 读数开销：开启后每个 payload 多 2 次 clock_gettime（约 25~40ns/次），
+ * 报告里的 clocks 计数即读数次数，供按比例扣除判断。
+ * ================================================================ */
+typedef struct {
+    /* 驱逐（pack）路径 */
+    double ev_init_s;        /* 状态建立/复用：fopen + header + calloc */
+    double ev_evictlayer_s;  /* 逐层 l3_evict_layer 全程 */
+    double ev_pack_s;        /*   └ Q4 量化 l3_q4_pack64 */
+    double ev_q8conv_s;      /*   └ q8→f32 行转换（仅 nof32 档） */
+    double ev_write_s;       /*   └ 逐 payload 的 fseeko + fwrite */
+    double ev_flush_s;       /*   └ 每块一次 fflush */
+    double ev_free_s;        /* 物理释放 RAM（munmap / madvise） */
+    /* 镜像回读路径 */
+    double ld_scan_s;        /* 元数据扫描求 extent */
+    double ld_alloc_s;       /* 容量不足时 malloc */
+    double ld_discard_s;     /* madvise(DONTNEED) 归还尾部页 */
+    double ld_read_s;        /* fflush + lseek + read 整段 payload */
+    double ld_zero_s;        /* 短读尾部补零 */
+    /* 回填（restore）路径 */
+    double rs_alloc_s;       /* kv_block_alloc_raw（mmap / 池分配） */
+    double rs_fill_s;        /* l3_fill_block_from_disk 全程 */
+    double rs_fetch_mem_s;   /*   └ 从镜像 memcpy 一个 head 的整段载荷 */
+    double rs_fetch_read_s;  /*   └ 无镜像时 lseek+read 一个 head */
+    double rs_dequant_s;     /*   └ l3_q4_dequant64 反量化 */
+    double rs_store_s;       /*   └ 落 f32 行 / 同时按 q8 量化写行 */
+    double rs_scratch_s;     /*   └ 每块 scratch malloc/free */
+    /* 计数：把秒数换算成每单位成本 */
+    long ev_payloads;        /* 重打包 payload 数（40B/个） */
+    long ev_blocks;          /* 重打包块数 */
+    long ld_bytes;           /* 镜像回读字节数 */
+    long rs_blocks;          /* 回填块数 */
+    long rs_alloc_calls;     /* kv_block_alloc_raw 调用次数 */
+    long rs_fetch_calls;     /* l3_fetch_block_area 调用次数 */
+    long rs_payloads;        /* 反量化 payload 数 */
+    long prof_calls;         /* clock_gettime 调用次数（读数开销自证） */
+} STL3Prof;
+
+extern STL3Prof g_l3_prof;
+
+int    l3_prof_on(void);      /* VLLM_L3_PROF=1（首次调用读 env 并缓存） */
+double l3_prof_now(void);     /* CLOCK_MONOTONIC 秒 */
+void   l3_prof_reset(void);   /* 计数器清零：每阶段开始前调 */
+void   l3_prof_report(const char *tag, double wall_s);
+/* 回填窗口开关：l3_fetch_block_area / l3_fill_block_from_disk 同时被
+ * **稀疏 decode** 和 **前缀回填** 调用，而 rs_* 只应统计回填。l3_restore_prefix
+ * 进入时 scope(1)、退出时 scope(0)，decode 期间这些子项不计入。 */
+void   l3_prof_scope(int on);
+
+/* 埋点宏。要求使用处有一个名为 prof 的 int 局部量（= l3_prof_on()）。
+ * L3P_LAP 一次打点同时结清上一段并充当下一段起点 —— 每兴趣点只付一次
+ * clock_gettime；连续使用即可把一条流水线切成相邻区间。 */
+#define L3P_T0(v)         double v = prof ? l3_prof_now() : 0.0
+#define L3P_LAP(v, field) do { if (prof) { double l3p_n = l3_prof_now(); \
+        g_l3_prof.field += l3p_n - (v); (v) = l3p_n; } } while (0)
+#define L3P_ACC(v, field) do { if (prof) g_l3_prof.field += l3_prof_now() - (v); } while (0)
+#define L3P_N(field, n)   do { if (prof) g_l3_prof.field += (n); } while (0)
+
 #ifdef __cplusplus
 }
 #endif

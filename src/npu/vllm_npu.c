@@ -423,7 +423,7 @@ int vllm_npu_gemm_i8(vllm_npu_t *n, float *out,
     if (!m) return 0;
 
     /* Inputs: Aq int8 [M*K], aw fp32 [M]. Output: out fp32 [M*N].
-     * The exported graph (tools/npu_export_ops.py) has the int8 weights baked
+     * The exported graph (tools/npu/npu_export_ops.py) has the int8 weights baked
      * as constants and dequantizes with per-channel scales internally. */
     rknn_input_t in[2];
     memset(in, 0, sizeof(in));

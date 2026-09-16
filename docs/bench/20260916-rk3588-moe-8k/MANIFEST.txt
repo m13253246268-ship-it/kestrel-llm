@@ -1,0 +1,109 @@
+20260916-rk3588-moe-8k — 30B-A3B MoE 8K 上下文可行性验证（归档说明）
+================================================================
+
+【这是什么】
+    回答一个问题：15.9 GB 内存的 RK3588 板，能不能吃下 30B-A3B MoE 模型的 8K 上下文，
+    并且逐层驻留（VQF-STREAM）+ 组合①（L3 驱逐 × 前缀复用）+ 组合⑤（MoE 专属优化开关）同时开着。
+    结论：能。判据与原始产物见下。
+
+【口径声明 —— 这不是基准，不可与 README §7 同列】
+    1) 只有 1 轮 × 2 个 turn，**没有 llama.cpp 对照，也没有同档交错 A/B**
+       ⇒ 绝对值不具备与 §7 表（2K/4K/8K/16K 权重公平 A/B）混比的条件。
+    2) 组合⑤ 的 `VLLM_ACTQ=1` 走的是 q4 MoE int8-dot **近似轨**（日志 `[ACTQ] … approximate track ON`）。
+       本轮**未做 ACTQ 开/关的精度对拍**，故本档只证明"能跑通、能出内容"，
+       **不构成数值质量结论**。
+    3) 两轮响应 json **没有 `usage` 字段**（`usage={}`，`finish_reason=stop`，正文 126 / 127 字符），
+       生成 token 数取不到 ⇒ **decode t/s 无法精确给出**，本档不报 decode 速率。
+    4) 首次预热（3 段 ≈53 token）耗 213 s，是逐层冷读 16.8 GB 权重的代价，不是算力指标。
+    5) governor 全程 `performance`（脚本第 1 步顶回），与 8B 8K 档同口径；温度 29.6 °C。
+    6) 两轮在**同一引擎进程**内完成（与 kv2_run2.sh 每轮 3 个 turn 的结构一致），
+       turn2 靠进程内前缀复用，非重载。
+
+【平台与留证】
+    平台        RK3588（Orange Pi 5 Plus，4×A76+4×A55，MemTotal 15,964 MB）
+    引擎二进制  build-rk3588/vllm_kestrel  md5 = a1b6707de9c925536df980f35aae6a1e
+                （与本轮 §7 复测所用的是同一份二进制）
+    模型        /mnt/VQF/qwen3-30B-A3B-q4/model.vqf（16.45 GB，q4，MoE v3：
+                experts=128 top_k=8 moe_ffn=768 ffn_dim=98304）
+    VQF 头      **未改动**：`patched=0`（max_seq 本来就是 8192），
+                md5_vqf_before = d4e3c3aee4f0fd89e7c898d39e029549
+    governor    performance（跑前为 ondemand，脚本已顶回）
+    温度        29.6 °C（收尾时读 /sys/class/thermal/thermal_zone0/temp）
+
+【运行配置】
+    env  OMP_NUM_THREADS=4 VLLM_THREADS=4 VLLM_NPU_FORCE_CPU=1
+         VLLM_VQF_STREAM=1 VLLM_L3_PREFIX_REUSE=1 VLLM_TP_SPIN=1
+         VLLM_ACTQ=1 VLLM_MOE_BATCH=1                ← 组合⑤（MoE 专属）
+    args --serve --port 19200 --device arm-rk3588-opi5 --model /mnt/VQF/qwen3-30B-A3B-q4
+         --auto-load --threads 4 --sparse-attn --sparse-k 32
+         --l3-evict --l3-ratio 0.75 --l3-min-seq 128
+         --l3-path /mnt/emmc/moe8k_l3 --prefill-batch 256
+    为什么必须 VLLM_VQF_STREAM=1：16.45 GB 权重 > 15.9 GB RAM，全层驻留放不下。
+    提示词 600 段「边缘计算与云计算的核心区别在于数据处理发生的位置。」（≈7217 token，8K 档）
+            turn1 加「请用一句话总结」；turn2 追加「请压缩成不超过 10 字的小标题」。
+            生成 max_tokens=64、temperature=0、top_p=1。
+
+【结果】
+    turn1  total_s = 852.450750  prefill_ms = 795308.8  prompt = 7217 tok  OK（响应 48098 B）
+           rss = 1,150,424 kB  VmHWM = 2,731,068 kB
+    turn2  total_s =  74.687481  prefill_ms =  23800.4  prompt = 7235 tok  OK（响应 48198 B）
+           rss = 1,092,784 kB  VmHWM = 2,915,560 kB
+    turn2/turn1 = 11.4×（前缀复用生效：只 prefill 新增的 23 token）
+
+    prefill 分解（引擎侧 [PREFILL-TIMING]，turn1 整段）：
+        n=7178 total=781829.9ms | GEMM=523834.2ms(67.0%) ATTN=251126.6ms(32.1%) OTHER=6869.1ms(0.9%)
+        [PREFILL-KERNELS] QKV=34534.9ms O=29591.8ms GATEUP=459707.5ms(占 GEMM 87.8%) DOWN=0.0ms
+        ⇒ MoE 专家 GEMM（GATEUP）是主开销；DOWN 为 0 是 MoE 路径的既有口径，不是缺测。
+
+    内存与 L3（关键证据行）：
+        [VQF-STREAM] enabled keep=1 nl=48 segs=11 per-layer=334.1MB data=16847.2MB resident~808.4MB
+        [ACTQ] VLLM_ACTQ=1: q4 MoE int8-dot approximate track ON (l=0, d=2048 nbG=64)
+        [L3] evicted 8112 blocks -> /mnt/emmc/moe8k_l3_u65bbfe41 (cursor=158.44 MB, seq=7217,
+             keep=39, ratio=0.75), freed 1267.5 MB from RAM
+        [L3] restored 8112 prefix blocks from Q4 payload (prefix=7212)
+        [KV-PREFIX] reuse 7212-token KV prefix, prefill rest
+        [PREFILL-TIMING] n=23 total=17057.7ms          ← turn2 只算新增 23 token
+
+    判定：峰值 VmHWM 2.92 GB / RSS 1.09 GB，对 15.9 GB 板余量充足；
+    8K 长上下文在逐层 + L3 驱逐下不撑爆内存，驱逐/回填与进程内前缀复用在 MoE 上同样生效。
+
+【目录说明】
+    run.log                 板端 /mnt/emmc/kv2h2/moe8k.log 原样副本（harness 主日志）
+    moe_8k_serve.log        引擎 stdout/stderr（含 PREFILL-TIMING / L3 / ACTQ 全部证据行）
+    moe_8k_t1.json          turn1 响应（48098 B）
+    moe_8k_t2.json          turn2 响应（48198 B）
+    harness/moe8k.sh        本轮 harness 本体（**已修过的版本**，见下）
+
+【harness 的两处修复（本轮自查发现，均已在 harness/moe8k.sh 内修好）】
+    1) 头字段解析：原 `awk '/dim /{print $3}'` 会**同时命中 `dim` 与 `head_dim`**，
+       使 `DIM="2048\n128"`，随后的 `[ "$DIM" -ge 512 ]` 直接 `Illegal number` 而恒假 ⇒ 守卫失效。
+       板端实测：旧式 `OLD_GUARD=fail / Illegal number: 2048`，新式（按行首字段名锚定）`NEW_GUARD=pass`。
+       本档 `max_seq` 本来就是 8192、`patched=0`，故**结果未受影响**。
+    2) 收尾抽数：原写 `python3 "$H/pk.sh"`，而 pk.sh 是 shell 脚本 ⇒ `SyntaxError`，抽数那步空跑。
+       已改为 `sh "$H/pk.sh"`。数据未丢，本归档的 prefill_ms 是事后单独抽取的。
+
+【归档 md5】
+    0a209489a3d79a70e6ec6a37be381850  moe_8k_t1.json
+    6b10882190d465e2e3d793cb5267b1bb  moe_8k_t2.json
+    241a52c78e94d89fc53b0483b34edadf  moe_8k_serve.log
+    b63d8b132a28217d0fa3179767c7a6f5  run.log
+    5f5392addfd38cc8115929ae834b5dcd  harness/moe8k.sh
+
+    ⚠ 行尾口径：以上 md5 按 **LF 存储形态**计算（原始产物来自板端，天然 LF）。
+      本仓库 `core.autocrlf=true` 且**没有 `.gitattributes`**，所以这三个文本文件
+      （run.log / moe_8k_serve.log / harness/moe8k.sh）检出到 Windows 工作区会被转成 CRLF，
+      此时 md5 会因行尾不同而失配 —— 这是 EOL 差异，不是内容被改。
+      要逐字节比对，先 `git config core.autocrlf false` 再检出，或对工作区文件做 LF 归一后再算 md5。
+      两个 .json 无此问题（单行，无换行符）。
+
+【复现步骤】
+    1) 板端确认 governor：for p in /sys/devices/system/cpu/cpufreq/policy*; do
+         echo performance > "$p/scaling_governor"; done
+    2) 确认 VQF 头 max_seq >= 8192：
+         python3 tools/bench/patch_vqf_max_seq.py --dump /mnt/VQF/qwen3-30B-A3B-q4/model.vqf
+       （不足才用 --set 8192；本档不需要，且**不要**对 30B 用 16K 的 20480）
+    3) 清 L3 目录与页缓存：rm -rf /mnt/emmc/moe8k_l3; sync; echo 3 > /proc/sys/vm/drop_caches
+    4) 上传 harness 后运行（约 20 min，其中 turn1 prefill 约 13 min）：
+         setsid nohup sh /mnt/emmc/kv2h2/moe8k.sh >/dev/null 2>&1 &
+       完成标记：/mnt/emmc/kv2h2/moe8k.log 末行 `MOE8K_DONE rc=0`
+    5) 磁盘：/mnt/emmc 跑前已用 96%（剩 1.2 GB）。再跑大档前先清盘。

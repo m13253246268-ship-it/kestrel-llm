@@ -1,0 +1,82 @@
+20260915 RK3588 长上下文「权重公平 A/B」原始数据归档
+==============================================================================
+口径全文：README.md 第 7 节（英文 README.en.md §7）/ wiki/性能与基准.md 第 6 节
+本目录只放原始产物，结论与解读一律以上述两处为准，此处不重复、不改数。
+
+平台
+------------------------------------------------------------------------------
+RK3588 / Orange Pi 5 Plus，4x A76 + 4x A55，RAM 15.6~15.9 GB，governor=performance
+两侧均 4 线程（-t 4 / --threads 4），llama.cpp -ngl 0（纯 CPU）
+每个 arm 启动前 sync; echo 3 > /proc/sys/vm/drop_caches，随后打一发丢弃用预热请求
+
+权重与可执行文件留证（每次运行写入 summary.txt 头部）
+------------------------------------------------------------------------------
+md5_exe  = 71f8f53eeee56d13c2ec0f4170536921   引擎 vllm_kestrel（两侧对照期间未变）
+md5_gguf = 96fb8a5e2281e965c86baf7c97482b5f   qwen3vl8b-q4_0.gguf（llama.cpp 侧，Q4_0 4.50 bpw）
+md5_vqf  = b6d8d1d7b46fd72225413d41c75eb59f   本版 VQF（约 4.25 bpw，group-16 Q4）
+           16K 档为 f8ca1002311e3790778006add2a8057f —— 差异仅 VQF 头 offset 44
+           的 max_seq（8192 -> 20480）4 字节元数据，权重体逐字节未变。
+
+目录
+------------------------------------------------------------------------------
+kv2_full/   2K / 4K / 8K 三档（SEGS=165/330/600），每档 3 轮 x 3 个 arm
+            共 110 个原始文件 + summary.txt + REPORT.txt
+kv2_16k/    16K 档（SEGS=1300），1 轮 x 3 个 arm
+            含 vqf_hdr_orig.bin = 改 max_seq 前的 VQF 头部原样备份（4096 字节）
+harness/    产生上述数据的板端脚本（原样归档，未做整理）
+
+文件命名
+------------------------------------------------------------------------------
+{arm}_{tag}_r{round}_t{turn}.json    单次请求的原始响应（含 metrics / timings）
+{arm}_{tag}_r{round}_t{turn}.log     该 arm 该轮的引擎日志，关键行为证据在此
+summary.txt                          每轮 total_s / rss_kb / hwm_kb + 引擎侧关键日志行
+REPORT.txt                           kv2_sum2.py 汇总（增量 token 口径成对表）
+
+arm：llama            = llama.cpp llama-server（-t 4 -ngl 0，默认前缀缓存）
+     vllm_s1          = 本版逐层（VLLM_VQF_STREAM=1）
+     vllm_s0          = 本版全层
+tag：165 / 330 / 600 / 1300 = 提示词长文重复段数，实测 prompt 约 1996 / 3976 / 7216 / 15616 token
+     （README §7 记作 2.0K / 4.0K / 7.2K / 16K）
+turn：1 = 首次整段 prefill；2 / 3 = 前后缀追加追问，两侧均命中前缀复用
+      （本版 [KV-PREFIX] reuse … KV prefix；llama.cpp selected slot by LCP similarity）
+
+harness/ 内容
+------------------------------------------------------------------------------
+kv2_run2.sh     主测试脚本（参数化 SEGS/ROUNDS/ENGINES/STREAMS；含 arm 启停、drop_caches、预热丢弃）
+kv2_sum2.py     汇总器：解析各轮 json + summary.txt，输出 REPORT.txt（增量 token 口径）
+launch.sh       板端后台起测（setsid nohup）；stop16k.sh 停测并清理进程
+poll.sh         状态汇总；watch.sh 每 60s 记进度；finish.sh 检测 KV2_DONE 后自动跑汇总
+probe16k.sh     16K 前置探针：自证 [SERVE] max_seq=20480 且 /health 返回同一值
+patch_hdr.py    当时在板端改 VQF 头 max_seq 的临时脚本
+                （已升格为仓库工具 tools/bench/patch_vqf_max_seq.py，--dump/--set N/--restore）
+
+复现步骤
+------------------------------------------------------------------------------
+1. 上传 harness/ 到板端同目录，跑前确认两侧权重 md5 与本文件一致
+2. 2K/4K/8K：sh harness/kv2_run2.sh "165,330,600" 3 full "vllm,llama" "1,0"
+3. 16K：先 python3 tools/bench/patch_vqf_max_seq.py --set 20480 <model.vqf>
+        再 sh harness/kv2_run2.sh 1300 1 16k "vllm,llama" "1,0"
+        测完用 --restore 回滚（见下）
+4. 汇总：python3 harness/kv2_sum2.py <结果目录>（或 finish.sh 自动触发）
+
+> 更正（2026-09-16）：上面第 2 / 3 步的位置参数顺序原先写错（曾写作 `kv2_run2.sh full "165 330 600" 3 …`）。
+> 脚本的实际签名是 `kv2_run2.sh <SEGS> <ROUNDS> <TAG> [ENGINES] [STREAMS]`，且 `SEGS` 为**逗号分隔**列表；
+> 当时实际执行的即本文件更正后的写法（可由 summary.txt 第 1 行的 `TAG=… SEGS=… ROUNDS=…` 反查）。
+> 另：本目录的 kv2_run2.sh 有一处缺陷——写 md5 缓存前缺 `mkdir -p /tmp/kv2`，导致 md5 行从未进入
+> summary.txt；20260916 目录的同一脚本已修复。
+
+16K 头部补丁的当前状态：已回滚
+------------------------------------------------------------------------------
+2026-09-15 复测结束后，已用 tools/bench/patch_vqf_max_seq.py --restore 把板端
+/mnt/VQF/8b/serve/model.vqf 的 max_seq 从 20480 还原为 8192，实测 md5 =
+b6d8d1d7b46fd72225413d41c75eb59f，与主测（2K/4K/8K）基线逐字节一致。
+即：本目录中 kv2_16k 的 f8ca1002… 是当时的快照值，板端权重现已是 b6d8d1d7…。
+
+入库完整性（md5，本地归档 == 板端原文件，2026-09-15 入库时核对）
+------------------------------------------------------------------------------
+5286af523a8f6acf89fcd2739415a776  kv2_full/summary.txt
+0158a8081763241c387bcdd2154e8219  kv2_full/REPORT.txt
+8b49d3ae3bf2a83cf6d83aa0e3bd09da  kv2_16k/summary.txt
+ab5ca956bc951f2f03ade338d5977244  kv2_16k/REPORT.txt
+7ade6c64bebb117b73b54c6854b3d0a2  kv2_16k/vqf_hdr_orig.bin
+

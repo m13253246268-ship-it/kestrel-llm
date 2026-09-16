@@ -1,0 +1,55 @@
+MOE8K_START [2026-09-16 08:59:50]
+gov_before=ondemand
+WAITED_16K_MIN=40 [2026-09-16 09:19:51]
+/dev/mmcblk0p1   29G   26G  1.2G  96% /mnt/emmc
+gov_after=performance
+GOV_SET [2026-09-16 09:19:54]
+/mnt/VQF/qwen3-30B-A3B-q4/model.vqf  大小 16.45 GB
+  dim       = 2048
+  layers    = 48
+  heads     = 32
+  kv_heads  = 4
+  head_dim  = 128
+  ffn       = 98304
+  vocab     = 151936
+  max_seq   = 8192
+  备份: （无）
+parsed dim=2048
+128 layers=48 max_seq=8192
+md5_vqf_before=d4e3c3aee4f0fd89e7c898d39e029549
+HDR_CHECK_DONE patched=0 [2026-09-16 09:25:30]
+ENGINE_PID=5800 [2026-09-16 09:25:33]
+HEALTH_OK=1 waited_s=2 [2026-09-16 09:25:35]
+rss_after_load_kb=21780 hwm_after_load_kb=21780
+[SERVE] auto-load: loading model /mnt/VQF/qwen3-30B-A3B-q4 (wmode=0)
+[VQF] MoE v3: experts=128 top_k=8 moe_ffn=768 shared=0 ffn_dim=98304 router=48.0MB (f32 resident) experts=q4
+[VQF-STREAM] enabled keep=1 nl=48 segs=11 per-layer=334.1MB data=16847.2MB resident~808.4MB rss=988kB
+[M-A] VQF loaded: /mnt/VQF/qwen3-30B-A3B-q4/model.vqf
+[SERVE] model=/mnt/VQF/qwen3-30B-A3B-q4 dim=2048 layers=48 heads=32 ff=98304 vocab=151936 max_seq=8192
+[SERVE] model ready: /mnt/VQF/qwen3-30B-A3B-q4 (wmode=0, vision=0)
+          POST /v1/chat/completions  (stream=true SSE supported)
+warm_s=222.375005
+WARM_DONE [2026-09-16 09:29:18]
+req_body_bytes=45142
+turn1 total_s=852.450750 rss_kb=1150424 hwm_kb=2731068
+turn1 OK resp_bytes=48098
+req_body_bytes=45219
+turn2 total_s=74.687481 rss_kb=1092784 hwm_kb=2915560
+turn2 OK resp_bytes=48198
+[PREFILL-TIMING] n=53 total=213306.3ms | GEMM=213028.6ms(99.9%) ATTN=155.7ms( 0.1%) OTHER=122.0ms( 0.1%)
+[L3] skipped: seq=53 < l3-min-seq=128 (KV stays in RAM)
+[KV-PREFIX] L3 restored 0 block(s) for 39-token prefix
+[KV-PREFIX] reuse 39-token KV prefix, prefill rest
+[PREFILL-TIMING] n=7178 total=781829.9ms | GEMM=523834.2ms(67.0%) ATTN=251126.6ms(32.1%) OTHER=6869.1ms( 0.9%)
+[L3] evicted 8112 blocks -> /mnt/emmc/moe8k_l3_u65bbfe41 (cursor=158.44 MB, seq=7217, keep=39, ratio=0.75, packed_now=8112, total_packed=8112), freed 1267.5 MB from RAM
+[L3] restored 8112 prefix blocks from Q4 payload (prefix=7212)
+[KV-PREFIX] L3 restored 8112 block(s) for 7212-token prefix
+[KV-PREFIX] reuse 7212-token KV prefix, prefill rest
+[PREFILL-TIMING] n=23 total=17057.7ms | GEMM=14840.0ms(87.0%) ATTN=2199.2ms(12.9%) OTHER=18.5ms( 0.1%)
+[L3] incremental: retain state (packed_total=8112, cursor=158.44 MB)
+[L3] evicted 8160 blocks -> /mnt/emmc/moe8k_l3_u65bbfe41 (cursor=159.38 MB, seq=7235, keep=7212, ratio=0.75, packed_now=48, total_packed=8160), freed 1275.0 MB from RAM
+  File "/mnt/emmc/kv2h2/pk.sh", line 5
+    cd "$D" || exit 1
+       ^^^^
+SyntaxError: invalid syntax
+MOE8K_DONE rc=0 2026-09-16 09:44:48

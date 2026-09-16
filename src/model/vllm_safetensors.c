@@ -18,9 +18,9 @@
  *   Several NEON quantized GEMM/GEMV kernels below derive from llama.cpp
  *   (https://github.com/ggerganov/llama.cpp), redistributed under the MIT
  *   License, Copyright (c) 2023-2026 The ggml authors. The MIT license text
- *   is reproduced at the top of tools/llama_gemm_q4_0_4x4_asm.c.
+ *   is reproduced at the top of tools/kernels/llama_gemm_q4_0_4x4_asm.c.
  *   Derivations (adapted and/or word-for-word ported in-place):
- *     - ggml_gemm_q4_0_4x4_q8_0  -> tools/llama_gemm_q4_0_4x4_asm.c (verbatim
+ *     - ggml_gemm_q4_0_4x4_q8_0  -> tools/kernels/llama_gemm_q4_0_4x4_asm.c (verbatim
  *       mechanical extraction, included at the M4d fast path)
  *     - ggml_gemm_q8_0_4x4_q8_0 NEON segment -> llama_gemm_q8_0_4x4_q8_0_neon()
  *     - ggml_gemv_q4_0_4x4_q8_0 -> q4x4_dot1_group16_gemv() (M4f)
@@ -2293,7 +2293,7 @@ int    g_verify_pos = -1;     /* MRoPE position base for verify-mode prefill:
  * Transparent NPU acceleration (RK3588, opt-in via --npu).
  *
  * The NPU backend (vllm_npu.h) executes per-(layer, projection) int8 GEMM
- * operator models exported by tools/npu_export_ops.py; the safetensors model
+ * operator models exported by tools/npu/npu_export_ops.py; the safetensors model
  * format and the Q8_0/Q4_0 weights are never converted. Dispatch is a pure
  * function of (backend available, model present, FLOPs threshold) - when any
  * condition fails, the CPU (NEON/AVX) kernel runs exactly as before.
@@ -3947,7 +3947,7 @@ static inline void q4x4_dot1_group16_gemv(const uint8_t *__restrict bq,
  *
  * 移植方式：llama.cpp ggml/src/ggml-cpu/arch/arm/repack.cpp 的
  * ggml_gemm_q4_0_4x4_q8_0() 手写 NEON asm（.inst sdot、16 累加器、软件流水
- * 载荷）由 tools/extract_llama_asm.py 机械提取（零转录风险），语义与 generic
+ * 载荷）由 tools/kernels/extract_llama_asm.py 机械提取（零转录风险），语义与 generic
  * 完全一致：
  *   s[row*bs + col] = sum_k W(row,k) * A(col,k)   （nr rows x nc cols）
  * 我方映射（输出 out[token*rows + row]）：
@@ -3958,7 +3958,7 @@ static inline void q4x4_dot1_group16_gemv(const uint8_t *__restrict bq,
  * 与 M4c 不同 -> PPL 需重新验收（流程与 M4c 相同）。residual 在 asm 之后
  * 向量化后加（与 C 路径的 out = residual + matmul 语义一致）。
  * 依据公理：blas_matrix_block_natural_isomorphism（block_matrix_assoc_natural）。 */
-#include "../../tools/llama_gemm_q4_0_4x4_asm.c"
+#include "../../tools/kernels/llama_gemm_q4_0_4x4_asm.c"
 
 typedef struct {
     float *out; const uint8_t *q4_w;
@@ -12422,7 +12422,7 @@ static int st2_dnilv_on(void) {
  *   只多占发射槽；与 §9.36 的 `_mm_prefetch` 无效同因（HW 预取器已覆盖 distance-4 的顺序流）。
  * ❌ 并**一并更正 §9.43 的归因错误**：当时据 PROBE=4（2276ms）判「gu 的 ~2/3 花在权重
  *   tile 流」，那是**串行化伪影**——PROBE=4 删掉了 m 循环，原本用来遮盖 tile 流的并行
- *   工作也没了，故高估了该份额。反证：本机内存屋顶实测 46~55 GB/s（见 独立带宽探针），
+ *   工作也没了，故高估了该份额。反证：本机内存屋顶实测 46~55 GB/s（见 C:\vllm_xwork\membw.c），
  *   而 gu 的 tile 流仅 ~9.7GB/2.276s = **4.3 GB/s = 屋顶的 8.6%** ⇒ gu **不是带宽受限**。
  *   真正的瓶颈是**停顿/端口受限**（内层 IPC≈1.4 → 见 §9.42 注释；SMT 有效收益见 §9.45）。 */
 static int st2_wpf_on(void) {
@@ -12488,7 +12488,7 @@ static inline void actq16_madd2s(__m256i L, __m256i H, __m256i xl, __m256i xh,
         }                                                                       \
     } while (0)
 /* ============ §9.50 AVX-512 路径（gu，opt-in `VLLM_MOE_ILV512=1`，默认关）============
- * 动机来自探针 `独立探针`（2026-09-14）：
+ * 动机来自探针 `C:\vllm_xwork\avx512_probe.c`（2026-09-14）：
  *   ① 把内层**算术量翻倍**（同一段 body 跑两遍）耗时**不变** ⇒ 内层不是吞吐/端口受限，
  *      而是**停顿受限**。因此「AVX-512 减少指令数」本身**不产生收益**：实测 512b 重排
  *      只有 0.999×，且重排版的指令数反而**更多**——x86 没有 512-bit 水平归约
@@ -16176,6 +16176,8 @@ int l3_restore_prefix(STQwenInferenceState *st, int prefix_len) {
     if (!st || prefix_len <= 0) return 0;
     STL3State *l3 = &st->l3;
     if (!l3->fp || !l3->blocks || l3->evicted <= 0) return 0;
+    /* VLLM_L3_PROF=1：rs_* 只统计本次回填（墙钟在调用方 ist_reset 里计）。 */
+    int prof = l3_prof_on();
 
     int nl = st->weights.n_layers_allocated;
     int nkv = st->cfg.n_kv_heads;
@@ -16207,8 +16209,11 @@ int l3_restore_prefix(STQwenInferenceState *st, int prefix_len) {
             int need_i = has_i && (!k8[b] || !v8[b]);
             if (!need_f && !need_i) continue;   /* 该块仍在 RAM，无需重建 */
             if (need_f) {
+                L3P_T0(t_al);
                 uint8_t *rk = (uint8_t *)kv_block_alloc_raw(fdat);
                 uint8_t *rv = (uint8_t *)kv_block_alloc_raw(fdat);
+                L3P_ACC(t_al, rs_alloc_s);
+                L3P_N(rs_alloc_calls, 2);
                 if (!rk || !rv) {
                     if (rk) st_qwen_kv_free_block(rk + KV_GUARD, fdat);
                     if (rv) st_qwen_kv_free_block(rv + KV_GUARD, fdat);
@@ -16225,8 +16230,11 @@ int l3_restore_prefix(STQwenInferenceState *st, int prefix_len) {
                 vf[b] = (float *)(rv + KV_GUARD);
             }
             if (need_i) {
+                L3P_T0(t_ai);
                 uint8_t *rk = (uint8_t *)kv_block_alloc_raw(idat);
                 uint8_t *rv = (uint8_t *)kv_block_alloc_raw(idat);
+                L3P_ACC(t_ai, rs_alloc_s);
+                L3P_N(rs_alloc_calls, 2);
                 if (!rk || !rv) {
                     if (rk) st_qwen_kv_free_block(rk + KV_GUARD, idat);
                     if (rv) st_qwen_kv_free_block(rv + KV_GUARD, idat);
@@ -16246,16 +16254,20 @@ int l3_restore_prefix(STQwenInferenceState *st, int prefix_len) {
                              ? st->k_scale[l] + (size_t)b * (size_t)bs * (size_t)nkv : NULL;
             const float *vsc = (need_i && st->v_scale)
                              ? st->v_scale[l] + (size_t)b * (size_t)bs * (size_t)nkv : NULL;
-            if (l3_fill_block_from_disk(l3, bm, b,
-                                        has_f ? kf : NULL, has_f ? vf : NULL,
-                                        has_i ? k8 : NULL, has_i ? v8 : NULL,
-                                        ksc, vsc, kv_dim, bs, hd) != 0) {
+            L3P_T0(t_fl);
+            int frc = l3_fill_block_from_disk(l3, bm, b,
+                                              has_f ? kf : NULL, has_f ? vf : NULL,
+                                              has_i ? k8 : NULL, has_i ? v8 : NULL,
+                                              ksc, vsc, kv_dim, bs, hd);
+            L3P_ACC(t_fl, rs_fill_s);
+            if (frc != 0) {
                 fprintf(stderr, "[L3] restore failed l=%d b=%d (payload unreadable?)\n",
                         l, b);
                 failed = 1;   /* 继续重建其余块，但最终必须报 -1 */
                 continue;
             }
             restored++;
+            L3P_N(rs_blocks, 1);
         }
     }
     if (restored > 0) {
@@ -16557,9 +16569,19 @@ int st_qwen_model_prefill_batch(STQwenInferenceState *st,
     /* Phase 1.5: reset the prefill-importance accumulators. The exact packed
      * attention below records per-position attention mass (imp_head), reduced
      * into prefill_importance at the end. Sparse decode selection (when
-     * --sparse-attn) ranks blocks by this real attention potential. */
+     * --sparse-attn) ranks blocks by this real attention potential.
+     * P3 前缀复用：pf_base 是本轮复用的历史行数，[0, pf_base) 的 KV 是上一轮
+     * 原样留下的，其重要性图必须一并保留 —— 否则复用轮只重算最后 1 个 token，
+     * decode 的稀疏选块预算（前一半由 prefill_importance 名次决定）会整体落空、
+     * 退化成 probe-only。pf_base == 0 时清区段就是 [0, max)，与原实现逐位相同。
+     * imp_head 只是本轮的累加器，整表清零即可。 */
     memset(st->imp_head, 0, (size_t)st->max_kv_slots * nh * sizeof(float));
-    memset(st->prefill_importance, 0, (size_t)st->max_kv_slots * sizeof(float));
+    {
+        size_t imp_off = (size_t)pf_base;
+        if (imp_off > (size_t)st->max_kv_slots) imp_off = (size_t)st->max_kv_slots;
+        memset(st->prefill_importance + imp_off, 0,
+               ((size_t)st->max_kv_slots - imp_off) * sizeof(float));
+    }
 
     /* Axiom: memory_bandwidth_reduction — workers are bound to physical
      * cores at pool creation (vllm_tp.c), so no per-region binding here. */
@@ -17155,7 +17177,13 @@ int st_qwen_model_prefill_batch(STQwenInferenceState *st,
      * per prefill. Deterministic (serial, fixed order). */
     {
         const size_t stride = (size_t)st->max_kv_slots;
-        for (int s = 0; s < st->seq_len + n_tokens; s++) {
+        /* P3：下界取 pf_base。本轮只对 [pf_base, seq_len) 这几个 query 做了
+         * attention，虽然 imp_head 对复用行也有累加，但那只是**极少几个 query**
+         * 的观测；而 [0, pf_base) 现有的重要性图是上一轮那次「query 覆盖整段
+         * 上下文」的 prefill 算出来的，更接近全量 prefill 的基准。用稀疏观测
+         * 覆盖它，等于把复用轮的重要性图降级（复用轮 n_tokens=1 时尤其致命）。
+         * pf_base == 0 时下界为 0，与原实现逐位相同。 */
+        for (int s = pf_base; s < st->seq_len + n_tokens; s++) {
             float acc = 0.0f;
             for (int ha = 0; ha < nh; ha++) acc += st->imp_head[(size_t)ha * stride + s];
             st->prefill_importance[s] = acc;

@@ -5,7 +5,7 @@
  * WITHOUT converting the model format. The safetensors model + the engine's
  * Q8_0/Q4_0 weights stay untouched; the NPU only executes operator-level
  * mini-models (generic MatMul graphs exported once per projection shape by
- * tools/npu_export_ops.py) whose weights are baked as per-channel int8
+ * tools/npu/npu_export_ops.py) whose weights are baked as per-channel int8
  * constants. The runtime feeds the already-quantized int8 activations and
  * receives fp32 results - bit-identical to the CPU path is NOT guaranteed
  * (different reduction order/quantization - see vllm_safetensors.c NEON
@@ -53,7 +53,7 @@ typedef struct vllm_npu_s vllm_npu_t;   /* opaque handle */
  * contract.
  *
  * RKNN (optional): the official runtime (librknnrt.so) with operator-level
- * .rknn models exported by tools/npu_export_ops.py. Kept only for A/B.
+ * .rknn models exported by tools/npu/npu_export_ops.py. Kept only for A/B.
  */
 typedef enum {
     VLLM_NPU_BACKEND_AUTO   = 0,  /* DIRECT */
@@ -107,7 +107,7 @@ int vllm_npu_gemm_f32(vllm_npu_t *npu, float *out,
                       int M, int N, int K);
 
 /* Projection ids used to key the per-layer exported int8 models.
- * MUST match projection_shapes() in tools/npu_export_ops.py. */
+ * MUST match projection_shapes() in tools/npu/npu_export_ops.py. */
 #define VLLM_NPU_PROJ_Q      0   /* dim -> dim            */
 #define VLLM_NPU_PROJ_K      1   /* dim -> kv_dim (GQA)   */
 #define VLLM_NPU_PROJ_V      2   /* dim -> kv_dim (GQA)   */
@@ -120,7 +120,7 @@ int vllm_npu_gemm_f32(vllm_npu_t *npu, float *out,
 /**
  * INT8 GEMM offload: out[M][N] = sum_k Aq[m][k] * Wq[k][n] * (aw[m] * ws[n]).
  * The per-channel int8 weights + scales are BAKED into the exported model
- * gemm_i8_p<proj>_l<layer>.rknn (tools/npu_export_ops.py), so the weight
+ * gemm_i8_p<proj>_l<layer>.rknn (tools/npu/npu_export_ops.py), so the weight
  * stream to the NPU is ~4x smaller than fp32 (the actual RKNN speedup
  * path). Aq is the engine's already-quantized int8 activation [M*K], aw is
  * the per-token scale [M]. Returns 1 on offload, 0 on CPU fallback.

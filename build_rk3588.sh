@@ -26,7 +26,7 @@
 #   submit path stays disabled and the engine runs the CPU (NEON) path.
 #
 # RKNN backend (optional; requires exporting operator .rknn models):
-#   1) python3 tools/npu_export_ops.py --config <model-config-dir>/config.json \
+#   1) python3 tools/npu/npu_export_ops.py --config <model-config-dir>/config.json \
 #        --out npu_ops --mode int8 --m-list 1,16 --skip-lmhead
 #   2) ./vllm_kestrel --npu --npu-backend rknn --npu-dir npu_ops --npu-selftest --perf-only
 set -euo pipefail
