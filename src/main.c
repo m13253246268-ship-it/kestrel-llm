@@ -1,5 +1,5 @@
 /**
- * main.c - vLLM-SHS: Axiom-Guided Inference Demo
+ * main.c - vLLM-Kestrel: Axiom-Guided Inference Demo
  *
  * Demonstrates the full inference pipeline with SHS axiom constraints:
  *   1. Model initialization
@@ -4010,7 +4010,7 @@ int main(int argc, char **argv) {
     SetConsoleCP(65001);
 #endif
 
-    printf("  vLLM-SHS: Axiom-Guided Exact-Attention         \n");
+    printf("  vLLM-Kestrel: Axiom-Guided Exact-Attention         \n");
     printf("  Large Language Model Inference Engine          \n");
     printf("\n");
 
