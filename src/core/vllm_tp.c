@@ -9,15 +9,18 @@
  * chunk and joins the workers. No external runtime DLLs.
  *
  * Thread-count policy replicates the previous OpenMP behaviour exactly:
- *   OMP_NUM_THREADS env wins; otherwise default to 4 threads (the engine's
- *   st_default_threads() choice for the RK3588 A76 cluster and the fallback
- *   used on x86). VLLM_THREADS is accepted as an alias.
+ *   OMP_NUM_THREADS env wins; otherwise x86 defaults to nc-2 and aarch64 to the
+ *   size of the **performance (big) cluster**, derived from the kernel's own
+ *   cpu_capacity numbers (st_perf_cpus()) — 4 on RK3588 (its four A76) but no
+ *   longer a hardcoded "at most 4", so other big.LITTLE boards get their own
+ *   core count. VLLM_THREADS is accepted as an alias.
  *
  * Affinity: each worker is pinned to its OWN logical processor
  * (slot % n_logical — never double-pinned, which collapsed throughput on
  * SMT boxes), and the caller is pinned to the last logical CPU during a
- * region so the spinning workers cannot starve it. RK3588: A76 cluster
- * (cores 4-7). The spin budget is tunable via VLLM_TP_SPIN (default 20000
+ * region so the spinning workers cannot starve it. The worker set is the
+ * performance cluster from the same derivation (RK3588: cores 4-7). The spin
+ * budget is tunable via VLLM_TP_SPIN (default 20000
  * pause iterations, ~0.4 ms): short enough that parked workers release the
  * job_gen cache line, long enough that back-to-back regions inside one
  * inference step never pay a wake.
@@ -115,13 +118,28 @@ static int tp_bind_disabled(void) {
     return tp_bind_state;
 }
 
+/* 性能集群 CPU 列表（懒解析一次；0 表示推导不可用，调用方回退）。
+ * sysfs 只读一次 —— worker 创建时不必每个都去 fopen。 */
+static int g_perf_cpu[VLLM_TP_MAX];
+static int g_perf_cpu_n = -1;   /* -1 = 尚未解析 */
+static int tp_perf_cpu_list(void) {
+    if (g_perf_cpu_n < 0) g_perf_cpu_n = st_perf_cpus(g_perf_cpu, VLLM_TP_MAX);
+    return g_perf_cpu_n;
+}
+
 static void tp_bind_worker(int slot, int nthreads) {
     (void)nthreads;
     if (tp_bind_disabled()) return;
+    /* 绑到推导出的性能集群上轮转。**不再假定大核是 cpu4-7**（那是 RK3588 的
+     * 布局）；推导不可用时退回「全部逻辑核轮转」而不是猜一个固定簇。 */
+    int np = tp_perf_cpu_list();
+    if (np > 0) {
+        st_bind_cpu(g_perf_cpu[slot % np]);
+        return;
+    }
     long n_cpus = st_num_cpus();
     if (n_cpus <= 0) n_cpus = 8;
-    int core = (n_cpus > 4) ? (4 + (slot % 4)) : (slot % n_cpus); /* A76 cluster */
-    st_bind_cpu(core);
+    st_bind_cpu((int)(slot % n_cpus));
 }
 
 /* The caller must not share a logical CPU with a spinning worker: a pool of
@@ -317,11 +335,17 @@ int vllm_tp_init(int nthreads) {
              *    挤满同一批逻辑核，调用者在两个 region 之间被抢占整段调度量子（与上面
              *    「spin 饿死 caller，10–26 ms/region」同机理）；留 2 个核即恢复。
              * 两条路径的共同最优 = nc−2，故此处取单一默认值，不做按入口分支。
-             * 各档 `text md5` + TOKIDS **逐位相同**（并行按 idx 静态切分，不改任何浮点步序）。
-             * 板端（RK3588 4×A76+4×A55）保持 4：A55 小核会拖慢 GEMM。 */
+             * 各档 `text md5` + TOKIDS **逐位相同**（并行按 idx 静态切分，不改任何浮点步序）。 */
             nthreads = (nc > 2) ? (int)(nc - 2) : (int)nc;
 #else
-            nthreads = (nc > 4) ? 4 : (int)nc;   /* RK3588 A76-only default */
+            /* 板端原本硬编码「最多 4」。那个 4 是 RK3588 的 A76 集群规模，换一块
+             * big.LITTLE 板就不成立（大核数与编号都可能不同），故改为按内核自己的
+             * cpu_capacity 推导性能集群，用它的规模作默认值（见 vllm_platform.h:
+             * st_perf_cpus()）。RK3588 上推导结果仍是 4（cpu4-7），**行为不变**；
+             * 推导不可用时退回全部逻辑核。显式 OMP_NUM_THREADS / --threads 永远优先，
+             * 所以想跑满 8 核（或任何别的档）依然可以显式指定。 */
+            int np = st_perf_cpus(NULL, 0);
+            nthreads = (np > 0) ? np : (int)nc;
 #endif
             if (nthreads <= 0) nthreads = 4;
         }
