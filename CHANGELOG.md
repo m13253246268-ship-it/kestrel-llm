@@ -5,6 +5,63 @@
 
 ---
 
+## 2026-09-16（发布面）— 板端源码树归一到 `fb3008c`；发布快照改为脚本化导出
+
+### 0. 板端 `kestrel_pull` 已归一（并且把性能结论保住了）
+
+此前板端源码树停在 `4f1ad70`（tools 未归档），与仓库差一代。本轮：
+
+1. **先可回退**：整树 `tar` 备份（`/mnt/emmc/kv2h2/kestrel_pull_4f1ad70.tgz`，5.9 MB）
+   + 本地改动 patch（`kestrel_pull_local_edits.patch`，56 KB）
+   + 未跟踪残留移出至 `kestrel_pull_untracked_bak/`（`.l3prof_bak/`、4 个 `*.bak_*`、`tools/bench/`，
+   后者恰是 HEAD 的已跟踪路径，不移开就会阻塞 `reset --hard`）。
+2. `git fetch` + `reset --hard origin/master` → `head=fb3008c`、`tree=139683d8…`、`dirty=0`；
+   `tools/` 变为归档布局（`bench build client drivers kernels npu ops preproc relay security`）。
+3. **同路径重建 → 逐字节复现被验证二进制 `a1b6707de9c925536df980f35aae6a1e`（`SAME_AS_VALIDATED`）**。
+   因为源码路径未变，`stb_image.h` 经 `assert()` 嵌入的绝对路径也一致。
+   ⇒ **§7 的性能结论仍然有效，不需要重跑基准**（这一点此前是"待定"，现已闭合）。
+4. 自检：`--test-l3` **17 PASS / 0 FAIL**、`--test-sparse` 9/9、`--bench-mixed`、`--npu-selftest` 均 rc=0。
+
+### 1. 发布快照：把规则固化，重新导出
+
+`_release_verify/{gitee,github}` 此前是**人肉导出**（`git archive` → 拷板端编译自检 → 回拷本机），
+既没有脚本、规则也没写下来，后果有两个：
+
+- **世代混乱**：旧快照的「tools 已归档 + admin 三轨已在 + `tools/relay` 在」与
+  「ARM include 未修 + `tools/bench/tok_ref_check.c` 缺 + README/wiki 停在 09-12」**互斥**，
+  对应不上任何单一 commit；
+- **整树 CRLF**：Windows 侧 `core.autocrlf=true` 把导出树全量 CRLF 化，
+  与仓库逐文件"全不同"——这正是此前「src+include 62 个文件里 56 个不同」的**真因**
+  （板端 `fix_crlf.sh` 当时就是为此打的补丁）。
+
+新增 `tools/build/make_release.py`，把规则固化成一条可复现命令：
+
+| 规则 | 内容 |
+|---|---|
+| 内容来源 | `git archive HEAD` —— **仅已跟踪文件**，且为**仓库内存储形态（LF）**；不导出 `.git/`、`build*/`、`__pycache__/`、未跟踪文件 |
+| gitee 门面 | 原样（Gitee 是正式站点，不改写任何站点 URL） |
+| github 门面 | **只做 i18n 互换**：`README.en.md`→`README.md`、`README.md`→`README.zh-CN.md`，并同步改写 `wiki/Home.md` 的两条 README 链接 |
+| 不删内容 | `docs/bench/`（`.gitignore` 注释已声明「发布证据要随仓库分发」）与 `CHANGELOG.md` 一并导出——**与旧快照相反**（旧快照手工剔除了这两块，但 README/`MANIFEST` 又引用它们，会留下悬空引用） |
+| 不清路径 | `/mnt/...` 是面向板端的操作说明（引擎跑在 RK3588 上），不是本机路径泄露，照原样导出 |
+
+用法：
+
+```bash
+python3 tools/build/make_release.py --out <目录>/gitee  --facade gitee  --clean
+python3 tools/build/make_release.py --out <目录>/github --facade github --clean
+```
+
+### 2. 两处「已做 / 未做」的澄清（避免误当成净化）
+
+- `vllm_shs` 在旧快照残留 17 处，其中 **15 处是刻意保留的历史证据**
+  （`wiki/性能与基准.md` 6、`wiki/优化配置与边界.md` 3、`tools/bench/bench_value.sh` 3、
+  `tools/bench/bench_http_probe.py` 2、`tools/preproc/_g256_conv.py` 1 —— v0 时期二进制名与板端旧路径），
+  另 2 处（`tools/drivers/README*.md` 的引擎名）随 `0a77753` 改为 `vllm_kestrel`。
+- GitHub 侧 wiki 链接**仍指向 Gitee**（`pei-xiaoguang` 126 处）：**未做** URL 改写。
+  若将来要以 GitHub 为主站，需单独一轮并同步改 `README` / `CONTRIBUTING` / `.github` 模板。
+
+---
+
 ## 2026-09-16（交叉验证）— 从 gitee 全新克隆到板端编译，暴露并修复 2 处只有 ARM 才显现的缺陷
 
 ### 0. 做法
