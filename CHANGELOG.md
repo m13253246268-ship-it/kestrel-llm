@@ -5,6 +5,84 @@
 
 ---
 
+## 2026-09-28（发布面收尾）— 双远端全新拉取复验（x86-64 + aarch64）、修掉 `check_x64` 假通过、补 `.sh` 执行位
+
+**这一轮要回答的问题**：两个远端（Gitee `master` / GitHub 门面 `gh`）上现在这份代码，
+**全新克隆之后能不能原样编译、能不能跑、是否与本机开发树一致**？
+
+**结论（先给答案）**：
+
+1. **能，且三方一致**。x86-64 与 aarch64 各自「全新拉取 → 原生构建 → 无模型确定性自检」全部通过：
+
+   | 侧 | 源码身份 | 构建 | `--test-l3` | `--test-sparse` |
+   |---|---|---|---|---|
+   | 本机 master 工作树（x86-64） | `9453871` / tree `4999e05a…` | rc=0 | 16 PASS / 0 FAIL / 1 SKIP | 9 PASS / 0 FAIL |
+   | Gitee 全新克隆（x86-64） | 同上（tree 逐位相同） | rc=0 | 同上 | 同上 |
+   | GitHub 全新克隆（x86-64） | `f332e19` / tree `2f2003e5…` = 本机 `gh` | rc=0 | 同上 | 同上 |
+   | Gitee 全新克隆（aarch64 板端） | `9453871` / tree `4999e05a…` | rc=0 | **17 PASS / 0 FAIL / 0 SKIP** | 9 PASS / 0 FAIL |
+   | GitHub 归档（aarch64 板端，codeload） | `gh` 门面树 | rc=0 | 同上 | 同上 |
+
+   自检输出 SHA256：x86 三方**逐字节相同**；aarch64 两侧**逐字节相同**。ARM 比 x86 多出的那一项是
+   `P2 restore NEON vs scalar bitwise`（x86 无 NEON 打 SKIP，ARM 实跑 PASS）。
+
+2. **x86 与 aarch64 的差异只有三类，全部可解释**：`[DEV]` 设备画像行、上述 NEON 项（SKIP↔PASS）、
+   以及 NEON 与标量内核的 1e-7 量级浮点差（`q4 dot rel 0.00e+00` ↔ `3.99e-07`；
+   `prefill sparse == exact` max diff `3.576e-07` ↔ `3.874e-07`）。**没有行为差异。**
+
+3. **二进制哈希不能当跨平台 / 跨路径口径**。aarch64 两侧 exe 差 73,092 字节，按段定位后根因是
+   `.rodata` 里内嵌了一条**绝对源码路径**（`…/stb_image.h`，两侧检出目录名长度差 19 字符）：
+   `.rodata` 因此大 24 字节，其后所有段偏移后移（86.9% 的"差异"落在 `.eh_frame`）；
+   `.got` / `.init_array` **逐字节相同**，`.text` 仅 367 字节变（引用 rodata 的地址位移）。
+   **同路径重建两次 sha256 完全相同**，证明构建本身是确定性的。
+   对照：x86 侧只差 **2 字节**（PE `TimeDateStamp` 与其派生 `CheckSum`），因为 `build_x64.ps1`
+   用**相对路径**调 gcc，`__FILE__` 不含路径；板端走 CMake，传的是绝对路径。
+
+### 1. 改动清单
+
+| 文件 | 改动 |
+|---|---|
+| `tools/build/build_x64.ps1` | 编译前 `Remove-Item $out`；**补回 UTF-8 BOM**（文件头写着"必须以 UTF-8 BOM 保存"，实际缺） |
+| `tools/build/check_x64.ps1` | 记录构建开始时刻 `$t0`，追加「产物 mtime ≥ `$t0`」断言 |
+| 15 个 `.sh` | `git update-index --chmod=+x`（100644 → 100755） |
+| `wiki/构建与复现.md` | 已知坑补三条：非 ASCII 路径（补"已加防线"）、`.sh` 无执行位（已修）、板端直连 GitHub 不可达（走 codeload） |
+
+### 2. 两个必须记录的缺陷
+
+**① `check_x64.ps1` 会假通过（已修）**。它原先只判 `Test-Path $exe`。本次复验时本机 `rc=1`
+（非 ASCII 输出路径导致 `ld` 链接失败），脚本仍报 `X64 CHECK PASSED` 并跑完全套自检 ——
+跑的是 **2026-09-25 19:08 的旧 exe**（1,369,853 B，比新代码小 2,643 B，早于 09-28 的 rulebook 提交）。
+这与已记过的 `[OPT]` 假日志、`.ps1` 双 BOM 静默失败同源：**"看起来跑过了"**。
+修法双保险：`build_x64.ps1` 编译前删产物（令"产物存在"⇒"本次产物"）+ `check_x64.ps1` 时间戳断言。
+
+**② 仓库里 15 个 `.sh` 全是 `100644`（已修）**。板端全新克隆后执行脚本自带 Usage 里的
+`./build_rk3588.sh` 直接 `Permission denied (rc=126)`。Windows 侧没有执行位概念所以从未暴露，
+**Unix/aarch64 用户按文档跑必然失败**。
+
+### 3. 验证方法（可照做）
+
+```powershell
+# x86-64（本机）
+powershell -ExecutionPolicy Bypass -File tools\build\check_x64.ps1 -OutDir C:\vllm_x64_build
+```
+
+```bash
+# aarch64（板端，全新克隆）
+git clone https://gitee.com/pei-xiaoguang/kestrel-llm.git && cd kestrel-llm
+./build_rk3588.sh
+./build-rk3588/vllm_kestrel --test-l3
+./build-rk3588/vllm_kestrel --test-sparse
+```
+
+### 4. 边界
+
+- 本轮是**编译 + 无模型确定性自检**，与 x86 同口径；**未跑真实模型推理**（需权重与页缓存控制）。
+- 板端 `--bench-mixed` / `--npu-selftest` 未跑（耗时长且需 NPU 校准）。
+- 板端到 GitHub 只能走 codeload 归档（`github.com` 直连超时），故 GitHub 侧在板端是"归档校验"
+  而非"git 克隆校验"；两侧编译输入已在 x86 侧证明逐条相同（`src/ include/ tools/` 清单无差异）。
+- x86 侧仍有开放项：**x64 偶发整请求卡死**（本轮未复现，也未解决）。
+
+---
+
 ## 2026-09-28（下半场）— 工业边缘「预置上下文」：规则包 / 会话存储 / 审计流水
 
 **这一轮要回答的问题**：工业现场的设备上，模型每轮问答都要用到同一份**固定且反复使用**的
