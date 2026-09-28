@@ -1,4 +1,4 @@
-﻿<#
+<#
   wiki_facade.ps1 —— GitHub 门面变换：把指向 Gitee Wiki 的绝对链接改写为仓内相对链接
 
   背景：仓库 wiki/*.md 是 Gitee Wiki 的内容源，页内互链写成 Gitee 绝对地址
@@ -37,9 +37,11 @@ if (-not $Check -and -not $Force) {
     }
 }
 
-# 目标文件：仓库内全部被跟踪的 .md
-$tracked = & git -C $Root ls-files '*.md'
-if (-not $tracked) { throw "未在 $Root 找到被跟踪的 .md 文件" }
+# 目标文件：仓库内全部 .md（遍历文件系统而非 git ls-files：
+# PowerShell 捕获原生命令输出受控制台编码影响，中文文件名会被破坏）
+$targets = Get-ChildItem -LiteralPath $Root -Recurse -Filter *.md -File |
+           Where-Object { $_.FullName -notlike '*\.git\*' }
+if (-not $targets) { throw "未在 $Root 找到 .md 文件" }
 $wikiDir = (Join-Path $Root 'wiki') + [IO.Path]::DirectorySeparatorChar
 
 # 页面名取自 wiki/ 目录（实际上盘的页），长的先替换，避免名字互为前缀
@@ -50,15 +52,15 @@ if ($pages.Count -eq 0) { throw "未在 $Root\wiki 找到 wiki 页面" }
 $changed = 0
 $violations = @()
 
-foreach ($rel in $tracked) {
-    $full = Join-Path $Root $rel
-    if (-not (Test-Path $full)) { continue }
+foreach ($f in $targets) {
+    $full = $f.FullName
+    $rel = $f.FullName.Substring($Root.Length).TrimStart('\', '/') -replace '\\', '/'
     $text = [IO.File]::ReadAllText($full, [Text.Encoding]::UTF8)
     if ($text.IndexOf($giteePrefix, [StringComparison]::Ordinal) -lt 0) { continue }
 
     if ($Check) {
         $n = ([regex]::Matches($text, [regex]::Escape($giteePrefix))).Count
-        $violations += ("{0}  ({1} 处)" -f ($rel -replace '\\', '/'), $n)
+        $violations += ("{0}  ({1} 处)" -f $rel, $n)
         continue
     }
 
@@ -72,10 +74,10 @@ foreach ($rel in $tracked) {
     if ($new -ne $text) {
         [IO.File]::WriteAllText($full, $new, $utf8NoBom)
         $changed++
-        Write-Host ("rewritten: " + ($rel -replace '\\', '/'))
+        Write-Host ("rewritten: " + $rel)
     }
     $left = ([regex]::Matches($new, [regex]::Escape($giteePrefix))).Count
-    if ($left -gt 0) { $violations += ("{0}  (残留 {1} 处，页面名可能不在 wiki/ 内)" -f ($rel -replace '\\', '/'), $left) }
+    if ($left -gt 0) { $violations += ("{0}  (残留 {1} 处，页面名可能不在 wiki/ 内)" -f $rel, $left) }
 }
 
 if ($Check) {
