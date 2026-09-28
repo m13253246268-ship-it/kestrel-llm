@@ -1,4 +1,4 @@
-<#
+﻿<#
   wiki_facade.ps1 —— GitHub 门面变换：把指向 Gitee Wiki 的绝对链接改写为仓内相对链接
 
   背景：仓库 wiki/*.md 是 Gitee Wiki 的内容源，页内互链写成 Gitee 绝对地址
