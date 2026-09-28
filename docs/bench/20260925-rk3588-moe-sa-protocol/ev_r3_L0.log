@@ -1,0 +1,91 @@
+  vLLM-Kestrel: Axiom-Guided Exact-Attention         
+  Large Language Model Inference Engine          
+
+[DEV] device=arm-rk3588-opi5 arch=arm64 class=embedded model=RK3588 OPi 5 Plus npu=rk3588-direct recommended_wmode=dual
+
+=== [STREAM] layer-resident validation (VQF only) ===
+[VQF] MoE v3: experts=128 top_k=8 moe_ffn=768 shared=0 ffn_dim=98304 router=48.0MB (f32 resident) experts=q4
+[VQF-STREAM] enabled keep=1 nl=48 segs=11 per-layer=334.1MB data=16847.2MB resident~808.4MB rss=988kB
+[STREAM] vqf_load OK (0.00s): dim=2048 layers=48 heads=32 kv=4 ffn=98304 vocab=151936 max_seq=8192
+[STREAM] rss_after_load  = 988 kB
+[QWEN] Inference state ready (max_seq=8192).
+[TOK] Loaded 151669 tokens from vocab.bin (max_len=256)
+[TOK] match mode: indexed (slots=524288, 2.0 MB, load=0.29)
+[TOK] Special tokens: bos=151643 eos=151645 im_start=151644 im_end=151645 pad=151643
+[STREAM] tokenizer: 151669 tokens (eos=151645 im_start=151644 im_end=151645)
+[STREAM] rss_after_init  = 21748 kB
+[STREAM] prompt tokens = 246 (--stream-ctx 256)
+[PREFILL] 246/246 tokens done
+[PREFILL-TIMING] n=246 total=269687.7ms | GEMM=268247.0ms(99.5%) ATTN=1024.1ms( 0.4%) OTHER=416.6ms( 0.2%)
+[PREFILL-KERNELS] QKV=5398.2ms( 2.0%) O=3726.7ms( 1.4%) GATEUP=259122.1ms(96.6%) DOWN=0.0ms( 0.0%)
+[STREAM] prefill 246 tokens in 277.217s (1 tok/s) [batch]
+[STREAM] rss_after_prefill = 604680 kB
+[STREAM] decode mode: greedy (rep_pen=1.000 win=32)
+[STREAM] TOKIDS: 151667[SA-STAT] tok=1 pages_w=4020474 pages_d=4020474 pages_sum=8040948 minflt_delta=202757
+ t=1 ms=1404 rss=604584kB
+ 198[SA-STAT] tok=2 pages_w=4020474 pages_d=4020474 pages_sum=8040948 minflt_delta=95121
+ t=2 ms=915 rss=601956kB
+ 99692[SA-STAT] tok=3 pages_w=4020474 pages_d=4020474 pages_sum=8040948 minflt_delta=96393
+ t=3 ms=1436 rss=605240kB
+ 3837[SA-STAT] tok=4 pages_w=4020474 pages_d=4020474 pages_sum=8040948 minflt_delta=95634
+ t=4 ms=1255 rss=604132kB
+ 20002[SA-STAT] tok=5 pages_w=4020474 pages_d=4020474 pages_sum=8040948 minflt_delta=96377
+ t=5 ms=1565 rss=608128kB
+ 104029[SA-STAT] tok=6 pages_w=4020474 pages_d=4020474 pages_sum=8040948 minflt_delta=95666
+ t=6 ms=1788 rss=605660kB
+ 11622[SA-STAT] tok=7 pages_w=4020474 pages_d=4020474 pages_sum=8040948 minflt_delta=95654
+ t=7 ms=1314 rss=607656kB
+ 104811[SA-STAT] tok=8 pages_w=4020474 pages_d=4020474 pages_sum=8040948 minflt_delta=94694
+ t=8 ms=874 rss=605916kB
+ 105321[SA-STAT] tok=9 pages_w=4020474 pages_d=4020474 pages_sum=8040948 minflt_delta=96306
+ t=9 ms=794 rss=607612kB
+ 104136[SA-STAT] tok=10 pages_w=4020474 pages_d=4020474 pages_sum=8040948 minflt_delta=93989
+ t=10 ms=794 rss=608592kB
+ 2073[SA-STAT] tok=11 pages_w=4020474 pages_d=4020474 pages_sum=8040948 minflt_delta=93238
+ t=11 ms=820 rss=606616kB
+ 100062[SA-STAT] tok=12 pages_w=4020474 pages_d=4020474 pages_sum=8040948 minflt_delta=93641
+ t=12 ms=738 rss=604968kB
+ 99371[SA-STAT] tok=13 pages_w=4020474 pages_d=4020474 pages_sum=8040948 minflt_delta=96462
+ t=13 ms=922 rss=608628kB
+ 58814[SA-STAT] tok=14 pages_w=4020474 pages_d=4020474 pages_sum=8040948 minflt_delta=95926
+ t=14 ms=744 rss=607728kB
+ 113272[SA-STAT] tok=15 pages_w=4020474 pages_d=4020474 pages_sum=8040948 minflt_delta=95254
+ t=15 ms=854 rss=609620kB
+ 55807[SA-STAT] tok=16 pages_w=4020474 pages_d=4020474 pages_sum=8040948 minflt_delta=95074
+ t=16 ms=1012 rss=608516kB
+ 104544[SA-STAT] tok=17 pages_w=4020474 pages_d=4020474 pages_sum=8040948 minflt_delta=94512
+ t=17 ms=2009 rss=605668kB
+ 42411[SA-STAT] tok=18 pages_w=4020474 pages_d=4020474 pages_sum=8040948 minflt_delta=95961
+ t=18 ms=1304 rss=609336kB
+ 105444[SA-STAT] tok=19 pages_w=4020474 pages_d=4020474 pages_sum=8040948 minflt_delta=95100
+ t=19 ms=1331 rss=608568kB
+ 104686[SA-STAT] tok=20 pages_w=4020474 pages_d=4020474 pages_sum=8040948 minflt_delta=94108
+ t=20 ms=1752 rss=606208kB
+ 32571[SA-STAT] tok=21 pages_w=4020474 pages_d=4020474 pages_sum=8040948 minflt_delta=93179
+ t=21 ms=1335 rss=613836kB
+ 3837[SA-STAT] tok=22 pages_w=4020474 pages_d=4020474 pages_sum=8040948 minflt_delta=94840
+ t=22 ms=1020 rss=609564kB
+ 87267[SA-STAT] tok=23 pages_w=4020474 pages_d=4020474 pages_sum=8040948 minflt_delta=95451
+ t=23 ms=1172 rss=609696kB
+ 101219[SA-STAT] tok=24 pages_w=4020474 pages_d=4020474 pages_sum=8040948 minflt_delta=94840
+ t=24 ms=1441 rss=611404kB
+ 81705[SA-STAT] tok=25 pages_w=4020474 pages_d=4020474 pages_sum=8040948 minflt_delta=96666
+ t=25 ms=1010 rss=612560kB
+ 97611[SA-STAT] tok=26 pages_w=4020474 pages_d=4020474 pages_sum=8040948 minflt_delta=95187
+ t=26 ms=1016 rss=610720kB
+ 104175[SA-STAT] tok=27 pages_w=4020474 pages_d=4020474 pages_sum=8040948 minflt_delta=95002
+ t=27 ms=993 rss=607792kB
+ 3837[SA-STAT] tok=28 pages_w=4020474 pages_d=4020474 pages_sum=8040948 minflt_delta=95760
+ t=28 ms=786 rss=607784kB
+ 100631[SA-STAT] tok=29 pages_w=4020474 pages_d=4020474 pages_sum=8040948 minflt_delta=96426
+ t=29 ms=1140 rss=613016kB
+ 99172[SA-STAT] tok=30 pages_w=4020474 pages_d=4020474 pages_sum=8040948 minflt_delta=94610
+ t=30 ms=823 rss=612024kB
+ 103944[SA-STAT] tok=31 pages_w=4020474 pages_d=4020474 pages_sum=8040948 minflt_delta=95341
+ t=31 ms=851 rss=615216kB
+ 35946[SA-STAT] tok=32 pages_w=4020474 pages_d=4020474 pages_sum=8040948 minflt_delta=95109
+ t=32 ms=678 rss=611368kB
+
+[STREAM] decoded 32 tokens, 1122 ms/tok (0.89 tok/s)
+[STREAM] text: <think>Ċ好的，用户让我用中文一句话解释“逐层加载推理”。看起来他重复了很多次，可能是在测试我的反应，或者想确保我
+[STREAM] rss_end = 611368 kB

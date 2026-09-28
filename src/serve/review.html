@@ -1,0 +1,589 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title data-en="vLLM-Kestrel Session &amp; Rulebook Review">vLLM-Kestrel 会话与规则审查台</title>
+<style>
+:root{
+  --bg:#0f1419; --panel:#1a212b; --panel2:#202a36; --bd:#2c3a4a;
+  --tx:#d7e0ea; --tx2:#8ea0b4; --acc:#4da3ff; --ok:#3ecf8e; --bad:#ff6b6b; --warn:#ffb020;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:14px/1.5 "SF Mono",Consolas,"Microsoft YaHei",monospace}
+header{display:flex;align-items:center;gap:14px;padding:12px 20px;background:var(--panel);border-bottom:1px solid var(--bd);flex-wrap:wrap}
+header h1{font-size:16px;margin:0;font-weight:600}
+.badge{display:inline-block;padding:2px 10px;border-radius:10px;font-size:12px;border:1px solid var(--bd);background:var(--panel2)}
+.badge.ok{color:var(--ok);border-color:var(--ok)}
+.badge.bad{color:var(--bad);border-color:var(--bad)}
+.badge.warn{color:var(--warn);border-color:var(--warn)}
+.navlink{color:var(--tx2);font-size:12px;text-decoration:none;border:1px solid var(--bd);border-radius:6px;padding:3px 10px;background:none;cursor:pointer;font-family:inherit}
+.navlink:hover{color:var(--acc);border-color:var(--acc)}
+main{display:flex;flex-direction:column;gap:14px;padding:14px 20px;max-width:1500px;margin:0 auto}
+.card{background:var(--panel);border:1px solid var(--bd);border-radius:10px;padding:14px;display:flex;flex-direction:column;gap:6px}
+.card h2{font-size:13px;margin:0 0 6px;color:var(--tx2);font-weight:600;text-transform:uppercase;letter-spacing:.5px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.card h2 .sub{font-weight:400;text-transform:none;letter-spacing:0;font-size:11px;color:var(--tx2)}
+.warnbox{background:#2a2113;border:1px solid #6b552a;color:var(--warn);border-radius:8px;padding:8px 10px;font-size:12px;line-height:1.6;margin:4px 0 8px}
+.warnbox b{color:#ffd479}
+.tblwrap{max-height:360px;overflow:auto;border:1px solid var(--bd);border-radius:8px}
+table.tbl{width:100%;border-collapse:collapse;font-size:12px}
+table.tbl th,table.tbl td{border-bottom:1px solid var(--bd);padding:5px 8px;text-align:left;vertical-align:top;white-space:nowrap}
+table.tbl th{position:sticky;top:0;background:var(--panel2);color:var(--tx2);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.4px;z-index:1}
+table.tbl tr:last-child td{border-bottom:none}
+table.tbl tbody tr:hover td{background:var(--panel2)}
+table.tbl td.wrap{white-space:normal;word-break:break-word;max-width:460px}
+table.tbl td.mono{color:var(--tx2)}
+table.tbl tbody tr.clickable{cursor:pointer}
+.filters{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:6px;align-items:end;margin-bottom:8px}
+.filters label{display:block;font-size:11px;color:var(--tx2)}
+.filters input[type=text],.filters input[type=number]{width:100%;background:var(--panel2);border:1px solid var(--bd);color:var(--tx);border-radius:6px;padding:5px 7px;font-size:12px;font-family:inherit}
+.filters .btncell{display:flex;gap:6px;align-items:flex-end}
+button{background:var(--panel2);color:var(--tx);border:1px solid var(--bd);border-radius:6px;padding:7px 14px;font-size:13px;cursor:pointer;font-family:inherit}
+button:hover{border-color:var(--acc);color:var(--acc)}
+button.primary{background:var(--acc);border-color:var(--acc);color:#08131f}
+button.primary:hover{filter:brightness(1.1);color:#08131f}
+button.danger{background:#3a1f24;border-color:#6b3535;color:#ff9b9b}
+button.danger:hover{border-color:var(--bad);color:var(--bad)}
+button.mini{padding:2px 8px;font-size:11px}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.chkrow{display:flex;gap:8px;align-items:center;margin:6px 0;font-size:13px}
+.chkrow input{flex:0 0 auto}
+.msg{padding:8px 10px;border-radius:6px;margin-top:8px;font-size:12px;display:none}
+.msg.show{display:block}
+.msg.ok{background:#14301f;color:var(--ok);border:1px solid #1f4a30}
+.msg.err{background:#33191c;color:var(--bad);border:1px solid #5c2c30}
+.detail{margin-top:8px;border:1px solid var(--bd);border-radius:8px;padding:8px 10px;background:var(--panel2);display:none}
+.detail.show{display:block}
+.detail .meta{font-size:12px;color:var(--tx2);display:flex;flex-wrap:wrap;gap:12px;margin-bottom:6px}
+.timeline{max-height:320px;overflow:auto;display:flex;flex-direction:column;gap:6px}
+.turn{border-left:3px solid var(--bd);padding:3px 8px;font-size:12.5px;white-space:pre-wrap;word-break:break-word}
+.turn.user{border-color:var(--acc)}
+.turn.assistant{border-color:var(--ok)}
+.turn .role{font-size:10.5px;color:var(--tx2);text-transform:uppercase;letter-spacing:.4px}
+.pill{display:inline-block;padding:0 6px;border-radius:8px;font-size:10.5px;line-height:16px;border:1px solid var(--bd);color:var(--tx2);white-space:nowrap}
+.pill.ok{color:var(--ok);border-color:var(--ok)}
+.pill.bad{color:var(--bad);border-color:var(--bad)}
+.pill.warn{color:var(--warn);border-color:var(--warn)}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:8px}
+.kv{background:var(--panel2);border:1px solid var(--bd);border-radius:8px;padding:8px 10px}
+.kv .k{font-size:11px;color:var(--tx2)}
+.kv .v{font-size:13px;margin-top:2px;word-break:break-all}
+footer{padding:10px 20px;color:#5a6a7c;font-size:12px}
+samp{color:var(--acc)}
+</style>
+</head>
+<body>
+<header>
+  <h1 data-en="Session &amp; Rulebook Review">会话与规则审查台</h1>
+  <span id="engBadge" class="badge" data-en="Engine: unknown">引擎: 未知</span>
+  <span class="badge" data-en="Separate page from /admin/">与 /admin/ 分离的独立页</span>
+  <span style="flex:1"></span>
+  <button id="langBtn" class="navlink" type="button" title="切换为中文">EN</button>
+  <a class="navlink" href="/admin/" data-en="Engine Admin /admin/">引擎管理 /admin/</a>
+  <a class="navlink" href="/chat" target="_blank" data-en="Chat /chat">对话页 /chat</a>
+</header>
+<main>
+  <div class="card">
+    <h2><span data-en="Review Scope">审查范围</span><span class="sub" id="scopeSub"></span>
+      <span style="flex:1"></span>
+      <button id="btn_all_refresh" class="mini" data-en="Refresh all">全部刷新</button>
+    </h2>
+    <div class="warnbox" data-en-html="<b>Trusted network only.</b> This review console has <b>no authentication</b>: actor/role come from the <samp>X-Audit-User</samp> / <samp>X-Audit-Role</samp> request headers and are recorded for audit traceability only — they are NOT authorization. Put a real authenticating proxy in front before exposing it. Session files are stored in plaintext; the mask option only masks this view (and is recorded in the audit log). Viewing, exporting and deleting are all written to the append-only SM3 hash-chained audit log. Directories are configured on the <a href='/admin/'>engine admin page</a> (or via CLI)."><b>仅限内网 / 可信网络。</b>本审查台<b>无身份认证</b>：actor/role 取自 <samp>X-Audit-User</samp> / <samp>X-Audit-Role</samp> 请求头，仅用于审计追溯，<b>不构成鉴权</b>；对外暴露前请加带认证的前置代理。会话文件为明文落盘，脱敏只作用于本视图（且会记入审计）。查看 / 导出 / 删除都会写入追加式的 SM3 哈希链审计日志。目录在<a href='/admin/'>引擎管理页</a>配置（或走命令行）。</div>
+    <div class="grid" id="scopeGrid"></div>
+  </div>
+
+  <!-- 预置上下文（规则包） -->
+  <div class="card">
+    <h2><span data-en="Preset Contexts (Rulebooks)">预置上下文（规则包）</span>
+      <span class="sub" id="rbDir"></span>
+      <span style="flex:1"></span>
+      <button id="btn_rb_refresh" class="mini" data-en="Refresh">刷新</button>
+    </h2>
+    <div style="font-size:11px;color:var(--tx2)" data-en-html="A rulebook is a pre-processed named context: the manual is encoded and prefilled once, its KV snapshot is stored on disk, and inference then borrows that prefix (only the remainder is prefilled). Wording is strictly <b>deterministic but approximate</b> — NOT a bit-exact clone of a full recompute. If <b>fp</b> does not match the loaded model, the snapshot is ignored and a full prefill is used.">规则包 = 预处理的命名上下文：手册编码并 prefill 一次、KV 快照落盘，推理时直接借用该前缀（只 prefill 余量）。口径严格为<b>确定性但近似</b>，不是全量重算的位级克隆。若 <b>fp</b> 与当前加载模型不一致，快照不参与复用，回退全量 prefill。</div>
+    <div class="tblwrap">
+      <table class="tbl">
+        <thead><tr>
+          <th data-en="ID / Name">ID / 名称</th>
+          <th data-en="Ver">版本</th>
+          <th data-en="Tenant / Scope">租户 / 适用范围</th>
+          <th data-en="Tokens / Chunks">Token / 分块</th>
+          <th data-en="Model fp">模型指纹</th>
+          <th data-en="KV snapshots">KV 快照</th>
+          <th data-en="Updated">更新时间</th>
+          <th data-en="Actions">操作</th>
+        </tr></thead>
+        <tbody id="rbBody"></tbody>
+      </table>
+    </div>
+    <div class="msg" id="rbmsg"></div>
+  </div>
+
+  <!-- 会话审查 -->
+  <div class="card">
+    <h2><span data-en="Session Review">会话审查</span>
+      <span class="sub" id="sessDir"></span>
+      <span style="flex:1"></span>
+      <button id="btn_sess_refresh" class="mini" data-en="Refresh">刷新</button>
+    </h2>
+    <div class="filters">
+      <label><span data-en="Tenant">租户</span><input type="text" id="s_tenant" placeholder="t1"></label>
+      <label><span data-en="User">用户</span><input type="text" id="s_user" placeholder="u1"></label>
+      <label><span data-en="Rulebook ID">规则包 ID</span><input type="text" id="s_rb" placeholder="rb_xxx"></label>
+      <label><span data-en="Keyword">关键字</span><input type="text" id="s_q" placeholder="sess / 内容片段"></label>
+      <label><span data-en="Updated since (unix sec)">更新时间起 (unix 秒)</span><input type="number" id="s_since" min="0" placeholder="0"></label>
+      <label><span data-en="Until (unix sec)">截止 (unix 秒)</span><input type="number" id="s_until" min="0" placeholder="0"></label>
+      <label><span data-en="Limit">条数上限</span><input type="number" id="s_limit" min="1" max="1000" value="100"></label>
+      <div class="btncell">
+        <button id="btn_sess_apply" class="primary" data-en="Filter">筛选</button>
+        <button id="btn_sess_clear" data-en="Clear">清空</button>
+      </div>
+    </div>
+    <div class="chkrow"><input type="checkbox" id="s_mask"><label for="s_mask" data-en="Mask content in previews (masked=1; also recorded in the audit log)">预览内容脱敏（masked=1，同时记入审计）</label></div>
+    <div class="tblwrap">
+      <table class="tbl">
+        <thead><tr>
+          <th data-en="Updated">更新时间</th>
+          <th data-en="Session ID">会话 ID</th>
+          <th data-en="Tenant / User">租户 / 用户</th>
+          <th data-en="Rulebook">规则包</th>
+          <th data-en="Msgs">消息数</th>
+          <th data-en="Tokens">Token</th>
+          <th data-en="Size">大小</th>
+          <th data-en="First user / last reply">首问 / 末答</th>
+          <th data-en="Actions">操作</th>
+        </tr></thead>
+        <tbody id="sessBody"></tbody>
+      </table>
+    </div>
+    <div class="msg" id="sessmsg"></div>
+    <div class="detail" id="sessDetail">
+      <div class="meta" id="sessMeta"></div>
+      <div class="timeline" id="sessTimeline"></div>
+      <div class="row">
+        <button id="btn_sess_export" data-en="Export JSON (audited)">导出 JSON（记审计）</button>
+        <button id="btn_sess_export_mask" data-en="Export masked (audited)">导出脱敏件（记审计）</button>
+        <button id="btn_sess_delete" class="danger" data-en="Delete session (audited)">删除该会话（记审计）</button>
+        <button id="btn_sess_close" data-en="Close">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 管理面审计 -->
+  <div class="card">
+    <h2><span data-en="Admin Audit Log">管理面审计</span>
+      <span class="sub" id="audMeta"></span>
+      <span style="flex:1"></span>
+      <button id="btn_aud_refresh" class="mini" data-en="Refresh">刷新</button>
+      <button id="btn_aud_verify" class="mini" data-en="Verify hash chain">校验哈希链</button>
+    </h2>
+    <div class="filters">
+      <label><span data-en="Actor (X-Audit-User)">操作者 (X-Audit-User)</span><input type="text" id="a_actor" placeholder="anon"></label>
+      <label><span data-en="Role (X-Audit-Role)">角色 (X-Audit-Role)</span><input type="text" id="a_role" placeholder="（留空=仅审计）"></label>
+      <label><span data-en="Entries">条数</span><input type="number" id="a_n" min="1" max="2000" value="200"></label>
+      <div class="btncell"><button id="btn_aud_save" data-en="Use as this browser's identity">设为本浏览器身份</button></div>
+    </div>
+    <div style="font-size:11px;color:var(--tx2);margin-bottom:6px" data-en-html="Deletes are gated by the env <b>VLLM_ADMIN_ROLES</b> (comma-separated allowlist): unset = allow all (trusted-network premise); set = the request's X-Audit-Role must be in it, otherwise 403 + a <b>denied</b> audit entry. The log is append-only with an SM3 hash chain (each entry authenticates the previous one), so any edit/insert/delete is detectable — tamper-evident, NOT non-repudiable. A missing <b>prefix</b> (archived/rotated away) cannot be told apart from deletion and is reported as such.">删除类操作受环境变量 <b>VLLM_ADMIN_ROLES</b>（逗号白名单）门控：未设置 = 放行（内网前提）；已设置 = 请求的 X-Audit-Role 必须命中，否则 403 并记一条 <b>denied</b> 审计。日志为追加写 + SM3 哈希链（每条认证前一条），任何改写/插入/删除都可被校验发现——<b>篡改可发现</b>，非不可否认。文件<b>前缀</b>缺失（已归档/轮转）与删除无法区分，故单独如实标注。</div>
+    <div id="audVerify" style="font-size:12px;margin-bottom:6px"></div>
+    <div class="tblwrap">
+      <table class="tbl">
+        <thead><tr>
+          <th data-en="Seq">Seq</th>
+          <th data-en="Time">时间</th>
+          <th data-en="Actor / Role">操作者 / 角色</th>
+          <th data-en="Action">动作</th>
+          <th data-en="Target">目标</th>
+          <th data-en="Result">结果</th>
+          <th data-en="Detail">说明</th>
+          <th data-en="Hash">Hash</th>
+        </tr></thead>
+        <tbody id="audBody"></tbody>
+      </table>
+    </div>
+    <div class="msg" id="audmsg"></div>
+  </div>
+</main>
+<footer><span data-en="vLLM-Kestrel review console (separate from /admin/) · chain check is tamper-evident within the file only">vLLM-Kestrel 审查台（独立于 /admin/）· 链校验只在文件范围内具备篡改可发现性</span></footer>
+
+<script>
+"use strict";
+const engBase = "";   // same origin
+const $ = id => document.getElementById(id);
+const num = id => parseInt($(id).value, 10) || 0;
+
+/* ---------- 双语（中 / 英）：与 admin.html 同机制 ---------- */
+const LANG_KEY = "vllm_lang";
+let LANG = (function(){ try { return localStorage.getItem(LANG_KEY) === "en" ? "en" : "zh"; } catch(e){ return "zh"; } })();
+function T(zh, en){ return LANG === "en" ? en : zh; }
+function applyLang(){
+  document.documentElement.lang = (LANG === "en") ? "en" : "zh-CN";
+  document.querySelectorAll("[data-en]").forEach(function(el){
+    if (el.__zh === undefined) el.__zh = el.textContent;
+    el.textContent = (LANG === "en") ? el.dataset.en : el.__zh;
+  });
+  document.querySelectorAll("[data-en-html]").forEach(function(el){
+    if (el.__zhHtml === undefined) el.__zhHtml = el.innerHTML;
+    el.innerHTML = (LANG === "en") ? el.dataset.enHtml : el.__zhHtml;
+  });
+  document.querySelectorAll("[data-en-ph]").forEach(function(el){
+    if (el.__zhPh === undefined) el.__zhPh = el.placeholder;
+    el.placeholder = (LANG === "en") ? el.dataset.enPh : el.__zhPh;
+  });
+  var lb = $("langBtn");
+  if (lb){ lb.textContent = T("EN", "中文"); lb.title = T("Switch to English", "切换为中文"); }
+  try { localStorage.setItem(LANG_KEY, LANG); } catch(e){}
+}
+function setLang(l){ LANG = (l === "en") ? "en" : "zh"; applyLang(); }
+
+/* ---------- 身份 / 请求 ---------- */
+const EDGE_ID_KEY = "vllm_edge_identity";
+function edgeIdentity(){
+  try { return JSON.parse(localStorage.getItem(EDGE_ID_KEY) || "{}") || {}; }
+  catch(e){ return {}; }
+}
+function edgeHeaders(){
+  const id = edgeIdentity(), h = {};
+  if (id.actor) h["X-Audit-User"] = id.actor;
+  if (id.role)  h["X-Audit-Role"] = id.role;
+  return h;
+}
+async function engH(fn, opts){
+  opts = opts || {};
+  opts.headers = Object.assign({}, opts.headers || {}, edgeHeaders());
+  const r = await fetch(engBase + fn, opts);
+  return r.json();
+}
+function esc(s){
+  return String(s == null ? "" : s).replace(/[&<>"']/g,
+    c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+function fmtTs(s){
+  if (!s) return "-";
+  const d = new Date(Number(s) * 1000);
+  if (isNaN(d.getTime())) return String(s);
+  const p = n => String(n).padStart(2, "0");
+  return d.getFullYear() + "-" + p(d.getMonth()+1) + "-" + p(d.getDate()) + " " +
+         p(d.getHours()) + ":" + p(d.getMinutes()) + ":" + p(d.getSeconds());
+}
+function fmtBytes(v){
+  v = Number(v) || 0;
+  if (v >= 1048576) return (v/1048576).toFixed(2) + " MB";
+  if (v >= 1024) return (v/1024).toFixed(1) + " KB";
+  return v + " B";
+}
+function fmtMs(v){
+  v = Number(v) || 0;
+  if (v <= 0) return "-";
+  return (v >= 1000 ? (v/1000).toFixed(2) + " s (" + Math.round(v) + " ms)"
+                    : Math.round(v) + " ms");
+}
+function msg(el, text, ok){
+  el.textContent = text;
+  el.className = "msg show " + (ok ? "ok" : "err");
+}
+function kvBox(k, v){
+  const d = document.createElement("div");
+  d.className = "kv";
+  d.innerHTML = '<div class="k"></div><div class="v"></div>';
+  d.querySelector(".k").textContent = k;
+  d.querySelector(".v").textContent = v;
+  return d;
+}
+function downloadJson(name, obj){
+  const blob = new Blob([JSON.stringify(obj, null, 2)], {type:"application/json"});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a); a.click();
+  setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); }, 0);
+}
+
+/* ---------- 审查范围（引擎侧上下文） ---------- */
+async function opScope(){
+  const g = $("scopeGrid");
+  try {
+    const s = await engH("/admin/api/status");
+    g.innerHTML = "";
+    g.appendChild(kvBox(T("引擎", "Engine"), "vllm_kestrel"));
+    g.appendChild(kvBox(T("模型状态", "Model status"),
+      s.load_state === 2 ? T("已就绪", "ready")
+      : (s.load_state === 1 ? T("加载中", "loading") : T("未加载", "not loaded"))));
+    g.appendChild(kvBox(T("模型", "Model"), s.model_name || s.model_id || "-"));
+    g.appendChild(kvBox(T("KV 前缀复用", "KV prefix reuse"),
+      s.prefix_kv ? T("开", "on") : T("关", "off")));
+    g.appendChild(kvBox(T("规则前缀复用命中", "Rulebook prefix hits"), String(s.rulebook_hits || 0)));
+    g.appendChild(kvBox(T("服务端重建轮次", "Server-rebuilt turns"), String(s.session_turns || 0)));
+    g.appendChild(kvBox(T("规则包目录", "Rulebook dir"), s.rulebook_dir || T("未配置", "not configured")));
+    g.appendChild(kvBox(T("会话目录", "Session dir"), s.session_dir || T("未配置", "not configured")));
+    g.appendChild(kvBox(T("审计日志", "Audit log"), s.audit_log || T("未配置", "not configured")));
+    const b = $("engBadge");
+    if (s.load_state === 2){ b.textContent = T("引擎: 运行中·已就绪", "Engine: running·ready"); b.className = "badge ok"; }
+    else { b.textContent = T("引擎: 运行中·未加载模型", "Engine: running·no model"); b.className = "badge warn"; }
+    $("scopeSub").textContent = s.model_name || "";
+    const noDir = !s.rulebook_dir && !s.session_dir;
+    $("scopeSub").textContent += noDir ? T("（未配置目录：请在 /admin/ 配置后重启引擎）",
+                                          " (no dirs configured: set them on /admin/ and restart)") : "";
+  } catch(e){
+    g.innerHTML = "";
+    $("engBadge").textContent = T("引擎: 不可达", "Engine: unreachable");
+    $("engBadge").className = "badge bad";
+  }
+}
+
+/* ---------- 规则包（预置命名上下文） ---------- */
+async function opRulebooks(){
+  const m = $("rbmsg");
+  m.className = "msg";
+  try {
+    const r = await engH("/admin/api/rulebooks");
+    $("rbDir").textContent = r.dir || "";
+    const tb = $("rbBody");
+    tb.innerHTML = "";
+    if (r.error){ msg(m, r.error, false); return; }
+    const list = r.rulebooks || [];
+    list.forEach(function(x){
+      const fp = x.model_fp_match
+        ? '<span class="pill ok">' + T("指纹匹配", "fp match") + '</span>'
+        : '<span class="pill bad">' + T("指纹不符→全量 prefill", "fp mismatch") + '</span>';
+      const tr = document.createElement("tr");
+      tr.innerHTML =
+        '<td class="wrap"><b>' + esc(x.rulebook_id) + '</b><br>' +
+          '<span style="color:var(--tx2)">' + esc(x.name) + '</span></td>' +
+        '<td>' + esc(x.version) + '</td>' +
+        '<td class="wrap">' + esc(x.tenant_id) + '<br>' +
+          '<span style="color:var(--tx2)">' + esc(x.scope) + '</span></td>' +
+        '<td>' + (x.n_tokens|0) + ' / ' + (x.n_chunks|0) + '</td>' +
+        '<td class="mono">' + esc(x.model_fp) + '<br>' + fp + '</td>' +
+        '<td>' + (x.n_kv_snapshots|0) + '</td>' +
+        '<td>' + fmtTs(x.updated_s) + '</td>' +
+        '<td><button class="danger mini">' + T("删除", "Delete") + '</button></td>';
+      tr.querySelector("button").onclick = function(){ opRulebookDelete(x.rulebook_id); };
+      tb.appendChild(tr);
+    });
+    if (!list.length) msg(m, T("（暂无规则包；用 --rulebook-build 预置）",
+                              "(no rulebooks; build one with --rulebook-build)"), true);
+  } catch(e){ msg(m, String(e), false); }
+}
+async function opRulebookDelete(id){
+  if (!confirm(T("确认删除规则包 " + id + " 及其全部 KV 快照？\n（该操作会写入审计日志）",
+                 "Delete rulebook " + id + " and all its KV snapshots?\n(audited)"))) return;
+  const m = $("rbmsg");
+  try {
+    const r = await engH("/admin/api/rulebooks/delete", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({rulebook_id: id})
+    });
+    if (r.ok){ msg(m, T("已删除 ", "deleted ") + id, true); opRulebooks(); opAudit(); }
+    else msg(m, r.error || T("删除失败", "delete failed"), false);
+  } catch(e){ msg(m, String(e), false); }
+}
+
+/* ---------- 会话审查 ---------- */
+let curSess = null;
+function sessQuery(){
+  const p = new URLSearchParams();
+  const put = function(k, id){
+    const el = $(id);
+    const v = (el && el.value ? String(el.value) : "").trim();
+    if (v) p.set(k, v);
+  };
+  put("tenant","s_tenant"); put("user","s_user"); put("rulebook","s_rb");
+  put("q","s_q"); put("since","s_since"); put("until","s_until"); put("limit","s_limit");
+  if ($("s_mask").checked) p.set("mask","1");
+  return p.toString();
+}
+async function opSessions(){
+  const m = $("sessmsg");
+  m.className = "msg";
+  try {
+    const r = await engH("/admin/api/sessions?" + sessQuery());
+    $("sessDir").textContent = r.dir || "";
+    const tb = $("sessBody");
+    tb.innerHTML = "";
+    if (r.error){ msg(m, r.error, false); return; }
+    const list = r.sessions || [];
+    list.forEach(function(x){
+      const tr = document.createElement("tr");
+      tr.className = "clickable";
+      tr.innerHTML =
+        '<td>' + fmtTs(x.updated_s) + '</td>' +
+        '<td><b>' + esc(x.session_id) + '</b><br><span style="color:var(--tx2)">' +
+          esc(x.file) + '</span></td>' +
+        '<td>' + esc(x.tenant_id) + ' / ' + esc(x.user_id) + '</td>' +
+        '<td>' + (esc(x.rulebook_id) || '<span style="color:var(--tx2)">-</span>') + '</td>' +
+        '<td>' + (x.n_messages|0) + '</td>' +
+        '<td>' + (x.n_tokens|0) + '</td>' +
+        '<td>' + fmtBytes(x.size) + '</td>' +
+        '<td class="wrap">' + esc(x.first_user) +
+          (x.last_assistant ? '<br><span style="color:var(--tx2)">↳ ' + esc(x.last_assistant) + '</span>' : '') +
+        '</td>' +
+        '<td>' + T("查看", "View") + '</td>';
+      tr.onclick = function(){ opSessionDetail(x.file, false); };
+      tb.appendChild(tr);
+    });
+    msg(m, T("共 " + (r.total|0) + " 条，显示 " + (r.shown|0) + " 条" +
+             (r.masked ? "（预览已脱敏）" : ""),
+             (r.total|0) + " total, " + (r.shown|0) + " shown" +
+             (r.masked ? " (previews masked)" : "")), true);
+  } catch(e){ msg(m, String(e), false); }
+}
+async function opSessionDetail(file, exportIt, maskOverride){
+  const m = $("sessmsg");
+  try {
+    const mask = (maskOverride === undefined) ? $("s_mask").checked : maskOverride;
+    const r = await engH("/admin/api/session?file=" + encodeURIComponent(file) +
+                         "&export=" + (exportIt ? "1" : "0") +
+                         "&mask=" + (mask ? "1" : "0"));
+    if (r.error){ msg(m, r.error, false); return; }
+    if (exportIt){
+      downloadJson("session_" + (r.session_id || file) + (r.masked ? "_masked" : "") + ".json", r);
+      msg(m, T("已导出（并写入审计）", "exported (audited)"), true);
+      opAudit();
+      return;
+    }
+    curSess = { file: file, info: r };
+    $("sessMeta").innerHTML =
+      '<span>' + T("文件", "file") + ': <b>' + esc(r.file) + '</b></span>' +
+      '<span>' + T("会话", "session") + ': <b>' + esc(r.session_id) + '</b></span>' +
+      '<span>' + T("租户/用户", "tenant/user") + ': ' + esc(r.tenant_id) + ' / ' + esc(r.user_id) + '</span>' +
+      '<span>' + T("规则包", "rulebook") + ': ' + (esc(r.rulebook_id) || '-') + '</span>' +
+      '<span>' + T("创建", "created") + ': ' + fmtTs(r.created_s) + '</span>' +
+      '<span>' + T("更新", "updated") + ': ' + fmtTs(r.updated_s) + '</span>' +
+      '<span>' + T("消息/token", "msgs/tokens") + ': ' + (r.n_messages|0) + ' / ' + (r.n_tokens|0) + '</span>' +
+      '<span>' + T("延迟", "latency") + ': ' + fmtMs(r.last_ms) + '</span>' +
+      '<span>' + T("模型", "model") + ': ' + esc(r.engine_model) + '</span>' +
+      (r.masked ? '<span class="pill warn">' + T("已脱敏视图", "masked view") + '</span>' : '');
+    const tl = $("sessTimeline");
+    tl.innerHTML = "";
+    (r.messages || []).forEach(function(item){
+      const role = (item && item.role) ? String(item.role) : "?";
+      const ct = (item && typeof item.content === "string") ? item.content
+                 : (item && item.content ? JSON.stringify(item.content) : "");
+      const d = document.createElement("div");
+      d.className = "turn " + (role === "user" ? "user" : (role === "assistant" ? "assistant" : ""));
+      d.innerHTML = '<div class="role">' + esc(role) + '</div>' + esc(ct);
+      tl.appendChild(d);
+    });
+    $("sessDetail").className = "detail show";
+    msg(m, T("已查看（并写入审计）", "viewed (audited)"), true);
+    opAudit();
+  } catch(e){ msg(m, String(e), false); }
+}
+async function opSessionDelete(){
+  if (!curSess) return;
+  const f = curSess.file;
+  if (!confirm(T("确认删除会话文件 " + f + "？\n（不可恢复；该操作会写入审计日志）",
+                 "Delete session file " + f + "?\n(irreversible; audited)"))) return;
+  const m = $("sessmsg");
+  try {
+    const r = await engH("/admin/api/sessions/delete", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({file: f})
+    });
+    if (r.ok){
+      $("sessDetail").className = "detail";
+      curSess = null;
+      msg(m, T("已删除 ", "deleted ") + f, true);
+      opSessions(); opAudit();
+    } else msg(m, r.error || T("删除失败", "delete failed"), false);
+  } catch(e){ msg(m, String(e), false); }
+}
+
+/* ---------- 管理面审计 ---------- */
+async function opAudit(){
+  const m = $("audmsg");
+  m.className = "msg";
+  try {
+    const n = Math.max(1, Math.min(2000, num("a_n") || 200));
+    const r = await engH("/admin/api/audit?n=" + n);
+    $("audMeta").textContent = (r.path || "") + " · " + fmtBytes(r.size);
+    const vb = $("audVerify");
+    if (r.verify){
+      const v = r.verify;
+      let cls, txt;
+      if (v.empty){
+        cls = "";
+        txt = T("暂无审计记录（日志为空或刚轮转）",
+                "no audit entries yet (empty or just rotated)");
+      } else if (!v.ok){
+        cls = "bad";
+        txt = T("哈希链校验失败（疑似篡改）", "hash chain FAILED (tampering?)") +
+              " · bad_seq=" + (v.bad_seq|0) +
+              " · " + T("已校验", "checked") + " " + (v.checked|0);
+      } else if (v.genesis && v.full){
+        cls = "ok";
+        txt = T("哈希链校验通过（首条 seq=1，覆盖整个文件）",
+                "hash chain OK (from seq=1, whole file)") +
+              " · " + T("已校验", "checked") + " " + (v.checked|0);
+      } else {
+        cls = "warn";
+        txt = T("链在文件内自洽", "chain self-consistent within the file");
+        if (!v.genesis)
+          txt += " · " + T("但前缀不在文件内（首条 seq=" + (v.first_seq|0) +
+                           "，可能已归档或删除）",
+                           "but the prefix is absent (first seq=" + (v.first_seq|0) +
+                           "; archived or removed)");
+        if (!v.full) txt += " · " + T("仅尾部窗口", "tail window only");
+        txt += " · " + T("已校验", "checked") + " " + (v.checked|0);
+      }
+      vb.innerHTML = '<span class="pill ' + cls + '">' + esc(txt) + '</span>';
+    } else vb.innerHTML = "";
+    const tb = $("audBody");
+    tb.innerHTML = "";
+    (r.entries || []).slice().reverse().forEach(function(e){
+      const tr = document.createElement("tr");
+      const res = String(e.result || "");
+      const cls = res === "ok" ? "ok" : (res === "denied" ? "warn" : "bad");
+      tr.innerHTML =
+        '<td>' + (e.seq|0) + '</td>' +
+        '<td>' + fmtTs(e.ts) + '</td>' +
+        '<td>' + esc(e.actor) + (e.role ? ' <span class="pill">' + esc(e.role) + '</span>' : '') + '</td>' +
+        '<td>' + esc(e.action) + '</td>' +
+        '<td class="wrap mono">' + esc(e.target) + '</td>' +
+        '<td><span class="pill ' + cls + '">' + esc(res) + '</span></td>' +
+        '<td class="wrap">' + esc(e.detail) + '</td>' +
+        '<td class="mono" title="' + esc(e.hash) + '">' + esc(String(e.hash || "").slice(0, 12)) + '…</td>';
+      tb.appendChild(tr);
+    });
+    if (!r.enabled) msg(m, T("审计未启用（启动时给 --audit-log 或设置会话目录）",
+                            "audit disabled (pass --audit-log at startup)"), false);
+    else msg(m, T("共 " + (r.count|0) + " 条（最新在上）",
+                  (r.count|0) + " entries (newest first)"), true);
+  } catch(e){ msg(m, String(e), false); }
+}
+function edgeSaveIdentity(){
+  const a = ($("a_actor").value || "").trim();
+  const r = ($("a_role").value || "").trim();
+  try { localStorage.setItem(EDGE_ID_KEY, JSON.stringify({actor:a, role:r})); } catch(e){}
+  msg($("audmsg"), T("已保存本浏览器身份（仅用于审计追溯，非鉴权）",
+                     "browser identity saved (audit traceability only, not auth)"), true);
+}
+
+/* ---------- 接线与初始化 ---------- */
+$("langBtn").onclick = function(){ setLang(LANG === "en" ? "zh" : "en"); };
+$("btn_all_refresh").onclick = function(){ opScope(); opRulebooks(); opSessions(); opAudit(); };
+$("btn_rb_refresh").onclick = opRulebooks;
+$("btn_sess_refresh").onclick = opSessions;
+$("btn_sess_apply").onclick = opSessions;
+$("btn_sess_clear").onclick = function(){
+  ["s_tenant","s_user","s_rb","s_q","s_since","s_until"].forEach(function(id){ $(id).value = ""; });
+  opSessions();
+};
+$("btn_sess_close").onclick = function(){ $("sessDetail").className = "detail"; curSess = null; };
+$("btn_sess_export").onclick = function(){ if (curSess) opSessionDetail(curSess.file, true, false); };
+$("btn_sess_export_mask").onclick = function(){ if (curSess) opSessionDetail(curSess.file, true, true); };
+$("btn_sess_delete").onclick = opSessionDelete;
+$("btn_aud_refresh").onclick = opAudit;
+$("btn_aud_verify").onclick = opAudit;
+$("btn_aud_save").onclick = edgeSaveIdentity;
+(function(){
+  const id = edgeIdentity();
+  $("a_actor").value = id.actor || "";
+  $("a_role").value = id.role || "";
+})();
+applyLang();
+opScope(); opRulebooks(); opSessions(); opAudit();
+</script>
+</body>
+</html>

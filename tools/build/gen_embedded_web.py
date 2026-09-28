@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""gen_embedded_web.py — embed admin.html / chat.html into the engine binary.
+"""gen_embedded_web.py — embed admin.html / chat.html / review.html into the engine binary.
 
-Reads  src/serve/admin.html and src/serve/chat.html, writes:
+Reads  src/serve/admin.html, src/serve/chat.html and src/serve/review.html, writes:
   src/serve/embedded_web.h   (declarations)
   src/serve/embedded_web.c   (byte arrays)
 
@@ -23,6 +23,7 @@ OUT_C = os.path.join(SRC, "embedded_web.c")
 FILES = [
     ("admin", "admin.html"),
     ("chat", "chat.html"),
+    ("review", "review.html"),
 ]
 
 

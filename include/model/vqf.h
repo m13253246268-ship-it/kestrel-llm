@@ -70,6 +70,20 @@ void vqf_stream_setup(STModelWeights *w);   /* vqf_load 成功后自动调用 */
 void vqf_stream_layer_advance(STModelWeights *w, int layer);
 long vqf_stream_rss_kb(void);               /* VmRSS(kB)，非 Linux 返回 0 */
 
+/* 形态 A（decode 只加载/驻留激活专家；VLLM_SA=1，默认关；见
+ * docs/逐层驻留专家级读取方案.md 与 docs/PRE_REG_STREAM_SA.txt）：
+ * 批式/prefill 期间调用 vqf_sa_set_batch(1) 抑制专家级同步——批内激活集≈全体专家，
+ * 逐 token 同步会误驱逐本批随后要读的专家段。未启用 VLLM_SA 时为空操作。
+ * VLLM_SA_EVL=1（默认关）额外开启「层尾驱逐」：进入 layer l 时丢掉 R_{l-keep} 的激活段，
+ * 把 decode 期驻留从「48 层激活集之并」压到「单层瞬时」——代价是每 token 必然重 fault
+ * 全部激活段（内存换带宽）。见预注册 §8。 */
+void vqf_sa_set_batch(int on);
+/* 形态 A 的「选路后同步」：在 top-k 选路点（每层、每 token）显式调用一次。
+ * 非批式且 VLLM_SA=1 时：驱逐 R_l \ A_l → R_l := A_l → 预取 A_l（专家段，0% 过取）。
+ * 默认关 / 批式 / 几何不符时为空操作。**不要**改挂在 vqf_ffn_prefetch 内——
+ * 后者在 VLLM_EW_PREFETCH 未开时会提前 return。 */
+void vqf_sa_sync_token(const STModelWeights *w, int layer, const int *sel, int tk);
+
 /* VQF 分层驻留运行状态（/admin 状态展示用）。返回 1 = 已启用并回填字段；
  * 0 = 未启用（env 未开 / 非明文 VQF / 几何不匹配 / 未加载）。 */
 int vqf_stream_state(int *keep, int *nl, int *nseg,

@@ -1,0 +1,33 @@
+  vLLM-Kestrel: Axiom-Guided Exact-Attention         
+  Large Language Model Inference Engine          
+
+[DEV] device=arm-generic arch=arm64 class=embedded model=- npu=none recommended_wmode=dual
+
+=== [STREAM] layer-resident validation (VQF only) ===
+[STREAM] vqf_load OK (0.00s): dim=4096 layers=36 heads=32 kv=8 ffn=12288 vocab=151936 max_seq=8192
+[STREAM] rss_after_load  = 988 kB
+[QWEN] Inference state ready (max_seq=8192).
+[TOK] Loaded 151669 tokens from vocab.bin (max_len=256)
+[TOK] match mode: indexed (slots=524288, 2.0 MB, load=0.29)
+[TOK] Special tokens: bos=151643 eos=151645 im_start=151644 im_end=151645 pad=151643
+[STREAM] tokenizer: 151669 tokens (eos=151645 im_start=151644 im_end=151645)
+[STREAM] rss_after_init  = 18592 kB
+[STREAM] prompt tokens = 118 (--stream-ctx 128)
+[PREFILL] 118/118 tokens done
+[PREFILL-TIMING] n=118 total=2326.9ms | GEMM=2204.8ms(94.8%) ATTN=32.4ms( 1.4%) OTHER=89.8ms( 3.9%)
+[PREFILL-KERNELS] QKV=314.1ms(14.2%) O=202.4ms( 9.2%) GATEUP=1096.4ms(49.7%) DOWN=591.8ms(26.8%)
+[STREAM] warmup done in 2.667s (discarded: 1 prefill + 4 decode)
+[PREFILL] 118/118 tokens done
+[PREFILL-TIMING] n=118 total=2284.7ms | GEMM=2177.6ms(95.3%) ATTN=31.3ms( 1.4%) OTHER=75.8ms( 3.3%)
+[PREFILL-KERNELS] QKV=309.4ms(14.2%) O=200.1ms( 9.2%) GATEUP=1084.0ms(49.8%) DOWN=584.1ms(26.8%)
+[STREAM] prefill 118 tokens in 2.308s (51 tok/s) [batch]
+[STREAM] rss_after_prefill = 4271012 kB
+[STREAM] decode mode: greedy (rep_pen=1.000 win=32)
+[STREAM] TOKIDS: 100062 t=1 ms=77 rss=4271012kB
+ 99371 t=2 ms=77 rss=4271012kB
+ 58814 t=3 ms=77 rss=4271012kB
+ 113272 t=4 ms=77 rss=4271012kB
+
+[STREAM] decoded 4 tokens, 77 ms/tok (12.99 tok/s)
+[STREAM] text: 逐层加载推理
+[STREAM] rss_end = 4271012 kB

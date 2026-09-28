@@ -1,0 +1,79 @@
+run_pid=141311  started=2026-09-25T00:23:02+08:00
+================ ENV ================
+2026-09-25T00:23:02+08:00
+host    : iZbp16kmws3ej184pk00osZ
+kernel  : 5.15.0-191-generic
+arch    : aarch64
+cpu     : Neoverse-N1
+ncpu    : 64
+boot_id : 043e34da-a3a8-4d40-8c92-f7ee0e1eeb7d
+uptime  :  00:23:02 up  2:31,  0 users,  load average: 17.57, 22.36, 17.71
+governor: cat: /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor: No such file or directory
+thermal : 
+mem     : 245 GiB total, 242 GiB avail
+steal   : steal_ticks=0
+binary  : 3f23dda18d984f85358b7556612b14f72c58ce1c8dbf43d9bed8d39d77d67691  /root/GitHupSRC/build-rk3588/vllm_kestrel
+bin_size: 965848
+model   : 17665601544 bytes
+vqf_md5 : e66a53eb9efc0a8962b81d3516aedf37
+vocab   : 207fbf4194ca8ae384b221882a21be2a
+src_commit: n/a
+extra_env : <none>
+extra_flag: <none>
+ctx/n/rounds: 4096 / 32 / 2   warm_flag=[--warmup]
+configs   : full sparse
+=====================================
+
+[warm-global] touching all weights ...
+[warm-global] rc=0 31 lines
+[warm-global] buff/cache=101 GiB
+
+======== ROUND 1 ========
+  env: load average: 8.23, 18.74, 16.75 | buff/cache=101GiB | steal_ticks=0 softirq=3759
+  order: 32   configs: full sparse
+  r1 t32 [full]: rc=0 nlwp_max=32 | prefill 4086 tokens in 124.595s | decoded 32 tokens, 133 ms/tok
+  r1 t32 [sparse(--sparse-attn --sparse-k 32)]: rc=0 nlwp_max=32 | prefill 4086 tokens in 129.362s | decoded 32 tokens, 127 ms/tok
+======== ROUND 2 ========
+  env: load average: 27.62, 23.54, 20.07 | buff/cache=101GiB | steal_ticks=0 softirq=3760
+  order: 32    configs: full sparse
+  r2 t32 [full]: rc=0 nlwp_max=32 | prefill 4086 tokens in 130.072s | decoded 32 tokens, 133 ms/tok
+  r2 t32 [sparse(--sparse-attn --sparse-k 32)]: rc=0 nlwp_max=32 | prefill 4086 tokens in 131.026s | decoded 32 tokens, 127 ms/tok
+
+======== SUMMARY ========
+=== G0 validity gate (per-config, per-round TOKIDS bitwise identity) ===
+  [full] round 1: cells=1 ids_n=32 md5=3b3d1f0435a9 mismatched=none -> PASS
+  [full] round 2: cells=1 ids_n=32 md5=3b3d1f0435a9 mismatched=none -> PASS
+  [sparse] round 1: cells=1 ids_n=32 md5=3df354a7fbd0 mismatched=none -> PASS
+  [sparse] round 2: cells=1 ids_n=32 md5=3df354a7fbd0 mismatched=none -> PASS
+  per-config G0 (thread count must not change numerics): PASS
+
+=== cross-config TOKIDS (INFO only: approximate tracks are expected to differ) ===
+  [full] t32 ids_n=32 md5=3b3d1f0435a9 first8=[151667 198 99692 3837 20002 104029 11622 104811]
+  [sparse] t32 ids_n=32 md5=3df354a7fbd0 first8=[151667 198 99692 3837 20002 104029 11622 104811]
+  [sparse] vs [full]: differing positions = 9/32  (expected: approximate track)
+
+=== RESULT [full] median of 2 round(s) ===
+threads | prefill_s median [min~max] | pf speedup | decode ms/tok median [min~max] | dec speedup | out_tok | rss_load MB | rss_end MB
+-------------------------------------------------------------------------------------------------------------------------------------
+     32 | 127.334 [124.595~130.072] | - | 133.0 [133.0~133.0] | - | 32.0 | 1 | 14763
+
+=== RESULT [sparse] median of 2 round(s) ===
+threads | prefill_s median [min~max] | pf speedup | decode ms/tok median [min~max] | dec speedup | out_tok | rss_load MB | rss_end MB
+-------------------------------------------------------------------------------------------------------------------------------------
+     32 | 130.194 [129.362~131.026] | - | 127.0 [127.0~127.0] | - | 32.0 | 1 | 14746
+
+=== CONFIG CONTRAST (matched threads; ratio = first cfg / this cfg) ===
+threads | full prefill_s / decode_ms | sparse prefill_s / decode_ms | prefill ratio | decode ratio
+     32 | 127.334 / 133.0 | 130.194 / 127.0 | 0.98x | 1.05x
+
+=== per-round raw (prefill_s / decode_ms) ===
+  [full] r1: t32=124.595s/133ms
+  [full] r2: t32=130.072s/133ms
+  [sparse] r1: t32=129.362s/127ms
+  [sparse] r2: t32=131.026s/127ms
+
+=== decoded per-token latency first 8 (ms) ===
+  [full] t32  [133, 133, 133, 133, 133, 133, 133, 133]
+  [sparse] t32  [126, 126, 126, 127, 126, 127, 127, 127]
+
+wrote /root/bench/sparse/SUMMARY.tsv

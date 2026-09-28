@@ -1,0 +1,51 @@
+  vLLM-Kestrel: Axiom-Guided Exact-Attention         
+  Large Language Model Inference Engine          
+
+[DEV] device=arm-generic arch=arm64 class=embedded model=- npu=none recommended_wmode=dual
+
+=== [STREAM] layer-resident validation (VQF only) ===
+[STREAM] vqf_load OK (0.00s): dim=4096 layers=36 heads=32 kv=8 ffn=12288 vocab=151936 max_seq=8192
+[STREAM] rss_after_load  = 976 kB
+[TOK] Loaded 151669 tokens from vocab.bin (max_len=256)
+[TOK] match mode: indexed (slots=524288, 2.0 MB, load=0.29)
+[TOK] Special tokens: bos=151643 eos=151645 im_start=151644 im_end=151645 pad=151643
+[STREAM] tokenizer: 151669 tokens (eos=151645 im_start=151644 im_end=151645)
+[STREAM] rss_after_init  = 18576 kB
+[STREAM] prompt tokens = 502 (--stream-ctx 512)
+[STREAM] warmup done in 3.504s (discarded: 1 prefill + 8 decode)
+[STREAM] prefill 502 tokens in 3.149s (159 tok/s) [batch]
+[STREAM] rss_after_prefill = 4350488 kB
+[STREAM] decode mode: greedy (rep_pen=1.000 win=32)
+[STREAM] TOKIDS: 100062 t=1 ms=35 rss=4350488kB
+ 99371 t=2 ms=35 rss=4350488kB
+ 58814 t=3 ms=35 rss=4350488kB
+ 113272 t=4 ms=35 rss=4350488kB
+ 101158 t=5 ms=35 rss=4350488kB
+ 18493 t=6 ms=35 rss=4350488kB
+ 104949 t=7 ms=35 rss=4350488kB
+ 113272 t=8 ms=35 rss=4350488kB
+ 101925 t=9 ms=35 rss=4350808kB
+ 3837 t=10 ms=35 rss=4351132kB
+ 59879 t=11 ms=35 rss=4351720kB
+ 99371 t=12 ms=35 rss=4351984kB
+ 104137 t=13 ms=35 rss=4352248kB
+ 58814 t=14 ms=35 rss=4352512kB
+ 33108 t=15 ms=35 rss=4353100kB
+ 108248 t=16 ms=35 rss=4353748kB
+ 71356 t=17 ms=35 rss=4354072kB
+ 32665 t=18 ms=35 rss=4354396kB
+ 3837 t=19 ms=35 rss=4354924kB
+ 23031 t=20 ms=35 rss=4355248kB
+ 101940 t=21 ms=35 rss=4355572kB
+ 111390 t=22 ms=35 rss=4355896kB
+ 109054 t=23 ms=35 rss=4356484kB
+ 62926 t=24 ms=35 rss=4357072kB
+ 100627 t=25 ms=35 rss=4357396kB
+ 113272 t=26 ms=35 rss=4357660kB
+ 101991 t=27 ms=35 rss=4358248kB
+ 105535 t=28 ms=35 rss=4358572kB
+ 1773 t=29 ms=35 rss=4358836kB
+
+[STREAM] decoded 29 tokens, 35 ms/tok (28.56 tok/s)
+[STREAM] text: 逐层加载推理是一种在模型推理过程中，按层逐步加载和激活网络参数，以减少内存占用并提高推理效率的技术。
+[STREAM] rss_end = 4358836 kB

@@ -220,6 +220,26 @@ typedef struct VLLMServerCtx {
     int   spec;                /* 1 = enable n-gram speculative decode */
     int   spec_k;              /* draft length (default 4) */
 
+    /* 规则包注册中心 + 会话存储（工业边缘：预置命名上下文 / 会话分区）。
+     * 默认关（目录为空）：请求体不含 rulebook_id/session_id 时行为与未引入
+     * 本功能前逐位一致。开启方式：--rulebook-dir / --session-dir。
+     * 规则包的"预处理"，即把手册渲染成 system 前导块并 prefill 一次、落盘
+     * KV 快照，见 vllm_rb_build；运行期由 handle_chat 复用该前缀。 */
+    int   rulebook_on;         /* 1 = --rulebook-dir 已配置 */
+    char  rulebook_dir[1024];  /* 规则包目录（rb_<id>.json / .txt / .kv） */
+    int   session_on;          /* 1 = --session-dir 已配置 */
+    char  session_dir[1024];   /* 会话目录（sess_<hash>.json） */
+    int   session_limit;       /* 会话文件数上限（LRU；0 = 默认 1024） */
+    long  rulebook_hits;       /* 命中规则前缀 KV 快照的请求数（观测） */
+    long  session_turns;       /* 服务端重建历史并注入的轮次总数（观测） */
+
+    /* 管理面审计日志（第二步：会话/规则包管理面）。
+     * 追加写、SM3 哈希链（防篡改可发现）。默认路径 = <session_dir>/admin_audit.jsonl
+     * （用 --audit-log 或 VLLM_AUDIT_LOG 覆盖）；未配置会话目录且未显式指定时为
+     * 关闭状态（仅打 stderr）。 */
+    int   audit_on;
+    char  audit_log[1024];
+
     /* 内存驻留策略（档位阶梯）：空闲逐级降级 + 软水位主动降级 + 管理页手动
      * 升降档。默认值由 vllm_res_defaults 装配；动作在 policy tick / admin
      * API 中以 inf_lock 串行执行（与推理互斥）。 */
@@ -275,6 +295,22 @@ int vllm_serve_load_on_use(VLLMServerCtx *ctx);
  * KV index. Call on unload so no stale context survives a reload. */
 void vllm_server_reset_session(VLLMServerCtx *ctx);
 
+/* ================================================================
+ * 规则包预处理（工业边缘：预置命名上下文）
+ *
+ * 把规则文本渲染成 Qwen im_chat 的 system 前导块、编码、prefill 一次，落盘
+ * KV 快照（rbk_<id>_<ver>_<asm>.kv）与元数据（rb_<id>.json / .txt）。需要模型
+ * 已加载。实现于 vllm_server.c：复用既有的 ist_reset + st_kv_disk_save 编排，
+ * **不新增任何数值路径**。
+ *
+ * 口径：复用为"确定性但近似"（非全量重算的位级克隆，见本头文件前缀复用
+ * 注释与 P4 结论），禁止宣称无损。
+ *
+ * 返回 0 成功；-1 失败（err 填原因，可为 NULL/0）。 */
+struct VLLMRulebook;   /* vllm_rulebook.h */
+int vllm_rb_build(VLLMServerCtx *ctx, const char *text,
+                  const struct VLLMRulebook *meta, char *err, size_t errcap);
+
 /* Point the server at a model directory (used by /admin/api/model/load in
  * portable manual-load mode, where the exe may have started without a model
  * on disk). Copies dir into ctx->model_dir_buf and repoints ctx->model_dir. */
@@ -292,6 +328,14 @@ typedef struct {
     double ttft_ms;         /* start -> first token produced */
     double tpot_ms;         /* avg per-token decode time after the first */
     double total_ms;        /* start -> last token */
+    /* 工业边缘：预置命名上下文 / 会话的请求级标识（未启用时为空/0）。
+     * 由 handle_chat 在调用推理前填入，随响应 metrics 与 SSE metrics 事件返回，
+     * 供上层审计与排障对齐"这条响应用了哪个规则包版本/哪次请求"。 */
+    char   trace_id[48];    /* 本请求追溯标识 */
+    char   rulebook_id[64]; /* 命中的规则包 ID（未用则为空） */
+    char   rulebook_version[32];
+    int    rulebook_tokens; /* 规则前缀注入的 token 数 */
+    int    reused_prefix;   /* 1 = 本次复用了预置上下文 KV 快照 */
 } VLLMMetrics;
 
 /* ================================================================

@@ -1,0 +1,51 @@
+  vLLM-Kestrel: Axiom-Guided Exact-Attention         
+  Large Language Model Inference Engine          
+
+[DEV] device=arm-generic arch=arm64 class=embedded model=- npu=none recommended_wmode=dual
+
+=== [STREAM] layer-resident validation (VQF only) ===
+[STREAM] vqf_load OK (0.00s): dim=4096 layers=36 heads=32 kv=8 ffn=12288 vocab=151936 max_seq=8192
+[STREAM] rss_after_load  = 992 kB
+[TOK] Loaded 151669 tokens from vocab.bin (max_len=256)
+[TOK] match mode: indexed (slots=524288, 2.0 MB, load=0.29)
+[TOK] Special tokens: bos=151643 eos=151645 im_start=151644 im_end=151645 pad=151643
+[STREAM] tokenizer: 151669 tokens (eos=151645 im_start=151644 im_end=151645)
+[STREAM] rss_after_init  = 18588 kB
+[STREAM] prompt tokens = 502 (--stream-ctx 512)
+[STREAM] warmup done in 5.943s (discarded: 1 prefill + 8 decode)
+[STREAM] prefill 502 tokens in 5.472s (92 tok/s) [batch]
+[STREAM] rss_after_prefill = 4401796 kB
+[STREAM] decode mode: greedy (rep_pen=1.000 win=32)
+[STREAM] TOKIDS: 100062 t=1 ms=48 rss=4401796kB
+ 99371 t=2 ms=48 rss=4401796kB
+ 58814 t=3 ms=48 rss=4401796kB
+ 113272 t=4 ms=48 rss=4401796kB
+ 101158 t=5 ms=49 rss=4401796kB
+ 18493 t=6 ms=49 rss=4401796kB
+ 104949 t=7 ms=49 rss=4401796kB
+ 113272 t=8 ms=49 rss=4401796kB
+ 101925 t=9 ms=49 rss=4402116kB
+ 3837 t=10 ms=49 rss=4402440kB
+ 59879 t=11 ms=49 rss=4403028kB
+ 99371 t=12 ms=49 rss=4403292kB
+ 104137 t=13 ms=49 rss=4403556kB
+ 58814 t=14 ms=49 rss=4403820kB
+ 33108 t=15 ms=49 rss=4404408kB
+ 108248 t=16 ms=49 rss=4405056kB
+ 71356 t=17 ms=49 rss=4405380kB
+ 32665 t=18 ms=49 rss=4405704kB
+ 3837 t=19 ms=49 rss=4406232kB
+ 23031 t=20 ms=49 rss=4406556kB
+ 101940 t=21 ms=49 rss=4406880kB
+ 111390 t=22 ms=49 rss=4407204kB
+ 109054 t=23 ms=49 rss=4407792kB
+ 62926 t=24 ms=49 rss=4408380kB
+ 100627 t=25 ms=49 rss=4408704kB
+ 113272 t=26 ms=49 rss=4408968kB
+ 101991 t=27 ms=49 rss=4409556kB
+ 105535 t=28 ms=49 rss=4409880kB
+ 1773 t=29 ms=49 rss=4410144kB
+
+[STREAM] decoded 29 tokens, 49 ms/tok (20.45 tok/s)
+[STREAM] text: 逐层加载推理是一种在模型推理过程中，按层逐步加载和激活网络参数，以减少内存占用并提高推理效率的技术。
+[STREAM] rss_end = 4410144 kB

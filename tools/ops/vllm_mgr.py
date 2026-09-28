@@ -21,10 +21,20 @@ Config file schema (written by the admin page):
   { "model_dir": "<path-to-model-dir>", "kv_q4": false,
     "prefix_kv": true, "prefix_cache": false, "prefill_q8": false,
     "sparse_attn": false,
-    "sparse_k": 32, "npu": true, "npu_load": 1, "npu_infer": 1,
+    "sparse_k": 32,
+    "sparse_prefill": false, "sparse_pf_k": 32, "sparse_pf_group": 4,
+    "npu": true, "npu_load": 1, "npu_infer": 1,
     "npu_timing": 0, "port": 8080, "threads": 8, "max_queued": 16,
     "batch_max": 8,
     "min_free_mb": 2048, "env": {"OMP_NUM_THREADS": "4"} }
+
+工业边缘（预置命名上下文 / 会话 / 审计；审查台独立页 http://<host>:<port>/review）：
+  "rulebook_dir": ""      -> --rulebook-dir（留空 = 关闭预置上下文）
+  "session_dir": ""       -> --session-dir（留空 = 关闭服务端会话存储）
+  "session_limit": 0      -> --session-limit（>0 时注入；0 = 引擎默认 1024）
+  "audit_log": ""         -> --audit-log（留空 = 用 <session_dir>/admin_audit.jsonl）
+规则包需离线预处理：vllm_kestrel --serve --auto-load --model <dir>
+  --rulebook-dir <dir> --rulebook-build <手册文件> --rulebook-id <id> ...
 
 Optional key, not written by the admin page but honoured when present in a
 hand-edited config: "wmode" — passed through to the engine's --wmode. 量化在
@@ -113,6 +123,18 @@ def build_cmd(cfg, bin_):
         cmd.append("--prefill-q8")
     if cfg.get("sparse_attn"):
         cmd += ["--sparse-attn", "--sparse-k", str(int(cfg.get("sparse_k", 32)))]
+    # 稀疏 prefill：只有 env 门 VLLM_SPARSE_PREFILL（由 cfg["env"] 注入，见下方 env 组装），
+    # 两个旋钮走 CLI。默认关，所以默认 argv 与改动前逐字相同。
+    #   --sparse-pf-k     prefill 专用保留块数（0 = 沿用 --sparse-k）
+    #   --sparse-pf-group 选块粒度：每 G 个 token 共享一次选块（0 = 旧行为，会丢针；推荐 4~8）
+    if cfg.get("sparse_attn") and cfg.get("sparse_prefill"):
+        pfk = int(cfg.get("sparse_pf_k") or 0)
+        if pfk > 0:
+            cmd += ["--sparse-pf-k", str(pfk)]
+        pfg = cfg.get("sparse_pf_group")
+        pfg = 4 if pfg is None else int(pfg)
+        if pfg > 0:
+            cmd += ["--sparse-pf-group", str(pfg)]
     if cfg.get("l3_evict"):
         if not cfg.get("sparse_attn"):
             # L3 cold-block eviction needs sparse decode attention
@@ -137,6 +159,24 @@ def build_cmd(cfg, bin_):
         # Disk KV persistence: F32 conversation snapshots survive restarts.
         d = str(cfg.get("disk_kv_dir") or "").strip()
         cmd += ["--disk-kv", d or "kv_disk"]
+    # 工业边缘：预置命名上下文（规则包）/ 会话存储 / 管理面审计。
+    # 目录留空 = 关闭对应功能（引擎侧 --rulebook-dir / --session-dir 缺省即关）。
+    # 审计日志留空时引擎默认落到 <session_dir>/admin_audit.jsonl。
+    rb_dir = str(cfg.get("rulebook_dir") or "").strip()
+    if rb_dir:
+        cmd += ["--rulebook-dir", rb_dir]
+    se_dir = str(cfg.get("session_dir") or "").strip()
+    if se_dir:
+        cmd += ["--session-dir", se_dir]
+        try:
+            se_limit = int(cfg.get("session_limit") or 0)
+        except (TypeError, ValueError):
+            se_limit = 0
+        if se_limit > 0:
+            cmd += ["--session-limit", str(se_limit)]
+    au_log = str(cfg.get("audit_log") or "").strip()
+    if au_log:
+        cmd += ["--audit-log", au_log]
     if cfg.get("spec"):
         # n-gram speculative decode (greedy-only) with draft length --spec-k.
         cmd += ["--spec", "--spec-k", str(int(cfg.get("spec_k", 4)))]

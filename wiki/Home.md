@@ -62,6 +62,7 @@ v1 已移除引擎内置的 GGUF / safetensors 加载与引擎内转换、引入
 | 要核对/引用性能数字 | [性能与基准](https://gitee.com/pei-xiaoguang/kestrel-llm/wikis/性能与基准) —— 先读「测量纪律与口径」 |
 | 要调优 | [优化配置与边界](https://gitee.com/pei-xiaoguang/kestrel-llm/wikis/优化配置与边界) —— 每个开关的机制、收益与代价 |
 | 关心权重与推理可信 | [权重保护与可验证推理](https://gitee.com/pei-xiaoguang/kestrel-llm/wikis/权重保护与可验证推理) |
+| 要在设备上预置固定的现场规程 / 术语 / 参数 | [规则包与预置上下文](https://gitee.com/pei-xiaoguang/kestrel-llm/wikis/规则包与预置上下文) —— 手册离线构建成可复用前缀，命中约 **82×** |
 | 想读代码结构 | [架构总览](https://gitee.com/pei-xiaoguang/kestrel-llm/wikis/架构总览) |
 
 ---
@@ -99,6 +100,7 @@ v1 已移除引擎内置的 GGUF / safetensors 加载与引擎内转换、引入
 - [逐层推理与 KV 缓存](https://gitee.com/pei-xiaoguang/kestrel-llm/wikis/逐层推理与KV缓存)
 - [性能与基准](https://gitee.com/pei-xiaoguang/kestrel-llm/wikis/性能与基准)
 - [优化配置与边界](https://gitee.com/pei-xiaoguang/kestrel-llm/wikis/优化配置与边界)
+- [规则包与预置上下文](https://gitee.com/pei-xiaoguang/kestrel-llm/wikis/规则包与预置上下文)
 - [权重保护与可验证推理](https://gitee.com/pei-xiaoguang/kestrel-llm/wikis/权重保护与可验证推理)
 - [常见问题](https://gitee.com/pei-xiaoguang/kestrel-llm/wikis/常见问题)
 - [术语与数据口径](https://gitee.com/pei-xiaoguang/kestrel-llm/wikis/术语与数据口径)

@@ -1,0 +1,156 @@
+  vLLM-Kestrel: Axiom-Guided Exact-Attention         
+  Large Language Model Inference Engine          
+
+[DEV] device=arm-rk3588-opi5 arch=arm64 class=embedded model=RK3588 OPi 5 Plus npu=rk3588-direct recommended_wmode=dual
+
+=== [STREAM] layer-resident validation (VQF only) ===
+[VQF] MoE v3: experts=128 top_k=8 moe_ffn=768 shared=0 ffn_dim=98304 router=48.0MB (f32 resident) experts=q4
+[VQF-STREAM] enabled keep=1 nl=48 segs=11 per-layer=334.1MB data=16847.2MB resident~808.4MB rss=968kB
+[VQF-SA] enabled down=whole nl=48 ne=128 exp=0.844MB(216页) res=768B stat=1 evl=1
+[STREAM] vqf_load OK (0.00s): dim=2048 layers=48 heads=32 kv=4 ffn=98304 vocab=151936 max_seq=8192
+[STREAM] rss_after_load  = 968 kB
+[QWEN] Inference state ready (max_seq=8192).
+[TOK] Loaded 151669 tokens from vocab.bin (max_len=256)
+[TOK] match mode: indexed (slots=524288, 2.0 MB, load=0.29)
+[TOK] Special tokens: bos=151643 eos=151645 im_start=151644 im_end=151645 pad=151643
+[STREAM] tokenizer: 151669 tokens (eos=151645 im_start=151644 im_end=151645)
+[STREAM] rss_after_init  = 21732 kB
+[STREAM] prompt tokens = 246 (--stream-ctx 256)
+[PREFILL] 246/246 tokens done
+[PREFILL-TIMING] n=246 total=269394.1ms | GEMM=268072.2ms(99.5%) ATTN=890.6ms( 0.3%) OTHER=431.3ms( 0.2%)
+[PREFILL-KERNELS] QKV=5288.6ms( 2.0%) O=3685.5ms( 1.4%) GATEUP=259098.1ms(96.7%) DOWN=0.0ms( 0.0%)
+[STREAM] prefill 246 tokens in 276.970s (1 tok/s) [batch]
+[STREAM] rss_after_prefill = 605052 kB
+[STREAM] decode mode: greedy (rep_pen=1.000 win=32)
+[STREAM] TOKIDS: 151667[SA-STAT] tok=1 pages_w=4020474 pages_d=4020474 pages_sum=8040948 minflt_delta=203481 rss_anon=106108 rss_file=498944 rss_shmem=0
+ t=1 ms=1444 rss=649456kB
+ 198[SA-STAT] tok=2 pages_w=287994 pages_d=1583994 pages_sum=1871988 minflt_delta=95141 rss_anon=106572 rss_file=542884 rss_shmem=0
+ t=2 ms=865 rss=658776kB
+ 99692[SA-STAT] tok=3 pages_w=287994 pages_d=1587450 pages_sum=1875444 minflt_delta=96368 rss_anon=106580 rss_file=552196 rss_shmem=0
+ t=3 ms=1271 rss=673372kB
+ 3837[SA-STAT] tok=4 pages_w=287130 pages_d=1586586 pages_sum=1873716 minflt_delta=95620 rss_anon=107348 rss_file=566024 rss_shmem=0
+ t=4 ms=1189 rss=683936kB
+ 20002[SA-STAT] tok=5 pages_w=286698 pages_d=1586154 pages_sum=1872852 minflt_delta=96482 rss_anon=107348 rss_file=576588 rss_shmem=0
+ t=5 ms=1370 rss=698204kB
+ 104029[SA-STAT] tok=6 pages_w=284970 pages_d=1584426 pages_sum=1869396 minflt_delta=95624 rss_anon=107732 rss_file=590472 rss_shmem=0
+ t=6 ms=1652 rss=707444kB
+ 11622[SA-STAT] tok=7 pages_w=284970 pages_d=1584426 pages_sum=1869396 minflt_delta=95640 rss_anon=107732 rss_file=599712 rss_shmem=0
+ t=7 ms=1227 rss=718996kB
+ 104811[SA-STAT] tok=8 pages_w=284538 pages_d=1583994 pages_sum=1868532 minflt_delta=94626 rss_anon=108108 rss_file=610888 rss_shmem=0
+ t=8 ms=946 rss=729480kB
+ 105321[SA-STAT] tok=9 pages_w=284970 pages_d=1584426 pages_sum=1869396 minflt_delta=96236 rss_anon=108116 rss_file=621364 rss_shmem=0
+ t=9 ms=812 rss=738528kB
+ 104136[SA-STAT] tok=10 pages_w=284538 pages_d=1583994 pages_sum=1868532 minflt_delta=93933 rss_anon=108492 rss_file=630036 rss_shmem=0
+ t=10 ms=827 rss=742716kB
+ 2073[SA-STAT] tok=11 pages_w=284970 pages_d=1584426 pages_sum=1869396 minflt_delta=93207 rss_anon=108500 rss_file=634216 rss_shmem=0
+ t=11 ms=937 rss=751728kB
+ 100062[SA-STAT] tok=12 pages_w=286266 pages_d=1585722 pages_sum=1871988 minflt_delta=93619 rss_anon=109268 rss_file=642460 rss_shmem=0
+ t=12 ms=869 rss=753296kB
+ 99371[SA-STAT] tok=13 pages_w=286266 pages_d=1585722 pages_sum=1871988 minflt_delta=96377 rss_anon=109268 rss_file=644028 rss_shmem=0
+ t=13 ms=943 rss=763176kB
+ 58814[SA-STAT] tok=14 pages_w=285402 pages_d=1584858 pages_sum=1870260 minflt_delta=95843 rss_anon=109652 rss_file=653524 rss_shmem=0
+ t=14 ms=773 rss=769940kB
+ 113272[SA-STAT] tok=15 pages_w=285402 pages_d=1584858 pages_sum=1870260 minflt_delta=95197 rss_anon=109652 rss_file=660288 rss_shmem=0
+ t=15 ms=835 rss=772132kB
+ 55807[SA-STAT] tok=16 pages_w=286266 pages_d=1585722 pages_sum=1871988 minflt_delta=95086 rss_anon=110036 rss_file=662096 rss_shmem=0
+ t=16 ms=982 rss=776216kB
+ 104544[SA-STAT] tok=17 pages_w=286698 pages_d=1586154 pages_sum=1872852 minflt_delta=94454 rss_anon=110036 rss_file=666180 rss_shmem=0
+ t=17 ms=1760 rss=777232kB
+ 42411[SA-STAT] tok=18 pages_w=284538 pages_d=1583994 pages_sum=1868532 minflt_delta=95821 rss_anon=110412 rss_file=666820 rss_shmem=0
+ t=18 ms=1180 rss=778648kB
+ 105444[SA-STAT] tok=19 pages_w=284970 pages_d=1584426 pages_sum=1869396 minflt_delta=95061 rss_anon=110420 rss_file=668228 rss_shmem=0
+ t=19 ms=1249 rss=785364kB
+ 104686[SA-STAT] tok=20 pages_w=284538 pages_d=1583994 pages_sum=1868532 minflt_delta=94035 rss_anon=111172 rss_file=674192 rss_shmem=0
+ t=20 ms=1552 rss=791868kB
+ 32571[SA-STAT] tok=21 pages_w=285834 pages_d=1585290 pages_sum=1871124 minflt_delta=93172 rss_anon=111188 rss_file=680680 rss_shmem=0
+ t=21 ms=1221 rss=791308kB
+ 3837[SA-STAT] tok=22 pages_w=286266 pages_d=1585722 pages_sum=1871988 minflt_delta=94900 rss_anon=111572 rss_file=679736 rss_shmem=0
+ t=22 ms=1003 rss=793096kB
+ 87267[SA-STAT] tok=23 pages_w=285402 pages_d=1584858 pages_sum=1870260 minflt_delta=95432 rss_anon=111572 rss_file=681524 rss_shmem=0
+ t=23 ms=1046 rss=794676kB
+ 101219[SA-STAT] tok=24 pages_w=284538 pages_d=1583994 pages_sum=1868532 minflt_delta=94797 rss_anon=111948 rss_file=682728 rss_shmem=0
+ t=24 ms=1287 rss=799152kB
+ 81705[SA-STAT] tok=25 pages_w=284538 pages_d=1583994 pages_sum=1868532 minflt_delta=96629 rss_anon=111956 rss_file=687196 rss_shmem=0
+ t=25 ms=1005 rss=799780kB
+ 97611[SA-STAT] tok=26 pages_w=284538 pages_d=1583994 pages_sum=1868532 minflt_delta=95108 rss_anon=112332 rss_file=687448 rss_shmem=0
+ t=26 ms=1036 rss=799748kB
+ 104175[SA-STAT] tok=27 pages_w=284538 pages_d=1583994 pages_sum=1868532 minflt_delta=94933 rss_anon=112340 rss_file=687408 rss_shmem=0
+ t=27 ms=990 rss=801444kB
+ 3837[SA-STAT] tok=28 pages_w=285402 pages_d=1584858 pages_sum=1870260 minflt_delta=95763 rss_anon=113108 rss_file=688336 rss_shmem=0
+ t=28 ms=840 rss=798484kB
+ 100631[SA-STAT] tok=29 pages_w=285402 pages_d=1584858 pages_sum=1870260 minflt_delta=96401 rss_anon=113108 rss_file=685376 rss_shmem=0
+ t=29 ms=1071 rss=808868kB
+ 99172[SA-STAT] tok=30 pages_w=284538 pages_d=1583994 pages_sum=1868532 minflt_delta=94522 rss_anon=113484 rss_file=695384 rss_shmem=0
+ t=30 ms=906 rss=807128kB
+ 103944[SA-STAT] tok=31 pages_w=284970 pages_d=1584426 pages_sum=1869396 minflt_delta=95338 rss_anon=113492 rss_file=693636 rss_shmem=0
+ t=31 ms=798 rss=804548kB
+ 35946[SA-STAT] tok=32 pages_w=284970 pages_d=1584426 pages_sum=1869396 minflt_delta=95104 rss_anon=113876 rss_file=690672 rss_shmem=0
+ t=32 ms=694 rss=804512kB
+ 101128[SA-STAT] tok=33 pages_w=284970 pages_d=1584426 pages_sum=1869396 minflt_delta=95475 rss_anon=113876 rss_file=690636 rss_shmem=0
+ t=33 ms=766 rss=804092kB
+ 105073[SA-STAT] tok=34 pages_w=284970 pages_d=1584426 pages_sum=1869396 minflt_delta=95021 rss_anon=114260 rss_file=689832 rss_shmem=0
+ t=34 ms=842 rss=811292kB
+ 1773[SA-STAT] tok=35 pages_w=285402 pages_d=1584858 pages_sum=1870260 minflt_delta=94576 rss_anon=114260 rss_file=697032 rss_shmem=0
+ t=35 ms=781 rss=811532kB
+ 101140[SA-STAT] tok=36 pages_w=285402 pages_d=1584858 pages_sum=1870260 minflt_delta=94584 rss_anon=115028 rss_file=696504 rss_shmem=0
+ t=36 ms=747 rss=807760kB
+ 3837[SA-STAT] tok=37 pages_w=284970 pages_d=1584426 pages_sum=1869396 minflt_delta=96238 rss_anon=115028 rss_file=692732 rss_shmem=0
+ t=37 ms=780 rss=814336kB
+ 35946[SA-STAT] tok=38 pages_w=284970 pages_d=1584426 pages_sum=1869396 minflt_delta=96077 rss_anon=115412 rss_file=698924 rss_shmem=0
+ t=38 ms=907 rss=809480kB
+ 85106[SA-STAT] tok=39 pages_w=284970 pages_d=1584426 pages_sum=1869396 minflt_delta=95763 rss_anon=115412 rss_file=694068 rss_shmem=0
+ t=39 ms=849 rss=810196kB
+ 81167[SA-STAT] tok=40 pages_w=284970 pages_d=1584426 pages_sum=1869396 minflt_delta=96057 rss_anon=115796 rss_file=694400 rss_shmem=0
+ t=40 ms=755 rss=812844kB
+ 2073[SA-STAT] tok=41 pages_w=284970 pages_d=1584426 pages_sum=1869396 minflt_delta=93508 rss_anon=115796 rss_file=697048 rss_shmem=0
+ t=41 ms=908 rss=816904kB
+ 100062[SA-STAT] tok=42 pages_w=284538 pages_d=1583994 pages_sum=1868532 minflt_delta=92963 rss_anon=116172 rss_file=700732 rss_shmem=0
+ t=42 ms=718 rss=809480kB
+ 99371[SA-STAT] tok=43 pages_w=287994 pages_d=1587450 pages_sum=1875444 minflt_delta=95662 rss_anon=116180 rss_file=693300 rss_shmem=0
+ t=43 ms=716 rss=811668kB
+ 58814[SA-STAT] tok=44 pages_w=285402 pages_d=1584858 pages_sum=1870260 minflt_delta=95870 rss_anon=116948 rss_file=694720 rss_shmem=0
+ t=44 ms=765 rss=808984kB
+ 113272[SA-STAT] tok=45 pages_w=285834 pages_d=1585290 pages_sum=1871124 minflt_delta=95604 rss_anon=116948 rss_file=692036 rss_shmem=0
+ t=45 ms=784 rss=813876kB
+ 97907[SA-STAT] tok=46 pages_w=286266 pages_d=1585722 pages_sum=1871988 minflt_delta=94025 rss_anon=117332 rss_file=696544 rss_shmem=0
+ t=46 ms=892 rss=817112kB
+ 99308[SA-STAT] tok=47 pages_w=286266 pages_d=1585722 pages_sum=1871988 minflt_delta=96068 rss_anon=117332 rss_file=699780 rss_shmem=0
+ t=47 ms=730 rss=817400kB
+ 60610[SA-STAT] tok=48 pages_w=286698 pages_d=1586154 pages_sum=1872852 minflt_delta=95958 rss_anon=117716 rss_file=699684 rss_shmem=0
+ t=48 ms=775 rss=821968kB
+ 64559[SA-STAT] tok=49 pages_w=284538 pages_d=1583994 pages_sum=1868532 minflt_delta=96094 rss_anon=117716 rss_file=704252 rss_shmem=0
+ t=49 ms=857 rss=824064kB
+ 3407[SA-STAT] tok=50 pages_w=284970 pages_d=1584426 pages_sum=1869396 minflt_delta=95100 rss_anon=118100 rss_file=705964 rss_shmem=0
+ t=50 ms=691 rss=821540kB
+ 87267[SA-STAT] tok=51 pages_w=286266 pages_d=1585722 pages_sum=1871988 minflt_delta=94952 rss_anon=118100 rss_file=703440 rss_shmem=0
+ t=51 ms=817 rss=825656kB
+ 20002[SA-STAT] tok=52 pages_w=284538 pages_d=1583994 pages_sum=1868532 minflt_delta=96103 rss_anon=118856 rss_file=706800 rss_shmem=0
+ t=52 ms=744 rss=816676kB
+ 101219[SA-STAT] tok=53 pages_w=284970 pages_d=1584426 pages_sum=1869396 minflt_delta=95273 rss_anon=118872 rss_file=697804 rss_shmem=0
+ t=53 ms=693 rss=821696kB
+ 56007[SA-STAT] tok=54 pages_w=284970 pages_d=1584426 pages_sum=1869396 minflt_delta=96587 rss_anon=119256 rss_file=702440 rss_shmem=0
+ t=54 ms=759 rss=821984kB
+ 102988[SA-STAT] tok=55 pages_w=284538 pages_d=1583994 pages_sum=1868532 minflt_delta=94995 rss_anon=119256 rss_file=702728 rss_shmem=0
+ t=55 ms=812 rss=826064kB
+ 17177[SA-STAT] tok=56 pages_w=284538 pages_d=1583994 pages_sum=1868532 minflt_delta=94333 rss_anon=119632 rss_file=706432 rss_shmem=0
+ t=56 ms=829 rss=824184kB
+ 105652[SA-STAT] tok=57 pages_w=286698 pages_d=1586154 pages_sum=1872852 minflt_delta=94985 rss_anon=119640 rss_file=704544 rss_shmem=0
+ t=57 ms=827 rss=828448kB
+ 5373[SA-STAT] tok=58 pages_w=286266 pages_d=1585722 pages_sum=1871988 minflt_delta=93811 rss_anon=120024 rss_file=708424 rss_shmem=0
+ t=58 ms=843 rss=828472kB
+ 17177[SA-STAT] tok=59 pages_w=284970 pages_d=1584426 pages_sum=1869396 minflt_delta=93809 rss_anon=120024 rss_file=708448 rss_shmem=0
+ t=59 ms=839 rss=828628kB
+ 100920[SA-STAT] tok=60 pages_w=285402 pages_d=1584858 pages_sum=1870260 minflt_delta=96245 rss_anon=120792 rss_file=707836 rss_shmem=0
+ t=60 ms=854 rss=832740kB
+ 9370[SA-STAT] tok=61 pages_w=284970 pages_d=1584426 pages_sum=1869396 minflt_delta=92771 rss_anon=120792 rss_file=711948 rss_shmem=0
+ t=61 ms=931 rss=831888kB
+ 113272[SA-STAT] tok=62 pages_w=284538 pages_d=1583994 pages_sum=1868532 minflt_delta=95107 rss_anon=121168 rss_file=710720 rss_shmem=0
+ t=62 ms=737 rss=831632kB
+ 39907[SA-STAT] tok=63 pages_w=284538 pages_d=1583994 pages_sum=1868532 minflt_delta=93823 rss_anon=121176 rss_file=710456 rss_shmem=0
+ t=63 ms=775 rss=835616kB
+ 3837[SA-STAT] tok=64 pages_w=285402 pages_d=1584858 pages_sum=1870260 minflt_delta=93646 rss_anon=121560 rss_file=714056 rss_shmem=0
+ t=64 ms=686 rss=835828kB
+
+[STREAM] decoded 64 tokens, 937 ms/tok (1.07 tok/s)
+[STREAM] text: <think>Ċ好的，用户让我用中文一句话解释“逐层加载推理”。看起来他重复了很多次，可能是在测试我的反应，或者想确保我理解这个问题。首先，我需要确认“逐层加载推理”的准确定义。ĊĊ可能用户是在问某种分步骤、分层次的推理方法，
+[STREAM] rss_end = 835828 kB

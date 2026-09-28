@@ -402,6 +402,26 @@ extern int g_sparse_attn;
 extern int g_sparse_k;
 extern int g_sparse_block;
 extern int g_sparse_probe;
+/* --sparse-min-ctx N：稀疏 decode 的上下文长度下限（默认 1024）。
+ * ctx 低于此值时 decode 退回精确核（probe 开销 > 省下的注意力）。0 = 关闭本门。 */
+extern int g_sparse_min_ctx;
+extern int g_sparse_pf_group;
+extern int g_sparse_pf_k;
+/* --sparse-pf-min-ctx N：稀疏 prefill 的上下文长度下限（默认 3072）。
+ * 只在 VLLM_SPARSE_PREFILL=1 时参与判定；ctx 低于此值退回精确核（短上下文稀疏是净亏）。 */
+extern int g_sparse_pf_min_ctx;
+/* --sparse-ratio R：选块预算按块数比例化（0 = 关闭 → --sparse-k 仍是固定块数）。 */
+extern float g_sparse_ratio;
+/* 有效选块预算：R>0 时 clamp(ceil(R*n_blocks), g_sparse_k, n_blocks)，否则 g_sparse_k。 */
+int st_sparse_k_eff(int n_blocks);
+/* 稀疏 prefill 核的选块预算（--sparse-pf-k；0 = 沿用 --sparse-k）。 */
+int st_sparse_pf_k_eff(int n_blocks);
+/* --force-blk B[,B...]：诊断钩子，**只对 decode 选块**无条件保留这些块
+ * （g_force_blk_n == 0 时关闭）。用于分离「decode 选块失败」与
+ * 「prefill 近似注意力损害 hidden state」。 */
+#define ST_FORCE_BLK_MAX 8
+extern int g_force_blk[ST_FORCE_BLK_MAX];
+extern int g_force_blk_n;
 extern int g_l3_evict;
 extern float g_l3_ratio;
 extern int g_l3_min_seq;          /* --l3-min-seq: only evict when seq_len >= N */
@@ -428,6 +448,41 @@ extern int    g_verify_pred[SPEC_DRAFT_MAX];
 extern float  g_verify_margin[SPEC_DRAFT_MAX];  /* top-1 - top-2 logit gap per position */
 extern int    g_verify_invalid;
 extern int    g_verify_pos;
+
+/* 神经草稿头（P2，2026-09-24）：1 层 Qwen3VLTextDecoderLayer + final norm，
+ * 冻结主模型文本塔训练（EAGLE 式特征级外推）。投影 q8_0 量化 + norm f32，
+ * 独立 KV cache。输入主模型最后一层 hidden（final_norm 前），自回归 K 步
+ * 输出 top-1 草稿。 */
+typedef struct {
+    uint8_t *q8_q_weight;   /* q8_0 [kv_dim_q, dim] */
+    uint8_t *q8_k_weight;   /* q8_0 [kv_dim,   dim] */
+    uint8_t *q8_v_weight;   /* q8_0 [kv_dim,   dim] */
+    uint8_t *q8_o_weight;   /* q8_0 [dim, kv_dim_q] */
+    uint8_t *q8_gate_weight;/* q8_0 [ffn_dim, dim] */
+    uint8_t *q8_up_weight;  /* q8_0 [ffn_dim, dim] */
+    uint8_t *q8_down_weight;/* q8_0 [dim, ffn_dim] */
+    float *q_norm;      /* [head_dim] */
+    float *k_norm;      /* [head_dim] */
+    float *attn_norm;   /* [dim] input_layernorm */
+    float *ffn_norm;    /* [dim] post_attention_layernorm */
+    float *final_norm;  /* [dim] */
+    float *k_draft;     /* [SPEC_DRAFT_MAX][kv_dim] 独立 K cache */
+    float *v_draft;     /* [SPEC_DRAFT_MAX][kv_dim] 独立 V cache */
+    void  *map;         /* mmap 句柄 */
+    size_t map_len;
+    int    loaded;
+} STDraftHead;
+
+/* 加载草稿头 f32 权重（mmap）；kv_dim = n_kv_heads*head_dim。返回 0 成功。 */
+int  st_draft_head_load(STDraftHead *dh, const char *path,
+                        int dim, int ffn_dim, int n_kv_heads, int head_dim);
+void st_draft_head_free(STDraftHead *dh);
+/* 草稿头前向：hidden 为主模型最后一层 hidden [dim]，自回归 K 步，每步 top-1
+ * token 写入 draft[0..K-1]。logits_buf 为调用方提供的 [vocab_size] 临时缓冲
+ * （不覆盖 st->logits）。返回草稿长度。 */
+int  st_draft_head_forward(STQwenInferenceState *st, STDraftHead *dh,
+                           const float *hidden, int K, int *draft,
+                           float *logits_buf);
 
 /* Model-load progress (updated by st_load_layer_weights so the web admin
  * page can show a live "Loading layer X/Y" bar). 0/0 when idle. */

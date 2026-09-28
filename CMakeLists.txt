@@ -67,6 +67,9 @@ set(VLLM_SOURCES
     src/serve/vllm_batch.c
     src/serve/vllm_admin.c
     src/serve/vllm_attest.c
+    src/serve/vllm_rulebook.c
+    src/serve/vllm_session.c
+    src/serve/vllm_audit.c
     src/serve/embedded_web.c
     src/model/vllm_safetensors.c
     src/model/vqf.c
@@ -97,6 +100,9 @@ set(VLLM_HEADERS
     include/serve/vllm_server.h
     include/serve/vllm_batch.h
     include/serve/vllm_attest.h
+    include/serve/vllm_rulebook.h
+    include/serve/vllm_session.h
+    include/serve/vllm_audit.h
     include/serve/embedded_web.h
     include/model/vllm_safetensors.h
     include/model/vqf.h

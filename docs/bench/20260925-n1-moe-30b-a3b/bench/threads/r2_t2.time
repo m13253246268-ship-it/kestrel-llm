@@ -1,0 +1,32 @@
+[QWEN] Inference state ready (max_seq=8192).
+[PREFILL] 256/502 tokens done
+[PREFILL] 502/502 tokens done
+[PREFILL-TIMING] n=502 total=36583.0ms | GEMM=33942.0ms(92.8%) ATTN=1996.0ms( 5.5%) OTHER=645.0ms( 1.8%)
+[PREFILL-KERNELS] QKV=4527.9ms(13.3%) O=3018.7ms( 8.9%) GATEUP=17444.1ms(51.4%) DOWN=8951.3ms(26.4%)
+[PREFILL] 256/502 tokens done
+[PREFILL] 502/502 tokens done
+[PREFILL-TIMING] n=502 total=36447.2ms | GEMM=33863.9ms(92.9%) ATTN=1980.1ms( 5.4%) OTHER=603.3ms( 1.7%)
+[PREFILL-KERNELS] QKV=4515.7ms(13.3%) O=3012.9ms( 8.9%) GATEUP=17407.0ms(51.4%) DOWN=8928.3ms(26.4%)
+	Command being timed: "env OMP_NUM_THREADS=2 VLLM_THREADS=2 /root/GitHupSRC/build-rk3588/vllm_kestrel --stream-test --model /root/model/qwen3vl8b --warmup --stream-ctx 512 --stream-n 32"
+	User time (seconds): 167.96
+	System time (seconds): 0.50
+	Percent of CPU this job got: 198%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 1:25.07
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 4423888
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 1
+	Minor (reclaiming a frame) page faults: 143586
+	Voluntary context switches: 24606
+	Involuntary context switches: 241
+	Swaps: 0
+	File system inputs: 0
+	File system outputs: 72
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0

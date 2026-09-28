@@ -1,0 +1,39 @@
+run_pid=120795  started=2026-09-25T00:08:00+08:00
+================ ENV ================
+2026-09-25T00:08:00+08:00
+host    : iZbp16kmws3ej184pk00osZ
+kernel  : 5.15.0-191-generic
+arch    : aarch64
+cpu     : Neoverse-N1
+ncpu    : 64
+boot_id : 043e34da-a3a8-4d40-8c92-f7ee0e1eeb7d
+uptime  :  00:08:00 up  2:16,  0 users,  load average: 2.95, 12.44, 9.22
+governor: cat: /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor: No such file or directory
+thermal : 
+mem     : 245 GiB total, 242 GiB avail
+steal   : steal_ticks=0
+binary  : 3f23dda18d984f85358b7556612b14f72c58ce1c8dbf43d9bed8d39d77d67691  /root/GitHupSRC/build-rk3588/vllm_kestrel
+bin_size: 965848
+model   : 17665601544 bytes
+vqf_md5 : e66a53eb9efc0a8962b81d3516aedf37
+vocab   : 207fbf4194ca8ae384b221882a21be2a
+src_commit: n/a
+extra_env : <none>
+extra_flag: <none>
+ctx/n/rounds: 4096 / 32 / 2   warm_flag=[--warmup]
+configs   : full sparse
+=====================================
+
+[warm-global] touching all weights ...
+[warm-global] rc=0 31 lines
+[warm-global] buff/cache=101 GiB
+
+======== ROUND 1 ========
+  env: load average: 3.77, 10.97, 8.89 | buff/cache=101GiB | steal_ticks=0 softirq=3757
+  order: 32   configs: full sparse
+  r1 t32 [full]: rc=0 nlwp_max=32 | prefill 4086 tokens in 128.897s | decoded 32 tokens, 133 ms/tok
+  r1 t32 [sparse]: rc=0 nlwp_max=32 | prefill 4086 tokens in 133.676s | decoded 32 tokens, 407 ms/tok
+======== ROUND 2 ========
+  env: load average: 21.04, 20.98, 15.32 | buff/cache=101GiB | steal_ticks=0 softirq=3757
+  order: 32    configs: full sparse
+  r2 t32 [full]: rc=0 nlwp_max=32 | prefill 4086 tokens in 130.418s | decoded 32 tokens, 133 ms/tok

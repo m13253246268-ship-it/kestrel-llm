@@ -57,6 +57,221 @@
  * would otherwise clash with the static inline definition on GCC. */
 static inline uint32_t f16_to_f32_bits(uint16_t h);
 
+/* ================================================================
+ * VLLM_NEEDLE_TRACE：针块在稀疏选块中的去向（只读诊断，默认关闭）
+ *
+ * 两个阶段分别记账，用来回答"针是被哪一半预算丢掉的"：
+ *   prefill 稀疏核（探针 top-k + 最近块保底，代表性 query）
+ *   decode  稀疏核（探针半 + prefill 重要性半）
+ * 名次用与选块完全相同的比较口径算（值大者靠前，同值块号小者靠前），
+ * 所以打出来的名次就是当时选块看到的那个名次。
+ * ================================================================ */
+int g_ndl_pos = -1;                  /* 针的 token 位置；<0 = 关闭 */
+static long g_ndl_pf_calls, g_ndl_pf_sel;
+static long g_ndl_dc_calls, g_ndl_dc_sel, g_ndl_dc_sel_imp, g_ndl_dc_sel_probe;
+static long g_ndl_dc_miss;
+static long g_ndl_dc_prank_sum, g_ndl_dc_irank_sum;
+static long g_ndl_dc_irank_n;
+static int  g_ndl_dc_prank_min, g_ndl_dc_irank_min;
+static int  g_ndl_dc_first;
+static int  g_ndl_dc_first_prank = -1, g_ndl_dc_first_irank = -1;
+static int  g_ndl_dc_first_in_sel, g_ndl_dc_first_in_imp;
+
+/* decode 的 head 循环是并行的（vllm_tp_parfor），账本必须原子累加，
+ * 否则计数会因丢失更新而互相矛盾（实测 sums 会超过 calls）。 */
+#define NDL_ADD(v, n) __atomic_fetch_add(&(v), (long)(n), __ATOMIC_RELAXED)
+
+static void ndl_min_update(int *slot, int v) {
+    int cur = __atomic_load_n(slot, __ATOMIC_RELAXED);
+    while (v < cur) {
+        if (__atomic_compare_exchange_n(slot, &cur, v, 0,
+                                        __ATOMIC_RELAXED, __ATOMIC_RELAXED))
+            break;
+    }
+}
+
+void st_ndl_trace_reset(int needle_pos) {
+    g_ndl_pos = needle_pos;
+    g_ndl_pf_calls = g_ndl_pf_sel = 0;
+    g_ndl_dc_calls = g_ndl_dc_sel = g_ndl_dc_sel_imp = g_ndl_dc_sel_probe = 0;
+    g_ndl_dc_miss = 0;
+    g_ndl_dc_prank_sum = g_ndl_dc_irank_sum = g_ndl_dc_irank_n = 0;
+    g_ndl_dc_prank_min = g_ndl_dc_irank_min = 1 << 30;
+    g_ndl_dc_first = 0;
+}
+
+static int ndl_rank_gt(const float *v, int n, int t) {
+    int r = 0;
+    for (int j = 0; j < n; j++)
+        if (v[j] > v[t] || (v[j] == v[t] && j < t)) r++;
+    return r;
+}
+
+/* prefill 稀疏核记账：针块是否落在探针 top-k 里（不含最近块保底）。 */
+static void ndl_trace_prefill(const int *sel, int nsel, int n_blocks, int bs) {
+    if (g_ndl_pos < 0) return;
+    int nb = g_ndl_pos / bs;
+    if (nb < 0 || nb >= n_blocks) return;
+    int hit = 0;
+    for (int i = 0; i < nsel; i++) if (sel[i] == nb) { hit = 1; break; }
+    NDL_ADD(g_ndl_pf_calls, 1);
+    if (hit) NDL_ADD(g_ndl_pf_sel, 1);
+}
+
+/* decode 稀疏核记账：探针名次 / 重要性名次 / 被哪一半选中。 */
+static void ndl_trace_decode(const float *probe, const float *imp, int n_blocks,
+                             const int *sel, int nsel, int n_imp, int bs) {
+    if (g_ndl_pos < 0) return;
+    int nb = g_ndl_pos / bs;
+    if (nb < 0 || nb >= n_blocks) return;
+    int in_sel = 0, in_imp = 0;
+    for (int i = 0; i < nsel; i++) if (sel[i] == nb) in_sel = 1;
+    for (int i = 0; i < n_imp; i++) if (sel[i] == nb) in_imp = 1;
+    int pr = ndl_rank_gt(probe, n_blocks, nb);
+    int ir = imp ? ndl_rank_gt(imp, n_blocks, nb) : -1;
+    NDL_ADD(g_ndl_dc_calls, 1);
+    if (in_sel) {
+        NDL_ADD(g_ndl_dc_sel, 1);
+        if (in_imp) NDL_ADD(g_ndl_dc_sel_imp, 1);
+        else        NDL_ADD(g_ndl_dc_sel_probe, 1);
+    } else {
+        NDL_ADD(g_ndl_dc_miss, 1);
+    }
+    NDL_ADD(g_ndl_dc_prank_sum, pr);
+    ndl_min_update(&g_ndl_dc_prank_min, pr);
+    if (ir >= 0) {
+        NDL_ADD(g_ndl_dc_irank_sum, ir);
+        NDL_ADD(g_ndl_dc_irank_n, 1);
+        ndl_min_update(&g_ndl_dc_irank_min, ir);
+    }
+    /* 首次 decode 调用（只有一个线程能抢到）打一条明细 */
+    if (__atomic_exchange_n(&g_ndl_dc_first, 1, __ATOMIC_RELAXED) == 0) {
+        g_ndl_dc_first_prank  = pr;
+        g_ndl_dc_first_irank  = ir;
+        g_ndl_dc_first_in_sel = in_sel;
+        g_ndl_dc_first_in_imp = in_imp;
+        printf("         [NDLTRACE] decode-first blk=%d n_blocks=%d n_imp=%d nsel=%d "
+               "probe_rank=%d imp_rank=%d in_sel=%d in_imp=%d\n",
+               nb, n_blocks, n_imp, nsel, pr, ir, in_sel, in_imp);
+    }
+}
+
+void st_ndl_trace_report(void) {
+    if (g_ndl_pos < 0) return;
+    long pf_calls = __atomic_load_n(&g_ndl_pf_calls, __ATOMIC_RELAXED);
+    long pf_sel   = __atomic_load_n(&g_ndl_pf_sel, __ATOMIC_RELAXED);
+    long dc_calls = __atomic_load_n(&g_ndl_dc_calls, __ATOMIC_RELAXED);
+    long dc_sel   = __atomic_load_n(&g_ndl_dc_sel, __ATOMIC_RELAXED);
+    long dc_imp   = __atomic_load_n(&g_ndl_dc_sel_imp, __ATOMIC_RELAXED);
+    long dc_prb   = __atomic_load_n(&g_ndl_dc_sel_probe, __ATOMIC_RELAXED);
+    long dc_miss  = __atomic_load_n(&g_ndl_dc_miss, __ATOMIC_RELAXED);
+    long pr_sum   = __atomic_load_n(&g_ndl_dc_prank_sum, __ATOMIC_RELAXED);
+    long ir_sum   = __atomic_load_n(&g_ndl_dc_irank_sum, __ATOMIC_RELAXED);
+    long ir_n     = __atomic_load_n(&g_ndl_dc_irank_n, __ATOMIC_RELAXED);
+    int  pr_min   = __atomic_load_n(&g_ndl_dc_prank_min, __ATOMIC_RELAXED);
+    int  ir_min   = __atomic_load_n(&g_ndl_dc_irank_min, __ATOMIC_RELAXED);
+    printf("         [NDLTRACE] prefill-sparse: needle blk selected %ld/%ld (%.2f%%)\n",
+           pf_sel, pf_calls,
+           pf_calls ? 100.0 * (double)pf_sel / (double)pf_calls : 0.0);
+    printf("         [NDLTRACE] decode-sparse:  selected %ld (imp-half %ld, probe-half %ld) "
+           "MISSED %ld  / calls %ld\n",
+           dc_sel, dc_imp, dc_prb, dc_miss, dc_calls);
+    printf("         [NDLTRACE] decode-sparse:  probe_rank avg=%.1f min=%d | "
+           "imp_rank avg=%.1f min=%d\n",
+           dc_calls ? (double)pr_sum / (double)dc_calls : 0.0,
+           pr_min == (1 << 30) ? -1 : pr_min,
+           ir_n ? (double)ir_sum / (double)ir_n : 0.0,
+           ir_min == (1 << 30) ? -1 : ir_min);
+    if (g_ndl_dc_first_prank >= 0)
+        printf("         [NDLTRACE] decode-first: probe_rank=%d imp_rank=%d "
+               "in_sel=%d in_imp=%d\n",
+               g_ndl_dc_first_prank, g_ndl_dc_first_irank,
+               g_ndl_dc_first_in_sel, g_ndl_dc_first_in_imp);
+    fflush(stdout);
+}
+
+static int g_attn_i8_logged = 0;   /* VLLM_ATTN_I8 的生效回显只打一次 */
+
+/* KV 的量化口径 = 逐 token 逐 head max-abs，反量化乘 (scale/127)。这两个常量必须与
+ * 下方的 KVQ_SCALE / KVQ_INV_SCALE 同值（那里有 _Static_assert 锁死）。放在文件最前
+ * 是因为：内核在 #if ST_HAVE_NEON 区内，而断言与 KVQ 定义在区外 —— 定义若留在区内，
+ * x86（不编译该区）会 `undeclared`（本地 -fsyntax-only 实测踩过）。 */
+#define ST_ATTN_Q8_INV 127.0f
+#define ST_ATTN_Q8_SC  (1.0f / ST_ATTN_Q8_INV)
+
+/* 查询分块因子：一次 K/V 加载服务多少个 query（精确 prefill attention 用）。
+ *
+ * 默认 4 = 与历史二进制一致的行为。用 -DST_ATTN_QB=N 覆盖可做 A/B。
+ * **实测结论（板端 8K，2026-09-16）**：QB=8 只快 5.9%（366.4 → 344.9 s），
+ * 因为 8×float32x4 累加器 = 32 个 NEON 寄存器、必然溢出（汇编实测栈帧
+ * 0 → 624 B），减半的 DRAM 流量换不成时间；而且 QB=8 会改变输出（greedy/PPL/
+ * 重要性指纹全不同）⇒ **不是位级中立的旋钮，别指望靠它提速**。
+ *
+ * 定义必须放在文件最前（无 arch 条件）：使用点里既有 #if ST_HAVE_NEON 区内的
+ * 内核，也有区外的 scores_buf 分配/金丝雀检查；留在区内会让 x86 构建
+ * `undeclared`（本地 -fsyntax-only 实测踩过 —— 板端 ARM 看不见这类问题）。 */
+#ifndef ST_ATTN_QB
+#define ST_ATTN_QB 4
+#endif
+
+/* VLLM_ATTN_I8=1：密集精确 prefill 走 INT8-KV 直读内核（见 vllm_attn_q8_group）。
+ * 默认关。放在文件最前是因为分配点（longctx prefill 的 pack 分配）与调用点
+ * 分处不同预处理区段，而本函数必须两边都可见。 */
+static int st_attn_i8_enabled(void) {
+    static int v = -1;
+    if (v < 0) {
+        const char *e = getenv("VLLM_ATTN_I8");
+        v = (e && e[0] == '1') ? 1 : 0;
+    }
+    return v;
+}
+
+/* VLLM_ATTN_V_I8=1：让 V 也走 int8 连续包（默认 0 = V 保持 float）。
+ * 实测这是**长度相关的两边下注**：2K（指令受限）V 走 float 更省，8K（流量受限）
+ * V 走 int8 更省 —— 见 vllm_attn_q8_group 上方的指令预算表与板端 s2/s4/r4 数据。
+ * 只在 VLLM_ATTN_I8=1 时才有意义（那时 V 包才会被拷出来）。 */
+static int st_attn_v_i8_enabled(void) {
+    static int v = -1;
+    if (v < 0) {
+        const char *e = getenv("VLLM_ATTN_V_I8");
+        v = (e && e[0] == '1') ? 1 : 0;
+    }
+    return v;
+}
+
+/* VKQ 段「o 常驻寄存器」路径的维度分块宽度（VLLM_ATTN_OREG=1 时生效）。
+ * 64 维 = 16 个 float32x4 累加器；AArch64 有 32 个 128-bit 寄存器，加上
+ * wgt 广播与 V 展开的临时量后仍有余量（对照 QB=8 的 8×float32x4 就溢出）。
+ * 定义放文件最前：使用点在 #if ST_HAVE_NEON 区内，但这里的回显函数也引用它，
+ * 与 ST_ATTN_Q8_* 同样的理由不能留在区内。 */
+#define ST_ATTN_OREG_DBLK 64
+
+/* VLLM_ATTN_OREG=1：VKQ 段改走「累加器常驻 + 维度分块」（默认关）。
+ *
+ * 动机：原 VKQ 内层对每个 s 都对 o 做「读—改—写」（1 load V + 1 load o +
+ * 1 store o 每条 FMA），这是整个内核里唯一每步都触碰内存的累加结构。
+ *
+ * 位级不变的理由（**不是**近似等价，是逐位相同）：VKQ 沿 i 方向**没有跨 lane
+ * 归约**（每个输出元素 i 只对 s 独立累加），所以维度怎么分块、按什么顺序遍历
+ * 都不影响任一元素的数值；唯一要保住的是「对固定 i，s 从 0 升序做 fma」这条
+ * 链，本路径逐字保留（acc 从 0 起、s 升序、每步同一条 vfmaq_f32、同一个
+ * wgt = sc[k][s]*inv_sum 表达式）。对比 QK 段的 hsum_neon4：那才是求和树敏感的。
+ *
+ * 因此本开关是位级中立的 A/B 旋钮（QB 那种「改了就变」的旋钮不可比）。 */
+static int st_attn_oreg_enabled(void) {
+    static int v = -1;
+    if (v < 0) {
+        const char *e = getenv("VLLM_ATTN_OREG");
+        v = (e && e[0] == '1') ? 1 : 0;
+        if (v) {
+            fprintf(stderr, "[ATTN] VLLM_ATTN_OREG=1：VKQ 走 o 常驻寄存器"
+                            "（维度分块 %d）\n", ST_ATTN_OREG_DBLK);
+            fflush(stderr);
+        }
+    }
+    return v;
+}
+
 /* 平台 SIMD 层：aarch64 走 NEON（vllm_platform.h）；x86-64 走 AVX2。
  * 本文件若干"共享函数体"内直接书写 NEON intrinsics（见下映射层），x86
  * 下由等价 __m128 映射补齐，保持同架构内位级一致、跨架构文档化近似。 */
@@ -1916,13 +2131,18 @@ static void st_attn_batched_packed_sparse_neon(
     if (k_blocks < 1) k_blocks = 1;
     if (n_probe < 1) n_probe = 1;
 
+    /* 选块粒度（--sparse-pf-group G）：每 G 个 token 共享一次选块；grp>=nb 即历史行为；
+     * 根因 = prefill 的 attention 输出就是写进 KV 的 K/V 的来源。 */
+    int grp = g_sparse_pf_group > 0 ? g_sparse_pf_group : nb;
+    if (grp > nb) grp = nb;
+    if (grp < 1) grp = 1;
+
     for (int ha = 0; ha < nh; ha++) {
         int kh = (ha * nkv) / nh;
         const float *kp_head = k_pack + (size_t)kh * seq_stride * hd;
         const float *vp_head = v_pack + (size_t)kh * seq_stride * hd;
         float *scb = scores + (size_t)ha * 4 * score_stride;
         float *impr = imp_head ? imp_head + (size_t)ha * score_stride : NULL;
-        const float *q_rep = q_buf + ((size_t)(nb - 1) * nh + ha) * hd;
 
         float *probe = (float *)malloc((size_t)n_blocks * sizeof(float));
         uint8_t *used = (uint8_t *)malloc((size_t)n_blocks);
@@ -1931,6 +2151,10 @@ static void st_attn_batched_packed_sparse_neon(
             free(probe); free(used); free(sel);
             continue;
         }
+
+        for (int t_grp = 0; t_grp < nb; t_grp += grp) {
+        int t_end = t_grp + grp; if (t_end > nb) t_end = nb;
+        const float *q_rep = q_buf + ((size_t)(t_end - 1) * nh + ha) * hd;
         memset(used, 0, (size_t)n_blocks);
 
         for (int b = 0; b < n_blocks; b++) {
@@ -1967,8 +2191,9 @@ static void st_attn_batched_packed_sparse_neon(
             sel[low] = n_blocks - 1;
             used[n_blocks - 1] = 1;
         }
+        ndl_trace_prefill(sel, nsel, n_blocks, bs);
 
-        for (int t = 0; t < nb; t++) {
+        for (int t = t_grp; t < t_end; t++) {
             const float *q = q_buf + ((size_t)t * nh + ha) * hd;
             float *o = attn_out + ((size_t)t * nh + ha) * hd;
             int n = prev_len + t + 1;
@@ -2007,6 +2232,7 @@ static void st_attn_batched_packed_sparse_neon(
                 }
             }
         }
+        }   /* end 选块分组循环 */
         free(probe); free(used); free(sel);
     }
 }
@@ -2257,6 +2483,93 @@ int g_sparse_attn  = 0;   /* 0 = exact attention (default) */
 int g_sparse_k     = 32;  /* top KV blocks kept per head (Phase-1 baseline: k=32, probe=8 keeps S=1024..4096 needle recall) */
 int g_sparse_block = 32;  /* positions per KV block */
 int g_sparse_probe = 8;   /* probe samples per block (max-dot fusion) */
+/* --sparse-min-ctx N：**稀疏 decode 的上下文长度下限**（默认 1024）。
+ *
+ * 与 g_sparse_pf_min_ctx（prefill 侧，默认 3072）对称，但两侧的交叉点不同：decode 每个
+ * 生成 token 都要付一次 probe，而 prefill 每个 prompt token 只付一次；实测 4K 起
+ * decode 稀疏已稳定快 1.8×（dense 409 → sp32 223 ms/tok），故门槛低于 prefill。
+ *
+ * 注意：本门把原来的 `seq_len > g_sparse_block*2`（=64）收紧到 1024 —— 64 这个值远低于
+ * 任何有意义的上下文长度，等于没有门。**该收紧只影响 ctx 64..1023**，位于本轮全部
+ * 实测区间（≥1067）之外，故既有性能矩阵与召回结论不受影响（**未经实测，属先验收紧**）。
+ *
+ * 与旧门是**与**关系。0 = 只用旧门（回到改动前行为）。 */
+int g_sparse_min_ctx = 1024;
+/* --sparse-pf-group G：**稀疏 prefill 核**的选块粒度（每组 G 个 token 共享一次选块）。
+ * 默认 0 = 历史行为：整个 mini-batch（nb 个 token）只用一个代表 query（组内最后
+ * 一个 token）选块。G=1 则每个 token 用自己的 query 选块。
+ *
+ * 为什么需要：prefill 的 attention 输出就是**写进 KV 的 K/V 的来源**。用 32 个 token
+ * 共享一套选中集，等于让 31 个 token 用别人的上下文写自己的表示。板端实测（2B /
+ * 真实语料 / needle@50% / k=32）针块被选进 prefill 选块集的比例：
+ *   ctx 4K 42.93% → 8K 32.17% → 16K 15.00%（随上下文单调下降）
+ * 同一批实验里 8K 档 decode 侧 `MISSED 0`、针块 imp 名次 15/256（预算 16 之内）
+ * **仍然答"未指定"** ⇒ 失效发生在写入侧而非选块侧。本开关就是为这条根因准备的。
+ * 代价：probe 成本 ×ceil(nb/G)。G=1 时 QK ≈ 全量的 n_probe/bs = 8/32 = 25%，
+ * PV 仍只有 k*bs/seq = 6.2% ⇒ 仍有 3~4× 空间。 */
+int g_sparse_pf_group = 0;
+/* --sparse-pf-k N：**稀疏 prefill 核**专用的保留块数（0 = 沿用 --sparse-k，默认）。
+ *
+ * 为什么与 --sparse-k 分开：两侧的性价比完全不同 —— decode 每个生成 token 都要付，
+ * prefill 每个 prompt token 只付一次；而 prefill 的保留块数直接决定**写进 KV 的表示
+ * 质量**（稀疏 prefill 的 attention 输出就是 K/V 的来源）。把两个旋钮绑在一起，
+ * 就没法「decode 用大 k 保质量 + prefill 用小 k 省时间」或反过来调。
+ * 默认 0 = 逐位保持旧行为（prefill 沿用 --sparse-k）。 */
+int g_sparse_pf_k = 0;
+/* --sparse-pf-min-ctx N：**稀疏 prefill 的上下文长度下限**（默认 3072）。
+ *
+ * 为什么需要下限：收益 = 「省下的注意力」−「probe 选块开销」。前者 ∝ (ctx − k·block)、
+ * 后者 ∝ ctx/block，而 k·block 是**常量**（k=32/block=32 ⇒ 1024 token）。ctx 小到
+ * 与 k·block 同量级时，选块几乎覆盖整个上下文 ⇒ 省不下注意力却仍要付全额 probe，净亏。
+ *
+ * 2B 多轮实测（真实语料 + 严格判据，3 次重复一致，见 CHANGELOG 2026-09-27）：
+ *   ctx 1067 → +18.4%    ctx 2174 → +12.0%    ctx 4374 → −11.1%
+ *   ctx 8618 → −29.0%    ctx 16482 → −45.1%
+ * 交叉点在 2K~4K 之间，故默认取 3072。
+ *
+ * 旧门 `seq_len > g_sparse_block * 2`（=64）远低于交叉点 ⇒ 短上下文白付 probe 开销。
+ * 本门与旧门是**与**关系：两者都满足才走稀疏 prefill。0 = 只用旧门（回到改动前行为）。
+ * 只在显式开启 VLLM_SPARSE_PREFILL=1 时生效，故**默认路径逐位不变**。 */
+int g_sparse_pf_min_ctx = 3072;
+/* --sparse-ratio R：把选块预算从「固定块数」改成「块数的比例」。默认 0 = 关闭。
+ * k 是固定块数时保留率 = k/(seq/bs) 随长度线性塌陷（2K 49% → 8K 12.5% → 16K 6.2%），
+ * 长上下文下模型只看到极小一部分上下文，输出会退化。R>0 时
+ * k_eff = clamp(ceil(R * n_blocks), g_sparse_k, n_blocks)，g_sparse_k 退化为下限。 */
+float g_sparse_ratio = 0.0f;
+
+int st_sparse_k_eff(int n_blocks) {
+    if (g_sparse_ratio <= 0.0f || n_blocks <= 0) return g_sparse_k;
+    int kv = (int)ceilf(g_sparse_ratio * (float)n_blocks);
+    if (kv < g_sparse_k) kv = g_sparse_k;
+    if (kv > n_blocks) kv = n_blocks;
+    return kv;
+}
+
+/* 稀疏 prefill 核专用的选块预算（见 g_sparse_pf_k）。g_sparse_pf_k <= 0 时与
+ * decode 走完全相同的口径 st_sparse_k_eff()（含 --sparse-ratio），保证默认逐位一致。 */
+int st_sparse_pf_k_eff(int n_blocks) {
+    if (g_sparse_pf_k <= 0) return st_sparse_k_eff(n_blocks);
+    int kv = g_sparse_pf_k;
+    if (n_blocks > 0 && kv > n_blocks) kv = n_blocks;
+    if (kv < 1) kv = 1;
+    return kv;
+}
+
+/* --force-blk B[,B...]：**只对 decode 选块**的诊断钩子（默认关闭）。
+ *
+ * 用途是把「decode 没选中针块」和「prefill 的近似注意力把针块自身的
+ * hidden state 弄坏了」这两件事分开：强制保留这些块之后如果模型答对，就说明
+ * 损坏只在选块一侧；如果仍然答错，损坏就在 prefill 侧。
+ *
+ * 用列表而不是单块，是因为针文本常常**横跨两个块**：16K @50% 时针落在
+ * token 8190..8203，而 bs=32 的分块是 8160..8191 / 8192..8223，只保留 255 就
+ * 丢了 "ramen" 本身，结论会假。
+ *
+ * 注意它和 --sparse-ratio 的作用域不同 —— --sparse-ratio 会同时改 prefill 与
+ * decode 的选块预算，所以拿它做这个分离实验是**无效**的（会把 prefill 也变成
+ * 全选，实验退化成「用稀疏核做全注意力」）。只有这里这一个钩子只碰 decode。 */
+int g_force_blk[ST_FORCE_BLK_MAX] = { 0 };
+int g_force_blk_n = 0;
 
 /* Phase 2: L3 cold-block Q4 disk eviction (see vllm_l3.h). g_l3_evict is the
  * master switch; g_l3_ratio = fraction of cold blocks evicted per layer. */
@@ -3962,6 +4275,12 @@ static inline void q4x4_dot1_group16_gemv(const uint8_t *__restrict bq,
  * 依据公理：blas_matrix_block_natural_isomorphism（block_matrix_assoc_natural）。 */
 #include "../../tools/kernels/llama_gemm_q4_0_4x4_asm.c"
 
+/* M4d 主路径 token tile 大小。编译期可用 -DST_Q4_BTILE 覆盖做扫描（须为 4 的
+ * 倍数，匹配 llama 4x4 asm 内部的 4-token 微 tile；默认 16 = M4h 定值）。 */
+#ifndef ST_Q4_BTILE
+#define ST_Q4_BTILE 16
+#endif
+
 typedef struct {
     float *out; const uint8_t *q4_w;
     int nb, cols, rows, n_batch;
@@ -3976,9 +4295,9 @@ static void vllm_q4x4_b0_worker(void *ctx_, int it) {
      * 优于 9 个大 token-tile 任务。逐元素累加顺序不变 -> 位级一致。 */
     int tile = it % c->ntiles;
     int rs   = it / c->ntiles;
-    int t0 = tile * 16;
+    int t0 = tile * ST_Q4_BTILE;
     int nt = c->n_batch - t0;
-    if (nt > 16) nt = 16;
+    if (nt > ST_Q4_BTILE) nt = ST_Q4_BTILE;
     int r0 = rs * c->row_slice;
     int nr = c->rows - r0;
     if (nr > c->row_slice) nr = c->row_slice;
@@ -4024,7 +4343,7 @@ static void st_gemm_q4_0_4x4_batched(float *__restrict out,
         const char *e = getenv("VLLM_ROW_SLICE");
         rs_env = e ? atoi(e) : -1;
     }
-    int ntiles = (n_batch + 15) / 16;
+    int ntiles = (n_batch + ST_Q4_BTILE - 1) / ST_Q4_BTILE;
     int row_slice;
     int no_split = 0;
     if (rs_env == 0) {
@@ -4069,17 +4388,142 @@ typedef struct {
     const uint8_t *q4_w; const int8_t *xq; const float *xd;
     float *out; const float *residual;
     int rows, cols, n_blocks, n_batch, row_stride;
+    int tile;   /* token tile 宽度；0 = 默认 3。只影响「权重读几遍」，
+                 * 不改变任一 token 的累加顺序（各 token 累加器独立），
+                 * 故增大 tile 仍与逐 token 逐位等价。 */
+    volatile uint64_t sink;   /* 纯读探针 sink（防 DCE），仅 VLLM_Q4_PROBE=1 用 */
 } vllm_q4x4_gemm_ctx;
+
+#define Q4X4_TILE_MAX 8   /* 验证模式（VLLM_SPEC_VEXACT）把 tile 拉满到批宽 K<=8 */
+
+/* 探针开关（见 docs/PRE_REG_Q4_GEMM_PROBE.txt，均默认关、仅探针用）：
+ * VLLM_Q4_CTILE=1：q4x4_gemm_batched 强制 n_batch（含 >3）走 C tile worker，
+ *                  跳过 asm 快路（量「C tile 批式现状」基线 L0）。
+ * VLLM_Q4_PROBE=1：C tile worker 纯读（跳过 vdot/vcvt/vfma，读到的字节累加进
+ *                  sink 防 DCE），量「纯内存读地板」M（L1）。输出为垃圾（预期）。 */
+static int q4_ctile_env(void) {
+    static int v = -1;
+    if (v < 0) {
+        const char *e = getenv("VLLM_Q4_CTILE");
+        v = (e && e[0] == '1') ? 1 : 0;
+        if (v) { fprintf(stderr, "[Q4CTILE] engaged\n"); fflush(stderr); }
+    }
+    return v;
+}
+static int q4_probe_env(void) {
+    static int v = -1;
+    if (v < 0) {
+        const char *e = getenv("VLLM_Q4_PROBE");
+        v = (e && e[0] == '1') ? 1 : 0;
+        if (v) { fprintf(stderr, "[Q4PROBE] engaged\n"); fflush(stderr); }
+    }
+    return v;
+}
+
+/* VLLM_Q4_ASM=1：C tile 手写流水线（方向 A 兑现）。block 展开 2 次 + 预取，
+ * 交错两个 block 的 sdot 与 load，榨 intrinsic 的调度低效。位级口径不变
+ * （仍走 q4x4_dot1_group16 的 lo/hi + f32 scale）。默认 0 = 原循环（零回归）。 */
+static int q4_asm_env(void) {
+    static int v = -1;
+    if (v < 0) {
+        const char *e = getenv("VLLM_Q4_ASM");
+        v = (e && e[0] == '1') ? 1 : 0;
+        if (v) { fprintf(stderr, "[Q4ASM] engaged\n"); fflush(stderr); }
+    }
+    return v;
+}
 
 static void vllm_q4x4_gemm_worker(void *ctx_, int it) {
     vllm_q4x4_gemm_ctx *c = ctx_;
-    const int TILE = 3;
+    const int TILE = c->tile > 0 ? c->tile : 3;
     int r4 = it * 4;
     const uint8_t *__restrict pr = c->q4_w + (size_t)(r4 >> 2) * c->row_stride * 4;
+    if (q4_probe_env()) {
+        /* 纯读地板（VLLM_Q4_PROBE=1）：忠实 C tile 访问模式——权重 bq 每 (t0,b)
+         * 读一次（摊薄给 tile 内 token）、xq/xd 每 token 读一次——但跳过全部
+         * vdot/vcvt/vfma，读到的字节累加进 local sink 防 DCE。 */
+        uint64_t ls = 0;
+        for (int t0 = 0; t0 < c->n_batch; t0 += TILE) {
+            int nt = c->n_batch - t0;
+            if (nt > TILE) nt = TILE;
+            for (int b = 0; b < c->n_blocks; b++) {
+                const uint8_t *bq = pr + (size_t)b * 72;
+                ST_PREFETCH(pr + (size_t)(b + 4) * 72);
+                for (int i = 0; i < 72; i += 8) {
+                    uint64_t w; memcpy(&w, bq + i, 8); ls += w;
+                }
+                for (int tt = 0; tt < nt; tt++) {
+                    int t = t0 + tt;
+                    const int8_t *xp = c->xq + (size_t)t * c->cols + (size_t)b * 32;
+                    for (int i = 0; i < 32; i += 8) {
+                        uint64_t a; memcpy(&a, xp + i, 8); ls += a;
+                    }
+                    uint32_t d; memcpy(&d, &c->xd[(size_t)t * c->n_blocks + b], 4);
+                    ls += d;
+                }
+            }
+        }
+        c->sink += ls;
+        return;
+    }
+    if (q4_asm_env()) {
+        /* 手写流水线：block 展开 2 次 + 预取，交错两个 block 的 sdot 与 load，
+         * 榨 intrinsic 的调度低效。位级口径不变（仍 q4x4_dot1_group16 的
+         * lo/hi + f32 scale），故与默认路径逐位一致。 */
+        for (int t0 = 0; t0 < c->n_batch; t0 += TILE) {
+            int nt = c->n_batch - t0;
+            if (nt > TILE) nt = TILE;
+            float32x4_t lo[Q4X4_TILE_MAX], hi[Q4X4_TILE_MAX];
+            for (int tt = 0; tt < nt; tt++) {
+                lo[tt] = vdupq_n_f32(0.0f);
+                hi[tt] = vdupq_n_f32(0.0f);
+            }
+            int b = 0;
+            for (; b + 1 < c->n_blocks; b += 2) {
+                const uint8_t *bq0 = pr + (size_t)b * 72;
+                const uint8_t *bq1 = pr + (size_t)(b + 1) * 72;
+                ST_PREFETCH(pr + (size_t)(b + 4) * 72);
+                for (int tt = 0; tt < nt; tt++) {
+                    int t = t0 + tt;
+                    q4x4_dot1_group16(bq0, c->xq + (size_t)t * c->cols + (size_t)b * 32,
+                                      c->xd[(size_t)t * c->n_blocks + b], &lo[tt], &hi[tt]);
+                    q4x4_dot1_group16(bq1, c->xq + (size_t)t * c->cols + (size_t)(b + 1) * 32,
+                                      c->xd[(size_t)t * c->n_blocks + b + 1], &lo[tt], &hi[tt]);
+                }
+            }
+            for (; b < c->n_blocks; b++) {
+                const uint8_t *bq = pr + (size_t)b * 72;
+                for (int tt = 0; tt < nt; tt++) {
+                    int t = t0 + tt;
+                    q4x4_dot1_group16(bq, c->xq + (size_t)t * c->cols + (size_t)b * 32,
+                                      c->xd[(size_t)t * c->n_blocks + b], &lo[tt], &hi[tt]);
+                }
+            }
+            for (int tt = 0; tt < nt; tt++) {
+                int t = t0 + tt;
+                float *op = c->out + (size_t)t * c->rows + r4;
+                float32x4_t s = vaddq_f32(lo[tt], hi[tt]);
+                if (c->residual) {
+                    const float *rp = c->residual + (size_t)t * c->rows + r4;
+                    op[0] = rp[0] + vgetq_lane_f32(s, 0);
+                    op[1] = rp[1] + vgetq_lane_f32(s, 1);
+                    op[2] = rp[2] + vgetq_lane_f32(s, 2);
+                    op[3] = rp[3] + vgetq_lane_f32(s, 3);
+                } else {
+                    op[0] = vgetq_lane_f32(s, 0);
+                    op[1] = vgetq_lane_f32(s, 1);
+                    op[2] = vgetq_lane_f32(s, 2);
+                    op[3] = vgetq_lane_f32(s, 3);
+                }
+            }
+        }
+        return;
+    }
     for (int t0 = 0; t0 < c->n_batch; t0 += TILE) {
         int nt = c->n_batch - t0;
         if (nt > TILE) nt = TILE;
-        float32x4_t lo[TILE], hi[TILE];
+        if (nt > Q4X4_TILE_MAX) nt = Q4X4_TILE_MAX;
+        float32x4_t lo[Q4X4_TILE_MAX], hi[Q4X4_TILE_MAX];
         for (int tt = 0; tt < nt; tt++) {
             lo[tt] = vdupq_n_f32(0.0f);
             hi[tt] = vdupq_n_f32(0.0f);
@@ -4127,6 +4571,25 @@ static int vllm_gemm_legacy_env(void) {
     return v;
 }
 
+// 前向声明（定义见本文件后段）：验证模式门控
+static int spec_vexact_on(void);
+
+/* VLLM_SPEC_M4F_DECODE=1：让 decode 的单 token q4 GEMM（QKV/O/gate/up/down）
+ * 走 M4f（`q4x4_dot1_group16_gemv`，32 元素一次、单 acc），而非当前默认的
+ * C tile（`q4x4_dot1_group16`，16 元素一次、lo/hi 双 acc）。
+ * 动机：M4f 与 asm 快路（`st_gemm_q4_0_4x4_q8_0_neon`）同为「32 元素一次」口径、
+ * 位级同构；把 decode 换到 M4f 后，验证批即可走 asm 快路且与 decode 位级一致，
+ * 从而免重放并拿到 asm 快路的 ~3× GEMM 加速（见 docs/投机解码瓶颈分析与MTP落地方案.md §4.4）。
+ * 默认 0 = 原 C tile 路径（零回归）。 */
+static int spec_m4f_decode_env(void) {
+    static int v = -1;
+    if (v < 0) {
+        const char *e = getenv("VLLM_SPEC_M4F_DECODE");
+        v = (e && e[0] == '1') ? 1 : 0;
+    }
+    return v;
+}
+
 static void q4x4_gemm_batched(float *__restrict out, const uint8_t *__restrict q4_w,
                               const int8_t *__restrict xq, const float *__restrict xd,
                               int rows, int cols, int n_batch,
@@ -4139,7 +4602,7 @@ static void q4x4_gemm_batched(float *__restrict out, const uint8_t *__restrict q
      * （数值边界：主段为 M4h 舍入序、尾段为 C tile 序，均为既有文档化路径）。
      * VLLM_GEMM_LEGACY=1 时恢复旧 gate（n_batch%4==0 才进真 GEMM）。 */
 #if ST_NEON_DOTPROD
-    if (g_st_q4_repack && (rows & 3) == 0 &&
+    if (!q4_ctile_env() && g_st_q4_repack && (rows & 3) == 0 &&
         (vllm_gemm_legacy_env() ? (n_batch & 3) == 0 : n_batch > 3) &&
         repack_q8_0_4x4(xq, xd, n_batch & ~3, cols) == 0) {
         int nb4 = n_batch & ~3;
@@ -4154,7 +4617,7 @@ static void q4x4_gemm_batched(float *__restrict out, const uint8_t *__restrict q
                 xd + (size_t)nb4 * n_blocks,
                 out + (size_t)nb4 * rows,
                 residual ? residual + (size_t)nb4 * rows : NULL,
-                rows, cols, n_blocks, tail, n_blocks * 18
+                rows, cols, n_blocks, tail, n_blocks * 18, 0, 0
             };
             vllm_tp_parfor(0, (rows + 3) / 4, vllm_q4x4_gemm_worker, &vc);
         }
@@ -4163,7 +4626,7 @@ static void q4x4_gemm_batched(float *__restrict out, const uint8_t *__restrict q
 #endif
     int n_blocks = cols / 32;
     size_t row_stride = n_blocks * 18;
-    vllm_q4x4_gemm_ctx vc = { q4_w, xq, xd, out, residual, rows, cols, n_blocks, n_batch, (int)row_stride };
+    vllm_q4x4_gemm_ctx vc = { q4_w, xq, xd, out, residual, rows, cols, n_blocks, n_batch, (int)row_stride, 0, 0 };
     vllm_tp_parfor(0, (rows + 3) / 4, vllm_q4x4_gemm_worker, &vc);
 }
 #endif /* ST_NEON_DOTPROD */
@@ -6496,7 +6959,86 @@ typedef struct {
     float *scores; float *imp_head;
     int nb, prev_len, seq_stride, nh, nkv, hd, score_stride, hdv;
     float scale;
+    int pv_tile;
 } vllm_attn_batched_ctx;
+
+/* PV 的 KV 位置分块宽（s 方向，即 V 行数）。128 = 每 head 512 B、4 query 复用，
+ * 是历史联合档（OREG+VBLK）的定值；编译期可用 -DST_ATTN_PV_BLK 覆盖做扫描。 */
+#ifndef ST_ATTN_PV_BLK
+#define ST_ATTN_PV_BLK 128
+#endif
+
+/* 保留每个输出的 s 升序 FMA 链；KV 分块之间续接原累加器，不合并部分和。
+ * 模式1：单 query/d64；模式2：双 query/d32 共享 V。仅用于 hd=128。 */
+static void vllm_attn_pv_tile128(float **o, float **sc, const float *invs,
+                               const int *n, const float *vp_head, int mode) {
+#define PV_LOAD(j) float32x4_t a##j = s0 ? vld1q_f32(oa + (j)*4) : vdupq_n_f32(0.0f);
+#define PV_FMA(j) a##j = vfmaq_f32(a##j, wa, vld1q_f32(vp + (j)*4));
+#define PV_STORE(j) vst1q_f32(oa + (j)*4, a##j);
+#define PV_EIGHT(M) M(0) M(1) M(2) M(3) M(4) M(5) M(6) M(7)
+#define PV_SIXTEEN(M) PV_EIGHT(M) M(8) M(9) M(10) M(11) M(12) M(13) M(14) M(15)
+#define PV_LOAD_B(j) float32x4_t b##j = s0 ? vld1q_f32(ob + (j)*4) : vdupq_n_f32(0.0f);
+#define PV_PAIR(j) do { \
+    float32x4_t vv = vld1q_f32(vp + (j)*4); \
+    a##j = vfmaq_f32(a##j, wa, vv); \
+    b##j = vfmaq_f32(b##j, wb, vv); \
+} while (0);
+#define PV_FMA_B(j) b##j = vfmaq_f32(b##j, wb, vld1q_f32(vp + (j)*4));
+#define PV_STORE_B(j) vst1q_f32(ob + (j)*4, b##j);
+    for (int s0 = 0; s0 < n[ST_ATTN_QB - 1]; s0 += ST_ATTN_PV_BLK) {
+        if (mode == 1) {
+            for (int k = 0; k < ST_ATTN_QB; k++) {
+                int se = n[k] < s0 + ST_ATTN_PV_BLK ? n[k] : s0 + ST_ATTN_PV_BLK;
+                if (se <= s0) continue;
+                for (int d = 0; d < 128; d += 64) {
+                    float *oa = o[k] + d;
+                    PV_SIXTEEN(PV_LOAD)
+                    for (int s = s0; s < se; s++) {
+                        float32x4_t wa = vdupq_n_f32(sc[k][s] * invs[k]);
+                        const float *vp = vp_head + (size_t)s * 128 + d;
+                        PV_SIXTEEN(PV_FMA)
+                    }
+                    PV_SIXTEEN(PV_STORE)
+                }
+            }
+        } else {
+            for (int k = 0; k < ST_ATTN_QB; k += 2) {
+                int ea = n[k] < s0 + ST_ATTN_PV_BLK ? n[k] : s0 + ST_ATTN_PV_BLK;
+                int eb = n[k+1] < s0 + ST_ATTN_PV_BLK ? n[k+1] : s0 + ST_ATTN_PV_BLK;
+                if (eb <= s0) continue;
+                for (int d = 0; d < 128; d += 32) {
+                    float *oa = o[k] + d, *ob = o[k+1] + d;
+                    PV_EIGHT(PV_LOAD)
+                    PV_EIGHT(PV_LOAD_B)
+                    int s = s0;
+                    for (; s < ea; s++) {
+                        float32x4_t wa = vdupq_n_f32(sc[k][s] * invs[k]);
+                        float32x4_t wb = vdupq_n_f32(sc[k+1][s] * invs[k+1]);
+                        const float *vp = vp_head + (size_t)s * 128 + d;
+                        PV_EIGHT(PV_PAIR)
+                    }
+                    /* 因果边界处仅后一个 query 有效，不为前者补算零权重。 */
+                    for (; s < eb; s++) {
+                        float32x4_t wb = vdupq_n_f32(sc[k+1][s] * invs[k+1]);
+                        const float *vp = vp_head + (size_t)s * 128 + d;
+                        PV_EIGHT(PV_FMA_B)
+                    }
+                    PV_EIGHT(PV_STORE)
+                    PV_EIGHT(PV_STORE_B)
+                }
+            }
+        }
+    }
+#undef PV_LOAD
+#undef PV_FMA
+#undef PV_STORE
+#undef PV_EIGHT
+#undef PV_SIXTEEN
+#undef PV_LOAD_B
+#undef PV_PAIR
+#undef PV_FMA_B
+#undef PV_STORE_B
+}
 
 static void vllm_attn_batched_worker(void *ctx_, int ha) {
     vllm_attn_batched_ctx *c = ctx_;
@@ -6507,13 +7049,15 @@ static void vllm_attn_batched_worker(void *ctx_, int ha) {
      * shared input fusion）。4 个 query 共享一次 k 加载（QK 段）与 v 加载
      * （VKQ 段）。每个 token 的 QK 累加（i 升序 16 元素组）、softmax、VKQ
      * 累加（s 升序）顺序与串行版完全一致 -> 位级一致。
-     * scores_buf 扩为 nh*4 行，本 head 用行 (ha*4+k)，stride 不变。 */
-    float *scb = c->scores + (size_t)ha * 4 * c->score_stride;
+     * scores_buf 扩为 nh*ST_ATTN_QB 行，本 head 用行 (ha*ST_ATTN_QB+k)，
+     * stride 不变。 */
+    float *scb = c->scores + (size_t)ha * ST_ATTN_QB * c->score_stride;
 
     int t = 0;
-    for (; t + 4 <= c->nb; t += 4) {
-        const float *q[4]; float *o[4]; int n[4]; float maxs[4]; float *sc[4];
-        for (int k = 0; k < 4; k++) {
+    for (; t + ST_ATTN_QB <= c->nb; t += ST_ATTN_QB) {
+        const float *q[ST_ATTN_QB]; float *o[ST_ATTN_QB]; int n[ST_ATTN_QB];
+        float maxs[ST_ATTN_QB]; float *sc[ST_ATTN_QB];
+        for (int k = 0; k < ST_ATTN_QB; k++) {
             int tk = t + k;
             q[k] = c->q_buf + ((size_t)tk * c->nh + ha) * c->hd;
             o[k] = c->attn_out + ((size_t)tk * c->nh + ha) * c->hd;
@@ -6523,45 +7067,86 @@ static void vllm_attn_batched_worker(void *ctx_, int ha) {
         }
 
         /* Q·K^T：kp 每 16 元素加载一次，4 个 query 共享。n[k] 递增，
-         * 位置 s 只对 n[k] > s 的 token 计算（kmax = 活跃 query 数）。 */
-        int smax = n[3];
-        for (int s = 0; s < smax; s++) {
+         * 位置 s 只对 n[k] > s 的 token 计算（kmax = 活跃 query 数）。
+         * 2 位置并发（s 与 s+1）：每 query 2 条独立 FMA 链（ILP 4->8），
+         * q 载入被 2 个位置复用（q 载入减半）；每位置累加顺序与串行体
+         * 逐字一致 -> 位级一致。causal 掩码：kmax1（s+1）<= kmax0（s）。 */
+        int smax = n[ST_ATTN_QB - 1];
+        int s = 0;
+        for (; s + 1 < smax; s += 2) {
+            const float *kp0 = kp_head + (size_t)s * c->hd;
+            const float *kp1 = kp0 + c->hd;
+            float32x4_t a0[ST_ATTN_QB], a1[ST_ATTN_QB];
+            for (int k = 0; k < ST_ATTN_QB; k++) {
+                a0[k] = vdupq_n_f32(0.0f);
+                a1[k] = vdupq_n_f32(0.0f);
+            }
+            int kmax0 = ST_ATTN_QB;
+            while (kmax0 > 0 && s >= n[kmax0 - 1]) kmax0--;
+            int kmax1 = ST_ATTN_QB;
+            while (kmax1 > 0 && s + 1 >= n[kmax1 - 1]) kmax1--;
+            for (int i = 0; i < c->hdv; i += 16) {
+                float32x4_t k00 = vld1q_f32(kp0 + i);
+                float32x4_t k01 = vld1q_f32(kp0 + i + 4);
+                float32x4_t k02 = vld1q_f32(kp0 + i + 8);
+                float32x4_t k03 = vld1q_f32(kp0 + i + 12);
+                float32x4_t k10 = vld1q_f32(kp1 + i);
+                float32x4_t k11 = vld1q_f32(kp1 + i + 4);
+                float32x4_t k12 = vld1q_f32(kp1 + i + 8);
+                float32x4_t k13 = vld1q_f32(kp1 + i + 12);
+                int k = 0;
+                for (; k < kmax1; k++) {   /* 两位置都活跃 */
+                    float32x4_t q0 = vld1q_f32(q[k] + i);
+                    float32x4_t q1 = vld1q_f32(q[k] + i + 4);
+                    float32x4_t q2 = vld1q_f32(q[k] + i + 8);
+                    float32x4_t q3 = vld1q_f32(q[k] + i + 12);
+                    a0[k] = vfmaq_f32(a0[k], q0, k00);
+                    a0[k] = vfmaq_f32(a0[k], q1, k01);
+                    a0[k] = vfmaq_f32(a0[k], q2, k02);
+                    a0[k] = vfmaq_f32(a0[k], q3, k03);
+                    a1[k] = vfmaq_f32(a1[k], q0, k10);
+                    a1[k] = vfmaq_f32(a1[k], q1, k11);
+                    a1[k] = vfmaq_f32(a1[k], q2, k12);
+                    a1[k] = vfmaq_f32(a1[k], q3, k13);
+                }
+                for (; k < kmax0; k++) {   /* 仅位置 s 活跃 */
+                    a0[k] = vfmaq_f32(a0[k], vld1q_f32(q[k] + i),     k00);
+                    a0[k] = vfmaq_f32(a0[k], vld1q_f32(q[k] + i + 4), k01);
+                    a0[k] = vfmaq_f32(a0[k], vld1q_f32(q[k] + i + 8), k02);
+                    a0[k] = vfmaq_f32(a0[k], vld1q_f32(q[k] + i + 12), k03);
+                }
+            }
+            for (int k = 0; k < kmax0; k++) {
+                float dot = hsum_neon4(a0[k]);
+                for (int i = c->hdv; i < c->hd; i++) dot += q[k][i] * kp0[i];
+                sc[k][s] = dot * c->scale;
+                if (sc[k][s] > maxs[k]) maxs[k] = sc[k][s];
+                if (k < kmax1) {
+                    float dot1 = hsum_neon4(a1[k]);
+                    for (int i = c->hdv; i < c->hd; i++) dot1 += q[k][i] * kp1[i];
+                    sc[k][s + 1] = dot1 * c->scale;
+                    if (sc[k][s + 1] > maxs[k]) maxs[k] = sc[k][s + 1];
+                }
+            }
+        }
+        for (; s < smax; s++) {   /* smax 奇数的单位置尾：与串行体逐字一致 */
             const float *kp = kp_head + (size_t)s * c->hd;
-            float32x4_t acc0 = vdupq_n_f32(0.0f), acc1 = vdupq_n_f32(0.0f);
-            float32x4_t acc2 = vdupq_n_f32(0.0f), acc3 = vdupq_n_f32(0.0f);
-            int kmax = 4;
+            float32x4_t acc[ST_ATTN_QB];
+            for (int k = 0; k < ST_ATTN_QB; k++) acc[k] = vdupq_n_f32(0.0f);
+            int kmax = ST_ATTN_QB;
             while (kmax > 0 && s >= n[kmax - 1]) kmax--;
             for (int i = 0; i < c->hdv; i += 16) {
                 float32x4_t k0 = vld1q_f32(kp + i);
                 float32x4_t k1 = vld1q_f32(kp + i + 4);
                 float32x4_t k2 = vld1q_f32(kp + i + 8);
                 float32x4_t k3 = vld1q_f32(kp + i + 12);
-                if (kmax >= 1) {
-                    acc0 = vfmaq_f32(acc0, vld1q_f32(q[0] + i),     k0);
-                    acc0 = vfmaq_f32(acc0, vld1q_f32(q[0] + i + 4), k1);
-                    acc0 = vfmaq_f32(acc0, vld1q_f32(q[0] + i + 8), k2);
-                    acc0 = vfmaq_f32(acc0, vld1q_f32(q[0] + i + 12), k3);
-                }
-                if (kmax >= 2) {
-                    acc1 = vfmaq_f32(acc1, vld1q_f32(q[1] + i),     k0);
-                    acc1 = vfmaq_f32(acc1, vld1q_f32(q[1] + i + 4), k1);
-                    acc1 = vfmaq_f32(acc1, vld1q_f32(q[1] + i + 8), k2);
-                    acc1 = vfmaq_f32(acc1, vld1q_f32(q[1] + i + 12), k3);
-                }
-                if (kmax >= 3) {
-                    acc2 = vfmaq_f32(acc2, vld1q_f32(q[2] + i),     k0);
-                    acc2 = vfmaq_f32(acc2, vld1q_f32(q[2] + i + 4), k1);
-                    acc2 = vfmaq_f32(acc2, vld1q_f32(q[2] + i + 8), k2);
-                    acc2 = vfmaq_f32(acc2, vld1q_f32(q[2] + i + 12), k3);
-                }
-                if (kmax >= 4) {
-                    acc3 = vfmaq_f32(acc3, vld1q_f32(q[3] + i),     k0);
-                    acc3 = vfmaq_f32(acc3, vld1q_f32(q[3] + i + 4), k1);
-                    acc3 = vfmaq_f32(acc3, vld1q_f32(q[3] + i + 8), k2);
-                    acc3 = vfmaq_f32(acc3, vld1q_f32(q[3] + i + 12), k3);
+                for (int k = 0; k < kmax; k++) {
+                    acc[k] = vfmaq_f32(acc[k], vld1q_f32(q[k] + i),     k0);
+                    acc[k] = vfmaq_f32(acc[k], vld1q_f32(q[k] + i + 4), k1);
+                    acc[k] = vfmaq_f32(acc[k], vld1q_f32(q[k] + i + 8), k2);
+                    acc[k] = vfmaq_f32(acc[k], vld1q_f32(q[k] + i + 12), k3);
                 }
             }
-            float32x4_t acc[4] = { acc0, acc1, acc2, acc3 };
             for (int k = 0; k < kmax; k++) {
                 float dot = hsum_neon4(acc[k]);
                 for (int i = c->hdv; i < c->hd; i++) dot += q[k][i] * kp[i];
@@ -6570,9 +7155,33 @@ static void vllm_attn_batched_worker(void *ctx_, int ha) {
             }
         }
 
+        if (c->pv_tile && c->hd == 128 && ST_ATTN_QB == 4) {
+            float invs[ST_ATTN_QB];
+            for (int k = 0; k < ST_ATTN_QB; k++) {
+                int nk = n[k];
+                float sum_exp = 0.0f;
+                for (int s = 0; s + 4 <= nk; s += 4) {
+                    float32x4_t v = exp_neon4(vsubq_f32(vld1q_f32(sc[k] + s),
+                                                        vdupq_n_f32(maxs[k])));
+                    vst1q_f32(sc[k] + s, v);
+                    sum_exp += hsum_neon4(v);
+                }
+                for (int s = nk & ~3; s < nk; s++) {
+                    sc[k][s] = expf(sc[k][s] - maxs[k]);
+                    sum_exp += sc[k][s];
+                }
+                invs[k] = 1.0f / sum_exp;
+                if (c->imp_head)
+                    for (int s = 0; s < nk; s++)
+                        c->imp_head[(size_t)ha * c->score_stride + s] += sc[k][s] * invs[k];
+            }
+            vllm_attn_pv_tile128(o, sc, invs, n, vp_head, c->pv_tile);
+            continue;
+        }
+
         /* Softmax per token + VKQ（原串行结构，s 内层逐 token；
-         * QK 段保留 4-token 共享 k 加载） */
-        for (int k = 0; k < 4; k++) {
+         * QK 段保留 ST_ATTN_QB-token 共享 k 加载） */
+        for (int k = 0; k < ST_ATTN_QB; k++) {
             int nk = n[k];
             float sum_exp = 0.0f;
             for (int s = 0; s + 4 <= nk; s += 4) {
@@ -6600,14 +7209,14 @@ static void vllm_attn_batched_worker(void *ctx_, int ha) {
         }
     }
 
-    /* --- 尾部（nb % 4）：原串行路径 --- */
+    /* --- 尾部（nb % ST_ATTN_QB）：原串行路径 --- */
     for (; t < c->nb; t++) {
         const float *q = c->q_buf + ((size_t)t * c->nh + ha) * c->hd;
         float *o = c->attn_out + ((size_t)t * c->nh + ha) * c->hd;
-        /* tail 行必须与 M4j 4-token 分块一致（ha*4 行），否则 nb%4!=0 时
+        /* tail 行必须与主分块一致（ha*ST_ATTN_QB 行），否则 nb%ST_ATTN_QB!=0 时
          * 不同 head 的 worker 会并发写同一 scores 行 → 数据竞争 → 偶发
          * attention 输出错误（多线程位级不确定的根因）。 */
-        float *sc = c->scores + (size_t)ha * 4 * c->score_stride;
+        float *sc = c->scores + (size_t)ha * ST_ATTN_QB * c->score_stride;
         int n = c->prev_len + t + 1;
         float max_score = -1e9f;
 
@@ -6665,9 +7274,310 @@ static void st_attn_batched_packed_neon(
     float *restrict imp_head)        /* [nh * score_stride] or NULL */
 {
     int hdv = hd & ~3;
+    /* 在派发前读取，工作线程不初始化共享静态配置。
+     * 默认启用模式2（双 query/d32 联合 PV 分块）：位级对拍已证明与串行路径
+     * 逐字节一致，且板端 prefill A/B 全面领先。VLLM_ATTN_PV_TILE=0 关闭、
+     * =1 单 query/d64、=2 双 query/d32（非法值回退默认 2）。 */
+    const char *pv_env = getenv("VLLM_ATTN_PV_TILE");
+    int pv_tile = 2;
+    if (pv_env && pv_env[0] && !pv_env[1]) {
+        if (pv_env[0] == '0') pv_tile = 0;
+        else if (pv_env[0] == '1') pv_tile = 1;
+        else if (pv_env[0] == '2') pv_tile = 2;
+    }
     vllm_attn_batched_ctx vc = { attn_out, q_buf, k_pack, v_pack, scores, imp_head,
-                                 nb, prev_len, seq_stride, nh, nkv, hd, score_stride, hdv, scale };
+                                 nb, prev_len, seq_stride, nh, nkv, hd, score_stride, hdv, scale,
+                                 pv_tile };
     vllm_tp_parfor(0, nh, vllm_attn_batched_worker, &vc);
+}
+
+/* ================================================================
+ * 密集精确 prefill attention：INT8-K + float-V 路径（NEON + dotprod）
+ * ================================================================
+ *
+ * 动机（axiom: blas_precision_efficiency_tradeoff + memory_bandwidth_reduction）：
+ * 现有精确 prefill 读的是 **float** 的 k_pack/v_pack，而这两个包本来就是从
+ * KV 缓存搬出来的副本 —— 在 q8 档（`use_kv_q8`，默认开）里 KV 缓存**本身就是
+ * INT8 + 逐 token 逐 head scale**，float 包只是它的反量化副本。于是精确档每层
+ * 要搬 4 倍于有效信息的字节，而板端 16K 的 prefill 有 86.2% 花在这条路径上。
+ *
+ * **V 走 int8 还是 float：运行时可切（`VLLM_ATTN_V_I8`），实测是长度相关的两边下注。**
+ * 逐 (query, s) 的指令预算（2K 实测校准）：
+ *
+ *   段     | float 全档 | int8 全档 | int8-K + float-V
+ *   QK    |    75      |    34     |    34
+ *   VKQ   |    97      |   145     |    97      <- VKQ 读 int8 要逐元素 vmovl+vcvt
+ *   合计  |   172      |   179     |   131
+ *
+ * int8 全档在 QK 段省 2.2× 指令，但 VKQ 段因为要把 int8 V 加宽成 float，反而多
+ * 1.5× —— 两者相加是净亏，2K 实测 ATTN 比 float 档**慢 17%**（19.8 s vs 16.9 s）
+ * 完全对得上。所以 V 留在 float 包里，只把 K 换成 int8 连续包。
+ *
+ * 为什么必须先拷成**连续包**、不能直接读 kv_cache_q8：缓存里的行按 kv_dim 跨步
+ * （行距 1024 B、每行只取 128 B），而 float 包正是为了消掉这种模式才存在的
+ * （见 st_pack_kv_heads 的注释）。第一版直接读缓存，2K 实测 ATTN 比 float 档
+ * **慢 67%**（27.9 s vs 16.7 s）——int8 的流量优势被访存模式吃掉了。
+ *
+ * 收益面：K 的 DRAM/缓存流量 ÷4（K+V 合计 ÷1.6），QK 段指令 ÷2.2。
+ * 板端 16K 精确 prefill 是 K/V 流量受限（1564 s ≈ 15.4 TB ÷ 有效带宽），
+ * 故这条路径的目标档就是板端 16K。
+ *
+ * 数值口径（与 decode 的 flash_attn_single_q_q8_neon 逐字同源）：
+ *   - K 量化：per-token per-head max-abs（`kv_quantize_per_head` 写入），
+ *     反量化 = `q * (scale / 127)`；
+ *   - Q 量化：每 32 元素一个 max-abs scale（Q8_0 同构），现场做，不进内存；
+ *   - QK 累加用 int32（**精确、无舍入**），最后才乘 Q/K 的 scale；
+ *   - VKQ 读 float V、权重保持 F32，循环次序与 float 版逐行相同。
+ * 因此与 float 精确档的差异只有两处：**K 的量化** 与 **QK 的归约树**
+ * （float 是 4 维分组的 float32x4 + hsum；这里是 4 字节分组的 int32x4 + 行和）。
+ *
+ * 默认关闭（`VLLM_ATTN_I8=1` 打开）。它是 fast path，验收面必须是**召回**
+ * 而不是只看 PPL —— 量化会动到针块的分数。
+ */
+#define ST_ATTN_Q8_HDMAX 256
+
+typedef struct {
+    float *attn_out; const float *q_buf;
+    const int8_t *k_pack;               /* [nkv][seq_stride][hd]，INT8 连续包（K） */
+    const float *v_pack;                /* [nkv][seq_stride][hd]，float 包（V） */
+    const float *k_scale;               /* [nkv][seq_stride] 逐 token 逐 head max-abs */
+    const int8_t *v8_pack;              /* 可选：V 的 int8 包（v8_on 时用） */
+    const float *v8_scale;
+    int v8_on;
+    float *scores; float *imp_head;
+    int nb, prev_len, nh, nkv, hd, hdv, score_stride, seq_stride;
+    float scale;
+} vllm_attn_batched_q8_ctx;
+
+/* 一个 query 组（nq = 1..ST_ATTN_QB）的 QK + softmax + VKQ。
+ *
+ * 抽成函数是为了让尾部（nb % ST_ATTN_QB）与主分块**共用同一份实现** ——
+ * 尾部再手写一遍是位级风险源（而且 float 版两边就是分开写的）。 */
+static void vllm_attn_q8_group(vllm_attn_batched_q8_ctx *c, int ha, int kh, int t, int nq) {
+    const int nblk = c->hd / 32;
+    const int8_t *kp_head = c->k_pack + (size_t)kh * c->seq_stride * c->hd;
+    const float *vp_head = c->v_pack + (size_t)kh * c->seq_stride * c->hd;
+    const float *ks_head = c->k_scale + (size_t)kh * c->seq_stride;
+    const int8_t *v8_head = c->v8_on ? c->v8_pack + (size_t)kh * c->seq_stride * c->hd : NULL;
+    const float *vs8_head = c->v8_on ? c->v8_scale + (size_t)kh * c->seq_stride : NULL;
+    float *scb = c->scores + (size_t)ha * ST_ATTN_QB * c->score_stride;
+    const float *q[ST_ATTN_QB]; float *o[ST_ATTN_QB]; int n[ST_ATTN_QB];
+    float maxs[ST_ATTN_QB]; float *sc[ST_ATTN_QB];
+    int8_t qi[ST_ATTN_QB][ST_ATTN_Q8_HDMAX];
+    float qsc[ST_ATTN_QB][ST_ATTN_Q8_HDMAX / 32];
+
+    for (int k = 0; k < nq; k++) {
+        const int tk = t + k;
+        q[k] = c->q_buf + ((size_t)tk * c->nh + ha) * c->hd;
+        o[k] = c->attn_out + ((size_t)tk * c->nh + ha) * c->hd;
+        n[k] = c->prev_len + tk + 1;
+        sc[k] = scb + (size_t)k * c->score_stride;
+        maxs[k] = -1e9f;
+        /* Q → INT8：每 32 元素 1 个 max-abs scale（Q8_0 同构，四舍五入远离零） */
+        for (int b = 0; b < nblk; b++) {
+            const float *qb = q[k] + b * 32;
+            float qm = 0.0f;
+            for (int i = 0; i < 32; i++) { float a = fabsf(qb[i]); if (a > qm) qm = a; }
+            if (qm < 1e-6f) qm = 1.0f;
+            qsc[k][b] = qm * ST_ATTN_Q8_SC;
+            const float iq = ST_ATTN_Q8_INV / qm;
+            for (int i = 0; i < 32; i++) {
+                float v = qb[i] * iq;
+                int iv = (int)(v + (v >= 0.0f ? 0.5f : -0.5f));
+                qi[k][b * 32 + i] = (int8_t)((iv > 127) ? 127 : ((iv < -128) ? -128 : iv));
+            }
+        }
+    }
+
+    /* --- Q·K^T：逐位置扫（K 沿 s 连续），同一行 K 共享给 nq 个 query --- */
+    const int smax = n[nq - 1];
+    for (int s = 0; s < smax; s++) {
+        int kmax = nq;
+        while (kmax > 0 && s >= n[kmax - 1]) kmax--;
+        if (kmax <= 0) continue;                 /* 该位置对所有 query 都越界 */
+        const int8_t *krow = kp_head + (size_t)s * c->hd;
+        const float ks = ks_head[s] * ST_ATTN_Q8_SC;
+        for (int k = 0; k < kmax; k++) {
+            const int8_t *qb = qi[k];
+            float dot = 0.0f;
+            for (int b = 0; b < nblk; b++) {
+                int32x4_t acc = vdupq_n_s32(0);
+                for (int i = 0; i < 32; i += 16)
+                    acc = vaddq_s32(acc, i8x16_dot_s32(vld1q_s8(qb + b * 32 + i),
+                                                       vld1q_s8(krow + b * 32 + i)));
+                int32_t d32 = vgetq_lane_s32(acc, 0) + vgetq_lane_s32(acc, 1)
+                            + vgetq_lane_s32(acc, 2) + vgetq_lane_s32(acc, 3);
+                dot += (float)d32 * qsc[k][b];
+            }
+            const float sv = dot * ks * c->scale;
+            sc[k][s] = sv;
+            if (sv > maxs[k]) maxs[k] = sv;
+        }
+    }
+
+    /* --- softmax（与 float 版同构）+ VKQ（V 可选 int8 / float，权重保持 F32）--- */
+    const int oreg = st_attn_oreg_enabled();
+    for (int k = 0; k < nq; k++) {
+        const int nk = n[k];
+        float sum_exp = 0.0f;
+        for (int i = 0; i + 4 <= nk; i += 4) {
+            float32x4_t v = exp_neon4(vsubq_f32(vld1q_f32(sc[k] + i),
+                                                vdupq_n_f32(maxs[k])));
+            vst1q_f32(sc[k] + i, v);
+            sum_exp += hsum_neon4(v);
+        }
+        for (int i = nk & ~3; i < nk; i++) {
+            sc[k][i] = expf(sc[k][i] - maxs[k]);
+            sum_exp += sc[k][i];
+        }
+        const float inv_sum = 1.0f / sum_exp;
+        float *ok = o[k];
+
+        /* VLLM_ATTN_OREG=1：VKQ 的「累加器常驻 + 维度分块」路径。
+         * 只覆盖 hdv 的整 DBLK 前缀 [0, oreg_end)；余量与标量尾仍走下面原来的
+         * 逐 s 读—改—写路径，两条路径覆盖的维度不相交。oreg=0 时 oreg_end=0，
+         * 与改造前逐字等价。 */
+        int oreg_end = 0;
+        if (oreg) {
+            /* 重要性表与 VKQ 无关，单独走一遍（k 升序、s 升序，加序不变） */
+            if (c->imp_head) {
+                float *ih = c->imp_head + (size_t)ha * c->score_stride;
+                for (int s = 0; s < nk; s++) ih[s] += sc[k][s] * inv_sum;
+            }
+            oreg_end = (c->hdv / ST_ATTN_OREG_DBLK) * ST_ATTN_OREG_DBLK;
+            for (int i0 = 0; i0 < oreg_end; i0 += ST_ATTN_OREG_DBLK) {
+                /* V 的两种载荷各走**独立的循环巢**，且累加器用**具名标量**而不是
+                 * 数组下标。两条实测教训（板端 aarch64 汇编，GCC 11 -O2）：
+                 *   数组 + 内层 v8_on 分支  → 栈帧 +256 B（16 个 float32x4 全落栈）
+                 *   数组 + _Pragma unroll   → [sp,] 引用 45 → 82，反而更差
+                 * 即「数组 → 寄存器」的标量化在本内核不成立（同 L896 q8g 内核
+                 * 加 unroll 能成，这里体量更大就失效）；具名变量才是独立 SSA 值。 */
+#define ST_ATTN_OREG_AC(i)   float32x4_t oa##i = vdupq_n_f32(0.0f);
+#define ST_ATTN_OREG_ACS(X)  X(0) X(1) X(2) X(3) X(4) X(5) X(6) X(7) \
+                             X(8) X(9) X(10) X(11) X(12) X(13) X(14) X(15)
+                /* float V：每 4 维一个累加器，16 个 */
+#define ST_ATTN_OREG_VF(i)   oa##i = vfmaq_f32(oa##i, wv, vld1q_f32(vrow + (i) * 4));
+                /* int8 V：每 8 维一次载入，喂两个累加器（ld 的下半 / 上半） */
+#define ST_ATTN_OREG_V8(i, lo, hi) do { \
+                    int16x8_t v16 = vmovl_s8(vld1_s8(vrow + (i) * 8)); \
+                    oa##lo = vfmaq_f32(oa##lo, \
+                        vcvtq_f32_s32(vmovl_s16(vget_low_s16(v16))), wv4); \
+                    oa##hi = vfmaq_f32(oa##hi, \
+                        vcvtq_f32_s32(vmovl_s16(vget_high_s16(v16))), wv4); \
+                } while (0)
+#define ST_ATTN_OREG_ST(i)   vst1q_f32(ok + i0 + (i) * 4, oa##i);
+
+                if (c->v8_on) {
+                    ST_ATTN_OREG_ACS(ST_ATTN_OREG_AC)
+                    for (int s = 0; s < nk; s++) {
+                        const float wgt = sc[k][s] * inv_sum;
+                        const int8_t *vrow = v8_head + (size_t)s * c->hd + i0;
+                        const float32x4_t wv4 =
+                            vdupq_n_f32(wgt * (vs8_head[s] * ST_ATTN_Q8_SC));
+                        ST_ATTN_OREG_V8(0, 0, 1);
+                        ST_ATTN_OREG_V8(1, 2, 3);
+                        ST_ATTN_OREG_V8(2, 4, 5);
+                        ST_ATTN_OREG_V8(3, 6, 7);
+                        ST_ATTN_OREG_V8(4, 8, 9);
+                        ST_ATTN_OREG_V8(5, 10, 11);
+                        ST_ATTN_OREG_V8(6, 12, 13);
+                        ST_ATTN_OREG_V8(7, 14, 15);
+                    }
+                    ST_ATTN_OREG_ACS(ST_ATTN_OREG_ST)
+                } else {
+                    ST_ATTN_OREG_ACS(ST_ATTN_OREG_AC)
+                    for (int s = 0; s < nk; s++) {
+                        const float wgt = sc[k][s] * inv_sum;
+                        const float *vrow = vp_head + (size_t)s * c->hd + i0;
+                        const float32x4_t wv = vdupq_n_f32(wgt);
+                        ST_ATTN_OREG_VF(0)
+                        ST_ATTN_OREG_VF(1)
+                        ST_ATTN_OREG_VF(2)
+                        ST_ATTN_OREG_VF(3)
+                        ST_ATTN_OREG_VF(4)
+                        ST_ATTN_OREG_VF(5)
+                        ST_ATTN_OREG_VF(6)
+                        ST_ATTN_OREG_VF(7)
+                        ST_ATTN_OREG_VF(8)
+                        ST_ATTN_OREG_VF(9)
+                        ST_ATTN_OREG_VF(10)
+                        ST_ATTN_OREG_VF(11)
+                        ST_ATTN_OREG_VF(12)
+                        ST_ATTN_OREG_VF(13)
+                        ST_ATTN_OREG_VF(14)
+                        ST_ATTN_OREG_VF(15)
+                    }
+                    ST_ATTN_OREG_ACS(ST_ATTN_OREG_ST)
+                }
+#undef ST_ATTN_OREG_AC
+#undef ST_ATTN_OREG_ACS
+#undef ST_ATTN_OREG_VF
+#undef ST_ATTN_OREG_V8
+#undef ST_ATTN_OREG_ST
+            }
+        }
+
+        for (int i = oreg_end; i < c->hdv; i += 4) vst1q_f32(ok + i, vdupq_n_f32(0.0f));
+        for (int i = c->hdv; i < c->hd; i++) ok[i] = 0.0f;
+
+        for (int s = 0; s < nk; s++) {
+            const float wgt = sc[k][s] * inv_sum;
+            /* oreg 档下重要性表已在上面单独加过，这里不能再加一遍 */
+            if (c->imp_head && !oreg)
+                c->imp_head[(size_t)ha * c->score_stride + s] += wgt;
+            if (c->v8_on) {
+                /* V 走 int8：每 8 元素 vmovl_s8 → vmovl_s16 → vcvtq_f32_s32，再乘
+                 * (vscale/127)。指令比 float 版多 ~1.5×，但 V 流量 ÷4 ——
+                 * 长上下文（流量受限）用它，短上下文（指令受限）用 float 版。 */
+                const int8_t *vrow = v8_head + (size_t)s * c->hd;
+                const float32x4_t wv4 = vdupq_n_f32(wgt * (vs8_head[s] * ST_ATTN_Q8_SC));
+                for (int i = oreg_end; i < c->hd; i += 8) {
+                    int16x8_t v16 = vmovl_s8(vld1_s8(vrow + i));
+                    float32x4_t va = vcvtq_f32_s32(vmovl_s16(vget_low_s16(v16)));
+                    float32x4_t vb = vcvtq_f32_s32(vmovl_s16(vget_high_s16(v16)));
+                    vst1q_f32(ok + i,     vfmaq_f32(vld1q_f32(ok + i),     va, wv4));
+                    vst1q_f32(ok + i + 4, vfmaq_f32(vld1q_f32(ok + i + 4), vb, wv4));
+                }
+            } else {
+                const float *vrow = vp_head + (size_t)s * c->hd;
+                const float32x4_t wv = vdupq_n_f32(wgt);
+                for (int i = oreg_end; i < c->hdv; i += 4)
+                    vst1q_f32(ok + i, vfmaq_f32(vld1q_f32(ok + i), wv, vld1q_f32(vrow + i)));
+                for (int i = c->hdv; i < c->hd; i++) ok[i] += wgt * vrow[i];
+            }
+        }
+    }
+}
+
+static void vllm_attn_batched_worker_q8(void *ctx_, int ha) {
+    vllm_attn_batched_q8_ctx *c = ctx_;
+    const int kh = (ha * c->nkv) / c->nh;
+    int t = 0;
+    for (; t + ST_ATTN_QB <= c->nb; t += ST_ATTN_QB)
+        vllm_attn_q8_group(c, ha, kh, t, ST_ATTN_QB);
+    if (t < c->nb)                       /* 尾部：同一份实现，nq = 余数 */
+        vllm_attn_q8_group(c, ha, kh, t, c->nb - t);
+}
+
+static void st_attn_batched_packed_q8(
+    float *restrict attn_out,        /* [nb * nh * hd] */
+    const float *restrict q_buf,     /* [nb * nh * hd] */
+    const int8_t *restrict k8_pack,  /* [nkv * seq_stride * hd] INT8（K） */
+    const float *restrict v_pack,    /* [nkv * seq_stride * hd] float（V） */
+    const float *restrict k8_scale,  /* [nkv * seq_stride] 逐 token 逐 head max-abs */
+    const int8_t *restrict v8_pack,  /* 可选 V int8 包（NULL = V 走 float） */
+    const float *restrict v8_scale,
+    int nb, int prev_len, int seq_stride,
+    int nh, int nkv, int hd, float scale,
+    float *restrict scores,          /* [nh * ST_ATTN_QB * score_stride] */
+    int score_stride,
+    float *restrict imp_head)        /* [nh * score_stride] or NULL */
+{
+    vllm_attn_batched_q8_ctx vc = { attn_out, q_buf, k8_pack, v_pack, k8_scale,
+                                    v8_pack, v8_scale, v8_pack != NULL,
+                                    scores, imp_head, nb, prev_len, nh, nkv, hd,
+                                    hd & ~3, score_stride, seq_stride, scale };
+    vllm_tp_parfor(0, nh, vllm_attn_batched_worker_q8, &vc);
 }
 
 /* Decode INT8-KV Flash Attention (single query, one head) — 长上下文 decode 加速。
@@ -6791,9 +7701,6 @@ static void vllm_attn_sparse_worker(void *ctx_, int ha) {
     int n_blocks = (max_n + c->bs - 1) / c->bs;
     if (n_blocks <= 0) return;
 
-    /* representative query: last token of the mini-batch */
-    const float *q_rep = c->q_buf + ((size_t)(c->nb - 1) * c->nh + ha) * c->hd;
-
     float  *probe = (float *)malloc((size_t)n_blocks * sizeof(float));
     uint8_t *used = (uint8_t *)malloc((size_t)n_blocks);
     int    *sel = (int *)malloc((size_t)n_blocks * sizeof(int));
@@ -6801,6 +7708,20 @@ static void vllm_attn_sparse_worker(void *ctx_, int ha) {
         free(probe); free(used); free(sel);
         return;   /* OOM: skip this head (outputs stay zeroed by caller) */
     }
+
+    /* 选块粒度（--sparse-pf-group G）：每组 grp 个 token 共享一次选块。
+     * grp >= nb 即历史行为（整个 mini-batch 一个代表 query 选块）。
+     * grp=1 时每个 token 用自己的 query 选块 —— 针对的根因见 g_sparse_pf_group
+     * 的注释（prefill 的 attention 输出就是写进 KV 的 K/V 的来源）。
+     * 下面 probe/top-k/逐 query 三段沿用原缩进，只为把 diff 限制在这几行。 */
+    int grp = g_sparse_pf_group > 0 ? g_sparse_pf_group : c->nb;
+    if (grp > c->nb) grp = c->nb;
+    if (grp < 1) grp = 1;
+
+    for (int t_grp = 0; t_grp < c->nb; t_grp += grp) {
+    int t_end = t_grp + grp; if (t_end > c->nb) t_end = c->nb;
+    /* representative query: last token of this group */
+    const float *q_rep = c->q_buf + ((size_t)(t_end - 1) * c->nh + ha) * c->hd;
     memset(used, 0, (size_t)n_blocks);
 
     /* probe each block: max dot over n_probe evenly-spaced K samples */
@@ -6846,8 +7767,9 @@ static void vllm_attn_sparse_worker(void *ctx_, int ha) {
         sel[low] = n_blocks - 1;
         used[n_blocks - 1] = 1;
     }
+    ndl_trace_prefill(sel, nsel, n_blocks, c->bs);
 
-    for (int t = 0; t < c->nb; t++) {
+    for (int t = t_grp; t < t_end; t++) {
         const float *q = c->q_buf + ((size_t)t * c->nh + ha) * c->hd;
         float *o = c->attn_out + ((size_t)t * c->nh + ha) * c->hd;
         int n = c->prev_len + t + 1;
@@ -6902,6 +7824,7 @@ static void vllm_attn_sparse_worker(void *ctx_, int ha) {
             }
         }
     }
+    }   /* end 选块分组循环 */
     free(probe); free(used); free(sel);
 }
 
@@ -7500,6 +8423,9 @@ static void dyn_matvec_q8_fused_qkv(
 /* vllm_l3.c 的 l3_fill_block_from_disk 用 L3_Q8_INV_SCALE 做 q8 量化/反量化，
  * 必须与本文件的 KVQ_INV_SCALE 同值，否则前缀重建会另起口径（位级不一致）。 */
 _Static_assert(L3_Q8_INV_SCALE == KVQ_INV_SCALE, "L3 q8 scale convention drift");
+/* vllm_attn_q8_group（INT8-KV 直读 prefill 内核）用自己的 ST_ATTN_Q8_* 常量，
+ * 因为它必须留在 #if ST_HAVE_NEON 区内、无法引用本行的宏。锁死同值。 */
+_Static_assert(ST_ATTN_Q8_INV == KVQ_INV_SCALE, "attn q8 scale convention drift");
 
 /* Quantize one token's K/V (kv_dim = nkv * hd, row-major per head) into INT8 with a
  * per-head max-abs scale. kscale/vscale receive nkv scale factors (max |value|). */
@@ -7772,6 +8698,14 @@ static void dyn_matvec_q4_q8_fused_qkv_batched(
         st_npu_try_gemm_batched_q4(v_out, x_batch, q4_v, kv_rows, cols, n_batch,
                                    g_npu_layer, VLLM_NPU_PROJ_V))
         return;
+#if ST_HAVE_NEON
+    if (n_batch == 1 && spec_m4f_decode_env()) {
+        /* M4f decode：单 token 走 32 元素一次 GEMV（与 asm 快路同口径）。 */
+        dyn_matvec_q4_q8_fused_qkv_neon(q_out, k_out, v_out, q4_q, q4_k, q4_v,
+                                        x_batch, q_rows, kv_rows, cols);
+        return;
+    }
+#endif
     dyn_matvec_q4_q8_fused_qkv_batched_neon(q_out, k_out, v_out, q4_q, q4_k, q4_v, x_batch, q_rows, kv_rows, cols, n_batch);
 }
 
@@ -7790,6 +8724,13 @@ static void dyn_matvec_q4_q8_fused_o_residual_batched(
                 x_batch[(size_t)t * rows + r] += residual_batch[(size_t)t * rows + r];
         return;
     }
+#if ST_HAVE_NEON
+    if (n_batch == 1 && spec_m4f_decode_env()) {
+        dyn_matvec_q4_q8_fused_o_residual_neon(x_batch, residual_batch, q4_o,
+                                               attn_batch, rows, cols);
+        return;
+    }
+#endif
     dyn_matvec_q4_q8_fused_o_residual_batched_neon(x_batch, residual_batch, q4_o, attn_batch, rows, cols, n_batch);
 }
 
@@ -7807,6 +8748,13 @@ static void dyn_matvec_q4_q8_fused_gate_up_batched(
         st_npu_try_gemm_batched_q4(up_out, x_batch, q4_up, rows, cols, n_batch,
                                    g_npu_layer, VLLM_NPU_PROJ_UP))
         return;
+#if ST_HAVE_NEON
+    if (n_batch == 1 && spec_m4f_decode_env()) {
+        dyn_matvec_q4_q8_fused_gate_up_neon(gate_out, up_out, q4_gate, q4_up,
+                                            x_batch, rows, cols);
+        return;
+    }
+#endif
     dyn_matvec_q4_q8_fused_gate_up_batched_neon(gate_out, up_out, q4_gate, q4_up, x_batch, rows, cols, n_batch);
 }
 
@@ -7827,6 +8775,13 @@ static void dyn_matvec_q4_q8_fused_down_residual_batched(
                     residual_batch[(size_t)t * hidden_dim + r];
         return;
     }
+#if ST_HAVE_NEON
+    if (n_batch == 1 && spec_m4f_decode_env()) {
+        dyn_matvec_q4_q8_fused_down_residual_neon(x_batch, residual_batch, q4_down,
+                                                  activated_batch, hidden_dim, ffn_dim);
+        return;
+    }
+#endif
     dyn_matvec_q4_q8_fused_down_residual_batched_neon(x_batch, residual_batch, q4_down, activated_batch, hidden_dim, ffn_dim, n_batch);
 }
 
@@ -7876,12 +8831,37 @@ typedef struct {
     int nb, d; float eps;
 } vllm_rms_norm_batch_ctx;
 
+/* VLLM_SPEC_VNORM=1：把批式 RMSNorm 的平方和归约改成与单 token `dyn_rms_norm`
+ * 逐位同序（8 元素分块 + hsum8_f32 树 + 尾部标量），使 prefill 与 decode 的
+ * nrm 阶段位级一致。默认 0 = 原标量顺序（逐位不变，零回归）。
+ * 依据：L1 对拍实测（2026-09-24，板端 2B）：同向量同权重下 emb0 相同而 nrm0
+ * 不同，根因即此处归约树差异（perf_axiom_reduction_tree_sensitivity_v1）。 */
+static int spec_vnorm_on(void) {
+    static int v = -1;
+    if (v < 0) {
+        const char *e = getenv("VLLM_SPEC_VNORM");
+        v = (e && e[0] == '1') ? 1 : 0;
+    }
+    return v;
+}
+
 static void vllm_rms_norm_batch_worker(void *ctx_, int t) {
     vllm_rms_norm_batch_ctx *c = ctx_;
     const float *xr = c->x + (size_t)t * c->d;
     float *or = c->out + (size_t)t * c->d;
     float ss = 0.0f;
-    for (int i = 0; i < c->d; i++) ss += xr[i] * xr[i];
+    if (spec_vnorm_on()) {
+        /* 与 dyn_rms_norm 同序：8 元素分块 + hsum8_f32 树 */
+        int d8 = c->d & ~7;
+        for (int i = 0; i < d8; i += 8) {
+            float v[8];
+            for (int k = 0; k < 8; k++) v[k] = xr[i + k] * xr[i + k];
+            ss += hsum8_f32(v);
+        }
+        for (int i = d8; i < c->d; i++) ss += xr[i] * xr[i];
+    } else {
+        for (int i = 0; i < c->d; i++) ss += xr[i] * xr[i];
+    }
     float rms = 1.0f / sqrtf(ss / (float)c->d + c->eps);
     for (int i = 0; i < c->d; i++) or[i] = xr[i] * rms * c->w[i];
 }
@@ -8009,6 +8989,223 @@ static void dyn_mrope(float *q, float *k, int hd, int n_heads, int n_kv_heads,
         }
     }
 }
+
+/* ================================================================
+ * 神经草稿头（P2）：1 层 Qwen3VLTextDecoderLayer + final norm，f32 权重。
+ * 特征级外推：输入主模型最后一层 hidden（final_norm 前），自回归 K 步，
+ * 每步 top-1 token 作为草稿。复用本文件 static 内核（dyn_matvec/dyn_swiglu/
+ * dyn_mrope/dyn_rms_norm）+ 主模型 lm_head（dyn_matvec_q4_q8/dyn_matvec_q8）。
+ * ================================================================ */
+
+int st_draft_head_load(STDraftHead *dh, const char *path,
+                       int dim, int ffn_dim, int n_kv_heads, int head_dim) {
+    memset(dh, 0, sizeof(*dh));
+    st_mmap_t m;
+    if (st_mmap_open(&m, 0, path) != 0) {
+        fprintf(stderr, "[DRAFT] mmap fail: %s\n", path);
+        return -1;
+    }
+    dh->map = m.data;
+    dh->map_len = m.len;
+
+    int kv_dim_q = dim;                    /* nh*head_dim == dim */
+    int kv_dim   = n_kv_heads * head_dim;
+    char *base = (char *)m.data;
+    size_t off = 0;
+
+    /* 顺序与 export_draft_q8.py 一致：投影 q8_0（34B/32元素）+ norm f32 */
+    #define Q8B(rows, cols) ((size_t)((rows) * (cols) / 32) * 34)
+    dh->q8_q_weight   = (uint8_t *)(base + off); off += Q8B(kv_dim_q, dim);
+    dh->q8_k_weight   = (uint8_t *)(base + off); off += Q8B(kv_dim,   dim);
+    dh->q8_v_weight   = (uint8_t *)(base + off); off += Q8B(kv_dim,   dim);
+    dh->q8_o_weight   = (uint8_t *)(base + off); off += Q8B(dim, kv_dim_q);
+    dh->q8_gate_weight= (uint8_t *)(base + off); off += Q8B(ffn_dim, dim);
+    dh->q8_up_weight  = (uint8_t *)(base + off); off += Q8B(ffn_dim, dim);
+    dh->q8_down_weight= (uint8_t *)(base + off); off += Q8B(dim, ffn_dim);
+    #undef Q8B
+    dh->q_norm     = (float *)(base + off); off += sizeof(float) * (size_t)head_dim;
+    dh->k_norm     = (float *)(base + off); off += sizeof(float) * (size_t)head_dim;
+    dh->attn_norm  = (float *)(base + off); off += sizeof(float) * (size_t)dim;
+    dh->ffn_norm   = (float *)(base + off); off += sizeof(float) * (size_t)dim;
+    dh->final_norm = (float *)(base + off); off += sizeof(float) * (size_t)dim;
+
+    dh->k_draft = (float *)malloc(sizeof(float) * (size_t)SPEC_DRAFT_MAX * kv_dim);
+    dh->v_draft = (float *)malloc(sizeof(float) * (size_t)SPEC_DRAFT_MAX * kv_dim);
+    if (!dh->k_draft || !dh->v_draft) { st_draft_head_free(dh); return -1; }
+    dh->loaded = 1;
+    return 0;
+}
+
+void st_draft_head_free(STDraftHead *dh) {
+    if (dh->k_draft) { free(dh->k_draft); dh->k_draft = NULL; }
+    if (dh->v_draft) { free(dh->v_draft); dh->v_draft = NULL; }
+    if (dh->map) { st_mmap_release_view(dh->map, dh->map_len); dh->map = NULL; dh->map_len = 0; }
+    dh->loaded = 0;
+}
+
+/* legacy Q8_0 并行 matvec（绕开 repack 检查）：草稿头权重是 Python 量化的
+ * legacy q8_0（非 4x4/8x8 repack）。aarch64 走 vllm_dyn_matvec_q8_worker 并行；
+ * x86 走标量 fallback（无 NEON worker）。 */
+static void draft_q8_matvec(float *out, const uint8_t *q8_w, const float *x,
+                            int rows, int cols) {
+    int n_blocks = cols / 32;
+    int row_stride = n_blocks * 34;
+#if ST_HAVE_NEON
+    vllm_dyn_matvec_q8_ctx vc = { out, q8_w, x, n_blocks, row_stride, rows };
+    vllm_tp_parfor(0, rows, vllm_dyn_matvec_q8_worker, &vc);
+#else
+    for (int r = 0; r < rows; r++) {
+        const uint8_t *pr = q8_w + (size_t)r * row_stride;
+        float sum = 0.0f;
+        for (int b = 0; b < n_blocks; b++) {
+            float d = q8_block_scale(pr);
+            const int8_t *qs = (const int8_t *)(pr + 2);
+            const float *xs = x + (size_t)b * 32;
+            for (int i = 0; i < 32; i++) sum += (float)qs[i] * d * xs[i];
+            pr += 34;
+        }
+        out[r] = sum;
+    }
+#endif
+}
+
+int st_draft_head_forward(STQwenInferenceState *st, STDraftHead *dh,
+                          const float *hidden, int K, int *draft,
+                          float *logits_buf) {
+    if (!dh || !dh->loaded) return 0;
+    if (K < 1) return 0;
+    if (K > SPEC_DRAFT_MAX) K = SPEC_DRAFT_MAX;
+
+    int d   = st->cfg.dim;
+    int nh  = st->cfg.n_heads;
+    int nkv = st->cfg.n_kv_heads;
+    int hd  = st->cfg.head_dim;
+    int ff  = st->cfg.ffn_dim;
+    int vc  = st->cfg.vocab_size;
+    float eps   = st->cfg.norm_eps;
+    float theta = st->cfg.rope_theta;
+    int kv_dim_q = nh * hd;
+    int kv_dim   = nkv * hd;
+    int g = nh / nkv;                       /* GQA group size */
+
+    STModelWeights *w = &st->weights;
+
+    /* 缓冲区（复用 st 的临时缓冲；主模型前向已完成，缓冲空闲）：
+     *   x      = st->ffn_out_buf [dim]
+     *   normed = st->ffn_buf     [dim]（前 dim 个）
+     *   q      = st->q_buf, k = st->k_buf, v = st->v_buf
+     *   attn_out / ffn_out = st->attn_buf [kv_dim_q]
+     *   gate_buf = st->q_buf（FFN 阶段复用 q），up_buf = st->k_buf */
+    float *x      = st->ffn_out_buf;
+    float *normed = st->ffn_buf;
+    float *q      = st->q_buf;
+    float *k      = st->k_buf;
+    float *v      = st->v_buf;
+    float *aout   = st->attn_buf;
+
+    memcpy(x, hidden, (size_t)d * sizeof(float));   /* 初始 hidden = 主模型最后一层 */
+
+    for (int step = 0; step < K; step++) {
+        /* 1) input layernorm */
+        dyn_rms_norm(normed, x, dh->attn_norm, d, eps);
+
+        /* 2) QKV 投影（q8_0 legacy 并行） */
+        draft_q8_matvec(q, dh->q8_q_weight, normed, kv_dim_q, d);
+        draft_q8_matvec(k, dh->q8_k_weight, normed, kv_dim,   d);
+        draft_q8_matvec(v, dh->q8_v_weight, normed, kv_dim,   d);
+
+        /* 3) Q/K per-head RMSNorm（Qwen3 特有） */
+        for (int h = 0; h < nh; h++) {
+            float *qh = q + (size_t)h * hd;
+            float ss = 0.0f;
+            for (int j = 0; j < hd; j++) ss += qh[j] * qh[j];
+            float rms = 1.0f / sqrtf(ss / (float)hd + eps);
+            for (int j = 0; j < hd; j++) qh[j] *= rms * dh->q_norm[j];
+        }
+        for (int h = 0; h < nkv; h++) {
+            float *kh = k + (size_t)h * hd;
+            float ss = 0.0f;
+            for (int j = 0; j < hd; j++) ss += kh[j] * kh[j];
+            float rms = 1.0f / sqrtf(ss / (float)hd + eps);
+            for (int j = 0; j < hd; j++) kh[j] *= rms * dh->k_norm[j];
+        }
+
+        /* 4) RoPE（草稿内部位置 = step，从 0 递增） */
+        dyn_mrope(q, k, hd, nh, nkv, st->cfg.head_dim_full, step, theta);
+
+        /* 5) 存 KV 到草稿头独立 cache */
+        memcpy(dh->k_draft + (size_t)step * kv_dim, k, (size_t)kv_dim * sizeof(float));
+        memcpy(dh->v_draft + (size_t)step * kv_dim, v, (size_t)kv_dim * sizeof(float));
+
+        /* 6) GQA attention（scalar，单 query 对 cache[0..step]） */
+        float scale = 1.0f / sqrtf((float)hd);
+        for (int h = 0; h < nh; h++) {
+            int kvh = h / g;
+            const float *qh = q + (size_t)h * hd;
+            float scores[SPEC_DRAFT_MAX];
+            float mx = -1.0e30f;
+            for (int t = 0; t <= step; t++) {
+                const float *kt = dh->k_draft + (size_t)t * kv_dim + (size_t)kvh * hd;
+                float dot = 0.0f;
+                for (int j = 0; j < hd; j++) dot += qh[j] * kt[j];
+                scores[t] = dot * scale;
+                if (scores[t] > mx) mx = scores[t];
+            }
+            float se = 0.0f;
+            for (int t = 0; t <= step; t++) { scores[t] = expf(scores[t] - mx); se += scores[t]; }
+            float *oh = aout + (size_t)h * hd;
+            for (int j = 0; j < hd; j++) oh[j] = 0.0f;
+            for (int t = 0; t <= step; t++) {
+                const float *vt = dh->v_draft + (size_t)t * kv_dim + (size_t)kvh * hd;
+                float wt = scores[t] / se;
+                for (int j = 0; j < hd; j++) oh[j] += wt * vt[j];
+            }
+        }
+
+        /* 7) o_proj + residual：x = x + o_weight @ aout */
+        draft_q8_matvec(normed, dh->q8_o_weight, aout, d, kv_dim_q);
+        for (int i = 0; i < d; i++) x[i] += normed[i];
+
+        /* 8) FFN：post_layernorm + swiglu + residual（q8_0 legacy 并行） */
+        dyn_rms_norm(normed, x, dh->ffn_norm, d, eps);
+        draft_q8_matvec(q, dh->q8_gate_weight, normed, ff, d);  /* q = gate */
+        draft_q8_matvec(k, dh->q8_up_weight,   normed, ff, d);  /* k = up   */
+        for (int i = 0; i < ff; i++) q[i] = silu_f(q[i]) * k[i];
+        draft_q8_matvec(aout, dh->q8_down_weight, q, d, ff);
+        for (int i = 0; i < d; i++) x[i] += aout[i];
+
+        /* 9) final norm → out（下一轮输入） */
+        dyn_rms_norm(normed, x, dh->final_norm, d, eps);
+
+        /* 10) lm_head（复用主模型 lm_head 权重） */
+        if (w->q4_lm_weight && (st_dense_q4_first() || !w->has_q8 || !w->q8_lm_weight)) {
+            dyn_matvec_q4_q8(logits_buf, w->q4_lm_weight, normed, vc, d);
+        } else if (w->has_q8 && w->q8_lm_weight) {
+            dyn_matvec_q8(logits_buf, w->q8_lm_weight, normed, vc, d);
+        } else {
+            for (int t = 0; t < vc; t++) {
+                float s = 0.0f;
+                const float *rw = w->lm_head + (size_t)t * d;
+                for (int i = 0; i < d; i++) s += rw[i] * normed[i];
+                logits_buf[t] = s;
+            }
+        }
+
+        /* 11) top-1 → draft[step] */
+        int top = 0;
+        float tb = -1.0e30f;
+        for (int t = 0; t < vc; t++)
+            if (logits_buf[t] > tb) { tb = logits_buf[t]; top = t; }
+        draft[step] = top;
+
+        /* 12) 下一轮输入 = final_norm 后的 out（特征级自回归） */
+        memcpy(x, normed, (size_t)d * sizeof(float));
+    }
+
+    return K;
+}
+
+
 
 
 /* Phase 2b: per-block KV allocation helpers. A layer cache is [n_blocks]
@@ -8531,7 +9728,7 @@ int st_qwen_inference_init(STQwenInferenceState *st, const STModelWeights *weigh
     /* Shared scores buffer: [max_seq * nh * 4] per-head rows for parallel
      * attention. 4x 行数：M4j 4-token 分块注意力每 head 同时用 4 行
      * （行 ha*4+k，stride = max_seq）。Axiom: block_parallel_injection. */
-    st->scores_buf = (float *)cf_calloc_guard((size_t)max_seq * nh * 4, sizeof(float), &g_cn_scores);
+    st->scores_buf = (float *)cf_calloc_guard((size_t)max_seq * nh * ST_ATTN_QB, sizeof(float), &g_cn_scores);
     if (!st->scores_buf) {
         fprintf(stderr, "[QWEN] OOM allocating scores_buf\n");
         st_qwen_inference_free(st); return -1;
@@ -8997,6 +10194,27 @@ static void sparse_attn_head(float *__restrict attn_out, const float *__restrict
         used[n_blocks - 1] = 1;
     }
 
+    /* --force-blk：诊断钩子，无条件把指定块塞进 decode 的选块集（见 g_force_blk
+     * 的注释）。已在集内的跳过；优先挤掉「探针选出」的最低分块，
+     * 重要性半预选的块永不被动。 */
+    for (int fi = 0; fi < g_force_blk_n; fi++) {
+        int fb = g_force_blk[fi];
+        if (fb < 0 || fb >= n_blocks || used[fb]) continue;
+        if (nsel < n_blocks) {
+            sel[nsel++] = fb;
+            used[fb] = 1;
+        } else if (nsel > n_imp) {
+            int low = n_imp;
+            for (int i = n_imp + 1; i < nsel; i++)
+                if (probe[sel[i]] < probe[sel[low]]) low = i;
+            used[sel[low]] = 0;
+            sel[low] = fb;
+            used[fb] = 1;
+        }
+    }
+
+    ndl_trace_decode(probe, imp_sum, n_blocks, sel, nsel, n_imp, bs);
+
     /* (3) exact scores over selected positions only */
     float max_score = -1e9f;
     for (int si = 0; si < nsel; si++) {
@@ -9345,7 +10563,7 @@ void st_test_sparse_attn(void) {
         /* M4j：dense packed 每 head 用 4 行 scores（ha*4+0..3，stride=
          * score_stride）→ sc_buf 需 nh*4*seq_stride 行（早期按 nh*seq_stride
          * 分配 → 堆越界，case5 合成测试 SIGBUS/SEGV；2026-09-07 P4 收口）。 */
-        float *sc_buf = (float *)malloc((size_t)nh * 4 * seq_stride * sizeof(float));
+        float *sc_buf = (float *)malloc((size_t)nh * ST_ATTN_QB * seq_stride * sizeof(float));
         if (k_pack && v_pack && q_buf && att_ref && att_sp && att_sp2 && sc_buf) {
             for (int kh = 0; kh < nkv; kh++)
                 for (int s = 0; s < seq_stride; s++)
@@ -9576,7 +10794,8 @@ static void vllm_attn_head_worker(void *ctx_, int h) {
     const float *qt = st->q_buf + (size_t)h * c->hd;
     int hd8 = c->hd & ~7;
 
-    if (g_sparse_attn && !st->use_kv_q4 && c->seq_len > g_sparse_block * 2) {
+    if (g_sparse_attn && !st->use_kv_q4 &&
+        c->seq_len >= g_sparse_min_ctx && c->seq_len > g_sparse_block * 2) {
         /* Phase 1.5/2b: block-probe + prefill-importance
          * potential + top-k selection + bounded attention.
          * Evicted blocks (RAM NULL) are served from the L3
@@ -9587,7 +10806,9 @@ static void vllm_attn_head_worker(void *ctx_, int h) {
             st->k_cache_q8[c->l], st->v_cache_q8[c->l],
             st->k_scale[c->l], st->v_scale[c->l],
             c->use_q8, c->seq_len, c->kv_dim, c->nkv, kh, c->hd, c->scale,
-            g_sparse_block, g_sparse_k, g_sparse_probe,
+            g_sparse_block,
+            st_sparse_k_eff((c->seq_len + g_sparse_block - 1) / g_sparse_block),
+            g_sparse_probe,
             st->prefill_importance, c->imp_sum, scores,
             &st->l3, c->l);
         return;
@@ -11832,6 +13053,10 @@ static void st_moe_ffn_sparse_q4(const STModelWeights *w, int l,
      * 浮点序零改动 → A≡C 位级一致；q8/非 VQF/几何不匹配时 vqf_ffn_prefetch
      * 内部自动 no-op。 */
     vqf_ffn_prefetch(w, l, sel, tk);
+    /* 形态 A 的选路后同步（VLLM_SA=1，默认关）：驱逐 R_l \ A_l → R_l := A_l →
+     * 预取专家段 A_l。**必须**独立挂在选路点：vqf_ffn_prefetch 在
+     * VLLM_EW_PREFETCH 未开时提前 return，搭其车会导致同步永不执行。 */
+    vqf_sa_sync_token(w, l, sel, tk);
 
     /* 激活量化双轨（VLLM_ACTQ=1，近似 int8-dotprod，见内核区注释）：把
      * x_ffn（d=2048→64 块）量化为 q8_0，全部专家/gate/up 行共享。数值上
@@ -13762,8 +14987,11 @@ static int st_moe_ffn_sparse_q4_batch_arm(const STModelWeights *w, int l, int nb
         float inv = sum > 0.0f ? 1.0f / sum : 0.0f;
         for (int k = 0; k < tk; k++) pr[(size_t)t*tk+k] *= inv;
     }
-    /* 与逐 token 路径同源的专家预取（只动页表/页缓存，浮点零改动） */
+    /* 与逐 token 路径同源的专家预取（只动页表/页缓存，浮点零改动）。
+     * 形态 A 守卫：批式期间抑制专家级同步（批内激活集≈全体专家）。默认关时为空操作。 */
+    vqf_sa_set_batch(1);
     for (int t = 0; t < nb; t++) vqf_ffn_prefetch(w, l, sel + (size_t)t * tk, tk);
+    vqf_sa_set_batch(0);
     arm2_ctx ctx;
     ctx.G = G; ctx.U = U; ctx.D = D; ctx.X = X; ctx.Y = Y;
     ctx.xq = xq; ctx.xd = xd; ctx.avq = avq; ctx.avd = avd; ctx.av = av; ctx.P = P;
@@ -15059,6 +16287,72 @@ static void moe_ffn_dispatch(const STModelWeights *w, int l,
     st_moe_ffn_sparse(w, l, x_ffn, y);
 }
 
+/* =====================================================================
+ * VLLM_SPECL1=<path>：spec 验证路径「批式 prefill vs 逐 token decode」逐层
+ * KV 行哈希对拍（L1 探针，纯只读、默认关）。
+ *
+ * 动机：`--spec` 的批量验证走 st_qwen_model_prefill_batch，而 decode 走
+ * st_qwen_model_forward；两者若对同一 token 给出不同的 KV，批量验证的 KV 就
+ * 不能直接采用，必须 KV 回滚 + 逐 token 重放（现行实现），把投机解码的收益
+ * 全部吃掉。本探针用于定位二者**首个发散的层/位置**。
+ *
+ * 两侧写同一文本格式（行内容与 VLLM_PFDUMP 的 6 个字段同源），按 (l,p) 排序后
+ * 可直接 diff：
+ *   l=<L> p=<POS> kf=<h> vf=<h> kq=<h> vq=<h> ks=<h> vs=<h> lg=<h>
+ * 对拍臂选择（run_stream_test）：
+ *   A 臂 = 默认        → st_qwen_model_prefill_batch
+ *   B 臂 = VLLM_STREAM_SINGLE=1 → 逐 token st_qwen_model_forward
+ * 未设 env 时只多一次 getenv，零数值影响。
+ * ===================================================================== */
+static uint64_t pf_hash64(const void *p, size_t len);   /* 定义见本文件后段 */
+static void pf_b2(const char *tag, const void *p, size_t bytes);   /* 同上 */
+
+static void spec_l1_row(STQwenInferenceState *st, int layer, int pos) {
+    const char *path = getenv("VLLM_SPECL1");
+    if (!path || !path[0]) return;
+    int kv_dim = st->cfg.n_kv_heads * st->cfg.head_dim;
+    int nkv    = st->cfg.n_kv_heads;
+    int b = pos / st->kv_bs, r = pos % st->kv_bs;
+    const float *kf = NULL, *vf = NULL, *ks = NULL, *vs = NULL;
+    const int8_t *kq = NULL, *vq = NULL;
+    if (st->k_cache && st->k_cache[layer] && st->k_cache[layer][b]) {
+        kf = kv_row_f32(st->k_cache[layer], pos, kv_dim, st->kv_bs);
+        if (st->v_cache && st->v_cache[layer] && st->v_cache[layer][b])
+            vf = kv_row_f32(st->v_cache[layer], pos, kv_dim, st->kv_bs);
+    }
+    if (st->k_cache_q8 && st->k_cache_q8[layer] && st->k_cache_q8[layer][b]) {
+        kq = st->k_cache_q8[layer][b] + (size_t)r * kv_dim;
+        if (st->v_cache_q8 && st->v_cache_q8[layer] && st->v_cache_q8[layer][b])
+            vq = st->v_cache_q8[layer][b] + (size_t)r * kv_dim;
+    }
+    if (st->k_scale) ks = st->k_scale[layer] + (size_t)pos * nkv;
+    if (st->v_scale) vs = st->v_scale[layer] + (size_t)pos * nkv;
+    FILE *f = fopen(path, "a");
+    if (!f) return;
+    fprintf(f, "l=%d p=%d kf=%016llx vf=%016llx kq=%016llx vq=%016llx "
+               "ks=%016llx vs=%016llx\n",
+            layer, pos,
+            (unsigned long long)(kf ? pf_hash64(kf, (size_t)kv_dim * 4) : 0),
+            (unsigned long long)(vf ? pf_hash64(vf, (size_t)kv_dim * 4) : 0),
+            (unsigned long long)(kq ? pf_hash64(kq, (size_t)kv_dim) : 0),
+            (unsigned long long)(vq ? pf_hash64(vq, (size_t)kv_dim) : 0),
+            (unsigned long long)(ks ? pf_hash64(ks, (size_t)nkv * 4) : 0),
+            (unsigned long long)(vs ? pf_hash64(vs, (size_t)nkv * 4) : 0));
+    fclose(f);
+}
+
+/* 末位 logits 指纹（同 VLLM_SPEC_DBG 的 FNV-1a 口径，能分辨 -0.0/+0.0）。 */
+static void spec_l1_logits(STQwenInferenceState *st, int pos) {
+    const char *path = getenv("VLLM_SPECL1");
+    if (!path || !path[0] || !st->logits) return;
+    FILE *f = fopen(path, "a");
+    if (!f) return;
+    fprintf(f, "lg p=%d h=%016llx\n", pos,
+            (unsigned long long)pf_hash64(st->logits,
+                                          (size_t)st->cfg.vocab_size * 4));
+    fclose(f);
+}
+
 void st_qwen_model_forward(STQwenInferenceState *st, int token_id) {
     STModelWeights *w = &st->weights;
     int d  = st->cfg.dim;
@@ -15097,6 +16391,8 @@ void st_qwen_model_forward(STQwenInferenceState *st, int token_id) {
 
     for (int i = 0; i < d; i++)
         x[i] = st_emb_get(w, (size_t)token_id, (size_t)i, d);
+    /* L1 阶段探针：与 prefill 侧同名 tag 对拍（仅该 arm 的第 0 号 token） */
+    if (st->seq_len == 0) pf_b2("emb0", x, (size_t)d * 4);
     if (getenv("VLLM_MOE_DUMP") && getenv("VLLM_MOE_DUMP")[0] == '1') {
         printf("[L0D] meta token=%d seq=%d dim=%d eps=%.3e theta=%.3e\n",
                token_id, st->seq_len, d, eps, theta);
@@ -15116,6 +16412,7 @@ void st_qwen_model_forward(STQwenInferenceState *st, int token_id) {
         memcpy(residual, x, d * sizeof(float));
         dyn_rms_norm(normed, x, w->attn_norm + l * d, d, eps);
         if (prof) t_nrm += st_now_sec() - tw;
+        if (l == 0 && st->seq_len == 0) pf_b2("nrm0", normed, (size_t)d * 4);
         if (moe_dump_at(l)) moe_l0_dump("S1_attn_norm", normed, d);
 
         /* Q/K/V projections: fused matvec (axiom: block_matrix_assoc_natural)
@@ -15145,6 +16442,10 @@ void st_qwen_model_forward(STQwenInferenceState *st, int token_id) {
             dyn_matvec(st->v_buf, w->v_weight + l * d * kv_dim, normed, kv_dim, d);
         }
         if (prof) t_qkv += st_now_sec() - t0;
+        if (l == 0 && st->seq_len == 0) {
+            pf_b2("qq0", st->q_buf, (size_t)kv_dim_q * 4);
+            pf_b2("qk0", st->k_buf, (size_t)kv_dim * 4);
+        }
         if (trace) { fprintf(stderr, "[DDEC2] l=%d QKV done\n", l); fflush(stderr); }
         if (getenv("VLLM_PFDBG") && (l == 0 || l == 6 || l == 15 || l == 35)) {
             float qm = 0.0f, km = 0.0f, vm = 0.0f, xm = 0.0f;
@@ -15587,6 +16888,14 @@ void st_qwen_model_forward(STQwenInferenceState *st, int token_id) {
     if (prof) { fprintf(stderr, "[DDEC2] seq_len done\n"); fflush(stderr); }
     if (st->mrope_pos > 0) st->mrope_pos++;
 
+    /* L1 探针（VLLM_SPECL1）：本 token 写入的 KV 行 + logits 指纹。
+     * 行号口径与 prefill 侧的 `base + i` 一致（同一 pos 才可比）。 */
+    if (getenv("VLLM_SPECL1")) {
+        int row = st->seq_len - 1;
+        for (int l = 0; l < nl; l++) spec_l1_row(st, l, row);
+        spec_l1_logits(st, row);
+    }
+
     if (prof) {
         double t_total = st_now_sec() - t_all0;
         double t_gemm = t_qkv + t_o + t_gu + t_down + t_lm;
@@ -15980,6 +17289,20 @@ typedef struct {
     int8_t *const *k_q8; int8_t *const *v_q8;               /* nof32 源 */
     const float *kscale, *vscale;                            /* 逐 token 连续 [seq*nkv] */
     float *k_pack, *v_pack;
+    /* VLLM_ATTN_I8 档：同一趟里**顺带**拷一份 K 的 int8 连续包（不重量化，纯搬运，
+     * 所以数值与直接读 kv_cache_q8 完全一致）。V 不拷 —— 见 vllm_attn_q8_group
+     * 的指令预算：VKQ 读 int8 要逐元素加宽，会把 QK 省下的指令又吐回去。
+     * 必要性见 vllm_attn_q8_group 的注释：直接读 kv_cache_q8 是按 kv_dim 跨步的
+     * （行距 1024 B、每行只取 128 B），正是 st_pack_kv_heads 当初要消掉的那种访存
+     * 模式。nullable（默认 NULL = 行为不变）。 */
+    int8_t *kq8_pack;
+    float *ks8_pack;
+    /* V 的 int8 连续包：**可选**。板端实测 V 走 int8 是长度相关的两边下注 ——
+     * 2K（指令受限）V 走 float 更省（17.12 s vs 19.78 s），8K（流量受限）V 走 int8
+     * 更省（295.8 s vs 341.1 s，相对 float 档 −19.4% vs −6.9%）。故两条路都留着，
+     * 由 VLLM_ATTN_V_I8 在运行时选。nullable（默认 NULL = 不拷、V 走 float）。 */
+    int8_t *vq8_pack;
+    float *vs8_pack;
     int seq_len, nkv, hd, kv_dim, seq_stride, bs;
 } vllm_pack_kv_ctx;
 
@@ -15987,7 +17310,38 @@ static void vllm_pack_kv_worker(void *ctx_, int kh) {
     vllm_pack_kv_ctx *c = ctx_;
     float *kd = c->k_pack + (size_t)kh * c->seq_stride * c->hd;
     float *vd = c->v_pack + (size_t)kh * c->seq_stride * c->hd;
+    int8_t *k8d = c->kq8_pack ? c->kq8_pack + (size_t)kh * c->seq_stride * c->hd : NULL;
+    int8_t *v8d = c->vq8_pack ? c->vq8_pack + (size_t)kh * c->seq_stride * c->hd : NULL;
+    float *ks8d = c->ks8_pack ? c->ks8_pack + (size_t)kh * c->seq_stride : NULL;
+    float *vs8d = c->vs8_pack ? c->vs8_pack + (size_t)kh * c->seq_stride : NULL;
     for (int s = 0; s < c->seq_len; s++) {
+        if (k8d && c->k_q8 && c->kscale) {
+            const int bi = s / c->bs, bo = s % c->bs;
+            const int8_t *kb = c->k_q8[bi];
+            if (kb) {
+                memcpy(k8d + (size_t)s * c->hd,
+                       kb + (size_t)bo * c->kv_dim + (size_t)kh * c->hd, (size_t)c->hd);
+                ks8d[s] = c->kscale[(size_t)s * c->nkv + kh];
+            } else {
+                /* 块被 L3 换出（指针为 NULL）：把行清零、scale 置 0。这一行**不会**
+                 * 被用到 —— 调用点会在同一层做「整段块都在 RAM」的前置检查，
+                 * 不满足就退回 float 精确档（见 longctx prefill 的 i8_ok）。 */
+                memset(k8d + (size_t)s * c->hd, 0, (size_t)c->hd);
+                ks8d[s] = 0.0f;
+            }
+        }
+        if (v8d && c->v_q8 && c->vscale) {
+            const int bi = s / c->bs, bo = s % c->bs;
+            const int8_t *vb = c->v_q8[bi];
+            if (vb) {
+                memcpy(v8d + (size_t)s * c->hd,
+                       vb + (size_t)bo * c->kv_dim + (size_t)kh * c->hd, (size_t)c->hd);
+                vs8d[s] = c->vscale[(size_t)s * c->nkv + kh];
+            } else {
+                memset(v8d + (size_t)s * c->hd, 0, (size_t)c->hd);
+                vs8d[s] = 0.0f;
+            }
+        }
         if (c->k_cache) {
             const float *ks = c->k_cache[s / c->bs] + (size_t)(s % c->bs) * (size_t)c->kv_dim + (size_t)kh * c->hd;
             const float *vs = c->v_cache[s / c->bs] + (size_t)(s % c->bs) * (size_t)c->kv_dim + (size_t)kh * c->hd;
@@ -16015,11 +17369,14 @@ static void st_pack_kv_heads(float *const *k_cache, float *const *v_cache,
                              int8_t *const *k_q8, int8_t *const *v_q8,
                              const float *kscale, const float *vscale,
                              float *restrict k_pack, float *restrict v_pack,
+                             int8_t *restrict kq8_pack, float *restrict ks8_pack,
+                             int8_t *restrict vq8_pack, float *restrict vs8_pack,
                              int seq_len, int nkv, int hd, int kv_dim,
                              int seq_stride, int bs)
 {
     vllm_pack_kv_ctx vc = { k_cache, v_cache, k_q8, v_q8, kscale, vscale,
-                            k_pack, v_pack, seq_len, nkv, hd, kv_dim, seq_stride, bs };
+                            k_pack, v_pack, kq8_pack, ks8_pack, vq8_pack, vs8_pack,
+                            seq_len, nkv, hd, kv_dim, seq_stride, bs };
     vllm_tp_parfor(0, nkv, vllm_pack_kv_worker, &vc);
 }
 
@@ -16521,6 +17878,51 @@ static void pf_dump_post(STQwenInferenceState *st, int base, int n_tokens) {
     fclose(f);
 }
 
+/* VLLM_SPEC_VEXACT=1：spec 验证模式（`g_verify_logits != NULL`）下，把
+ * prefill 的 attention 从「跨 query 打包核」换成 decode 逐 query 核，使同一
+ * token 的 attention 输出与 st_qwen_model_forward 位级等价——这是取消
+ * 「KV 回滚 + 逐 token 重放」的前提。默认 0 = 原打包核（逐位不变，零回归）。
+ * 依据：L1 对拍（2026-09-24，板端 8B-q4 + --prefill-batch 3）实测 l=0 全部
+ * KV 行一致而 l>=1 全发散 ⇒ 剩余唯一发散点即 attention（归约树 + KV 精度口径）。 */
+static int spec_vexact_on(void) {
+    static int v = -1;
+    if (v < 0) {
+        const char *e = getenv("VLLM_SPEC_VEXACT");
+        v = (e && e[0] == '1') ? 1 : 0;
+    }
+    return v;
+}
+
+/* 逐位置复用 decode 的 attention 分支选择与 worker。
+ * 手法：把 st->q_buf / st->attn_buf 临时指向该 token 在 mini-batch 缓冲里的切片，
+ * 有效前缀长度 = prev_len + t + 1（因果），从而使 worker 读到的输入与 decode
+ * 完全一致。分支选择逐字镜像 st_qwen_model_forward 的
+ * `!use_kv_q8 && seq_len >= FA_THRESHOLD && !g_sparse_attn` → flash worker，
+ * 否则 attn_head_worker（其内部再分 q8/q4/f32），故 KV 精度口径自动一致。
+ * 注：本路径不累加 imp_head（稀疏 decode 的选块依据）；spec 与 --sparse-attn
+ * 本就互斥（见 vllm_server.c 的 spec_on 条件），故无影响。 */
+static void spec_verify_attention(STQwenInferenceState *st, int l,
+                                  float *qb, float *att, int prev_len, int nb,
+                                  int nh, int nkv, int hd, int kv_dim, int q_rows) {
+    float scale = 1.0f / sqrtf((float)hd);
+    float *save_q = st->q_buf, *save_a = st->attn_buf;
+    for (int t = 0; t < nb; t++) {
+        int sl = prev_len + t + 1;
+        st->q_buf    = qb + (size_t)t * q_rows;
+        st->attn_buf = att + (size_t)t * q_rows;
+        if (!st->use_kv_q8 && sl >= FA_THRESHOLD && !g_sparse_attn) {
+            vllm_flash_head_ctx vf = { st, nh, nkv, hd, l, sl, kv_dim, st->kv_bs, scale };
+            vllm_tp_parfor(0, nh, vllm_flash_head_worker, &vf);
+        } else {
+            vllm_attn_head_ctx vh = { st, nh, nkv, hd, l, sl, kv_dim,
+                                      st->use_kv_q8, scale, NULL };
+            vllm_tp_parfor(0, nh, vllm_attn_head_worker, &vh);
+        }
+    }
+    st->q_buf    = save_q;
+    st->attn_buf = save_a;
+}
+
 int st_qwen_model_prefill_batch(STQwenInferenceState *st,
                                   const int *token_ids, int n_tokens)
 {
@@ -16649,6 +18051,45 @@ int st_qwen_model_prefill_batch(STQwenInferenceState *st,
         return 0;
     }
     float *v_pack = k_pack + pack_elems;
+
+    /* VLLM_ATTN_I8 档：拷 K 的 int8 连续包（+ 逐 token scale）。VLLM_ATTN_V_I8=1
+     * 时再拷一份 V 的 int8 包 —— **两个都留是因为实测是长度相关的两边下注**：
+     * 2K（指令受限）V 走 float 更省（17.12 vs 19.78 s），8K（流量受限）V 走 int8
+     * 更省（295.8 vs 341.1 s；相对 float 档 −19.4% vs −6.9%）。
+     * 16K 下 K 包 ≈ 16.8 MB、V 包同；scale 各 ≈ 0.5 MB。默认档不分配。 */
+    int attn_i8_pf = st_attn_i8_enabled();
+    int attn_v8_pf = attn_i8_pf && st_attn_v_i8_enabled();
+    int8_t *k8_pack = NULL, *v8_pack = NULL;
+    uint8_t *k8pack_tail = NULL, *s8pack_tail = NULL, *v8pack_tail = NULL;
+    float *ks8_pack = NULL, *vs8_pack = NULL;
+    if (attn_i8_pf) {
+        size_t nsc  = (size_t)nkv * (size_t)seq_stride;
+        int8_t *p8  = (int8_t *)cf_aligned_canary(pack_elems, &k8pack_tail);
+        float *p8s  = (float *)cf_aligned_canary(nsc * (attn_v8_pf ? 2 : 1) * sizeof(float),
+                                                 &s8pack_tail);
+        if (attn_v8_pf)
+            v8_pack = (int8_t *)cf_aligned_canary(pack_elems, &v8pack_tail);
+        if (p8 && p8s && (!attn_v8_pf || v8_pack)) {
+            k8_pack  = p8;
+            ks8_pack = p8s;
+            vs8_pack = attn_v8_pf ? p8s + nsc : NULL;
+        } else {
+            fprintf(stderr, "[PREFILL] WARN: VLLM_ATTN_I8 的 int8 包分配失败，"
+                            "本次回退 float 精确档\n");
+            if (p8)  cf_aligned_free_canary(p8);
+            if (p8s) cf_aligned_free_canary(p8s);
+            if (v8_pack) cf_aligned_free_canary(v8_pack);
+            k8pack_tail = s8pack_tail = v8pack_tail = NULL;
+            k8_pack = v8_pack = NULL; ks8_pack = vs8_pack = NULL;
+            attn_i8_pf = attn_v8_pf = 0;
+        }
+    }
+    if (pf_scratch_on() && attn_i8_pf) {
+        fprintf(stderr, "[PREFILL] VLLM_ATTN_I8=1：int8 包 K=%p V=%p (%zu MB%s) + scale\n",
+                (void *)k8_pack, (void *)v8_pack, pack_elems / 1048576,
+                attn_v8_pf ? " each" : " K only");
+        fflush(stderr);
+    }
     if (pf_scratch_on()) {
         fprintf(stderr, "[KPACK] alloc %p (%zu B)\n",
                 (void *)k_pack, pack_elems * 2 * sizeof(float));
@@ -16659,6 +18100,9 @@ int st_qwen_model_prefill_batch(STQwenInferenceState *st,
     float *emb = w->token_embed;
     if (!emb) {
         cf_aligned_free_canary(k_pack);
+        if (k8_pack) cf_aligned_free_canary(k8_pack);
+        if (ks8_pack) cf_aligned_free_canary(ks8_pack);
+        if (v8_pack) cf_aligned_free_canary(v8_pack);
         cf_aligned_free_canary(hidden_b); cf_aligned_free_canary(normed_b); cf_aligned_free_canary(qbuf_b);
         cf_aligned_free_canary(kbuf_b);   cf_aligned_free_canary(vbuf_b);   cf_aligned_free_canary(attn_b);
         cf_aligned_free_canary(resid_b);
@@ -16668,10 +18112,37 @@ int st_qwen_model_prefill_batch(STQwenInferenceState *st,
     /* Process tokens in mini-batches through all layers */
     int tok_offset = 0;
     int last_nb = 0;
+    /* VLLM_IMP_LAST_MB：prefill 重要性只统计**最后一个 mini-batch** 的注意力质量。
+     * **默认开**；设 VLLM_IMP_LAST_MB=0 回退到旧的「整段上下文全部 query 求和」口径
+     * （用于逐位复现历史行为与 A/B）。
+     *
+     * 动机：prefill_importance 的用途是估计「decode 的 query 想 attend 哪些块」，
+     * 而旧口径是「整段上下文所有 query 的注意力质量之和」。后者带有强位置偏置
+     * —— 同一个针块实测名次：0% → 1/513、25% → 12/513、**50% → 148/513**，
+     * 因为开头/近邻的块被更多 query 顺带 attend 到。名次一旦掉出 decode 的预算
+     * （k=32 时重要性半只有 16 块），针块就永远进不了选块集。
+     * 而最后一个 mini-batch 恰好装着问句与指令，它的注意力分布最接近紧接着要
+     * decode 的那个 query。
+     *
+     * x86 实测（Qwen3-VL-2B / 16K / bs=32 / k=32 / 精确 prefill）：
+     *   pos 25%：名次 12 → 4，针块注意力占比 0.639% → 5.164%，余量比 1.068 → 12.46
+     *   pos 50%：名次 148 → 6，占比 0.318% → 0.801%，余量比 0.532 → 2.298
+     *            decode 重要性半命中 0/14336 → 14336/14336
+     * 开销：每个 prefill 多一次 imp_head 清零（nh*max_kv_slots 个 float），
+     * decode 侧零改动。同配置重复运行的 Prefill 274..301 s、Decode 48.5..52.7 ms/tok
+     * （本机噪声 7-10%），改动前后差异落在这个噪声内 —— 即"无可测量的代价"，
+     * 而不是"精确到 ±1%"。 */
+    static int imp_last_mb_v = -1;
+    if (imp_last_mb_v < 0) {
+        const char *e = getenv("VLLM_IMP_LAST_MB");
+        imp_last_mb_v = (e && e[0] == '0') ? 0 : 1;
+    }
     while (tok_offset < n_tokens) {
         int nb = n_tokens - tok_offset;
         if (nb > B) nb = B;
         last_nb = nb;
+        if (imp_last_mb_v && tok_offset + nb >= n_tokens)
+            memset(st->imp_head, 0, (size_t)st->max_kv_slots * nh * sizeof(float));
 
         /* Embed this mini-batch's tokens */
         for (int t = 0; t < nb; t++) {
@@ -16869,27 +18340,96 @@ int st_qwen_model_prefill_batch(STQwenInferenceState *st,
                     st_pack_kv_heads(NULL, NULL,
                                      st->k_cache_q8[l], st->v_cache_q8[l],
                                      st->k_scale[l], st->v_scale[l],
-                                     k_pack, v_pack, seq_len, nkv, hd, kv_dim,
+                                     k_pack, v_pack, k8_pack, ks8_pack, v8_pack, vs8_pack,
+                                     seq_len, nkv, hd, kv_dim,
                                      seq_stride, st->kv_bs);
                 } else {
                     st_pack_kv_heads(st->k_cache[l], st->v_cache[l],
-                                     NULL, NULL, NULL, NULL,
-                                     k_pack, v_pack, seq_len, nkv, hd, kv_dim,
+                                     st->k_cache_q8[l], st->v_cache_q8[l],
+                                     st->k_scale[l], st->v_scale[l],
+                                     k_pack, v_pack, k8_pack, ks8_pack, v8_pack, vs8_pack,
+                                     seq_len, nkv, hd, kv_dim,
                                      seq_stride, st->kv_bs);
                 }
-                /* Optimized path: with sparse decode attention enabled,
-                 * prefill also runs sparse batched attention over the top-k
-                 * KV blocks per head (probe + representative-query selection).
-                 * It still records the per-token attention mass into imp_head
-                 * (over the selected blocks only), keeping the sparse decode
-                 * selection signal consistent. */
-                if (g_sparse_attn && seq_len > g_sparse_block * 2) {
+                /* 稀疏 prefill：默认关闭（VLLM_SPARSE_PREFILL=1 可恢复旧行为）。
+                 *
+                 * 旧行为把 prefill 也交给稀疏核（probe top-k + 最近块保底，每个
+                 * mini-batch 只用一个代表性 query 选块），而 imp_head 只在**被选中
+                 * 的块上**累加（见 st_attn_batched_packed_sparse 的 impr[s] += wgt）。
+                 * 于是 prefill_importance 实际是「probe 选中块的注意力质量」，而
+                 * decode 的重要性半预算又按它取名次发块 —— 用 probe 的结论再选一遍
+                 * probe 喜欢的块，闭环自证；本函数上方注释里的 "exact packed
+                 * attention" 前提在稀疏档下不成立。
+                 *
+                 * x86 实测（Qwen3-VL-2B / 16K / needle@25% / bs=32 / k=32）：
+                 *   稀疏 prefill：针块 imp 名次 188/513，decode 重要性半 0/14336 命中，
+                 *                探针半 220/14336（1.5%），针块名次均值 287/513 → 召回 NO
+                 *   精确 prefill：同一针块 imp 名次 12/513（预算 16 之内）→ 召回 YES
+                 *   稀疏 prefill 但 k=256：名次 16/513 → 召回 YES
+                 * 名次随覆盖率单调（6%→188，50%→16，100%→12），坐实是选块信号被污染，
+                 * 不是模型看不见针。故 prefill 恒走精确注意力，稀疏只作用于 decode。
+                 *
+                 * 显式开启（VLLM_SPARSE_PREFILL=1）时再加 `g_sparse_pf_min_ctx` 门：
+                 * ctx 低于该值（默认 3072）时稀疏 prefill 是净亏（省下的注意力不足以
+                 * 抵消 probe 开销），退回精确核。见 g_sparse_pf_min_ctx 的注释。 */
+                static int sparse_pf_v = -1;
+                if (sparse_pf_v < 0) {
+                    const char *e = getenv("VLLM_SPARSE_PREFILL");
+                    sparse_pf_v = (e && e[0] == '1') ? 1 : 0;
+                }
+                /* VLLM_SPEC_VEXACT=1：验证模式接管 attention（逐位置走 decode 同核）。
+                 * 本探针阶段仅由 env 门控（便于用 --stream-test 两臂对拍）；
+                 * 生产接线时应收紧为 `spec_vexact_on() && g_verify_logits`。
+                 * vexact=0 时下面三处 `!vexact` 恒真，原链逐位不变（零回归）。 */
+                int vexact = spec_vexact_on();
+                if (vexact)
+                    spec_verify_attention(st, l, qb, att, prev_len, nb,
+                                          nh, nkv, hd, kv_dim, q_rows);
+                /* VLLM_ATTN_I8=1：密集精确 prefill 改走 INT8-KV 连续包内核（流量、
+                 * 载入条数、算术指令三者同时 ÷4，见 vllm_attn_q8_group 的注释）。
+                 * 默认**关**；它是 fast path，量化会动针块分数，验收看召回。
+                 *
+                 * 前置条件全部是「不满足就退回 float 精确档」：int8 包存在、q8 KV
+                 * 缓存存在、每层 scale 存在、hd 是 32 的倍数且不超上限、以及**整段
+                 * 用到的块都在 RAM**（块可能被 L3 换出；换出档留给稀疏核的磁盘路径）。
+                 * 读的是 st_pack_kv_heads 顺带拷好的 int8 连续包，不是 kv_cache_q8
+                 * 本身 —— 后者按 kv_dim 跨步（行距 1024 B、每行只取 128 B），正是 pack
+                 * 当初要消掉的访存模式；2K 实测那版比 float 档慢 67%。 */
+#if ST_HAVE_NEON
+                int i8_ok = 0;
+                if (st_attn_i8_enabled() && k8_pack && ks8_pack &&
+                    st->use_kv_q8 && st->k_cache_q8 && st->v_cache_q8 &&
+                    (hd % 32) == 0 && hd <= ST_ATTN_Q8_HDMAX && nkv > 0) {
+                    int nb_need = (seq_len + st->kv_bs - 1) / st->kv_bs;
+                    if (nb_need > st->kv_n_blocks) nb_need = st->kv_n_blocks;
+                    i8_ok = 1;
+                    for (int b = 0; b < nb_need; b++)
+                        if (!st->k_cache_q8[l][b] || !st->v_cache_q8[l][b]) { i8_ok = 0; break; }
+                    if (i8_ok && !g_attn_i8_logged) {
+                        g_attn_i8_logged = 1;
+                        fprintf(stderr, "[ATTN] VLLM_ATTN_I8=1：prefill 走 INT8-K 内核"
+                                        "（V=%s，l=%d hd=%d seq_len=%d，块全在 RAM）\n",
+                                v8_pack ? "int8" : "float", l, hd, seq_len);
+                    }
+                }
+                if (!vexact && i8_ok) {
+                    st_attn_batched_packed_q8(att, qb, k8_pack, v_pack, ks8_pack,
+                                              v8_pack, vs8_pack,
+                                              nb, prev_len, seq_stride, nh, nkv, hd, scale,
+                                              st->scores_buf, st->max_kv_slots,
+                                              st->imp_head);
+                } else
+#endif
+                if (!vexact && sparse_pf_v && g_sparse_attn &&
+                    seq_len >= g_sparse_pf_min_ctx && seq_len > g_sparse_block * 2) {
                     st_attn_batched_packed_sparse(att, qb, k_pack, v_pack, nb, prev_len,
                                                   seq_stride, nh, nkv, hd, scale,
                                                   st->scores_buf, st->max_kv_slots,
-                                                  g_sparse_block, g_sparse_k, g_sparse_probe,
+                                                  g_sparse_block,
+                                                  st_sparse_pf_k_eff((seq_len + g_sparse_block - 1) / g_sparse_block),
+                                                  g_sparse_probe,
                                                   st->imp_head);
-                } else {
+                } else if (!vexact) {
                     st_attn_batched_packed(att, qb, k_pack, v_pack, nb, prev_len,
                                            seq_stride, nh, nkv, hd, scale,
                                            st->scores_buf, st->max_kv_slots,
@@ -17057,6 +18597,9 @@ int st_qwen_model_prefill_batch(STQwenInferenceState *st,
                 CK_TAIL(tail_attn, "attn", l, tok_offset + nb);
                 CK_TAIL(tail_resid, "resid", l, tok_offset + nb);
                 CK_TAIL(kpack_tail, "kpack", l, tok_offset + nb);
+                CK_TAIL(k8pack_tail, "k8pack", l, tok_offset + nb);
+                CK_TAIL(s8pack_tail, "s8pack", l, tok_offset + nb);
+                CK_TAIL(v8pack_tail, "v8pack", l, tok_offset + nb);
 
                 if (st->k_cache[l] && st->v_cache[l]) {   /* P3: nof32 无 f32 正典 */
                     int nblk = st->kv_n_blocks;
@@ -17289,11 +18832,21 @@ int st_qwen_model_prefill_batch(STQwenInferenceState *st,
 
     st->seq_len += n_tokens;
     pf_dump_post(st, pf_base, n_tokens);   /* VLLM_PFDUMP 对拍（env 门控） */
+    /* L1 探针（VLLM_SPECL1）：本轮写入的每个 (层, 位置) KV 行 + 末位 logits */
+    if (getenv("VLLM_SPECL1")) {
+        for (int l = 0; l < nl; l++)
+            for (int i = 0; i < n_tokens; i++)
+                spec_l1_row(st, l, pf_base + i);
+        spec_l1_logits(st, pf_base + n_tokens - 1);
+    }
     if (pf_scratch_on()) {
         fprintf(stderr, "[KPACK] free  %p\n", (void *)k_pack);
         fflush(stderr);
     }
     cf_aligned_free_canary(k_pack);
+    if (k8_pack) cf_aligned_free_canary(k8_pack);
+    if (ks8_pack) cf_aligned_free_canary(ks8_pack);
+    if (v8_pack) cf_aligned_free_canary(v8_pack);
     cf_aligned_free_canary(hidden_b); cf_aligned_free_canary(normed_b); cf_aligned_free_canary(qbuf_b);
     cf_aligned_free_canary(kbuf_b);   cf_aligned_free_canary(vbuf_b);   cf_aligned_free_canary(attn_b);
     cf_aligned_free_canary(resid_b);
@@ -18166,7 +19719,7 @@ void st_qwen_inference_free(STQwenInferenceState *st) {
         int nh = st->cfg.n_heads;
         int mkv = st->max_kv_slots > 0 ? st->max_kv_slots : 1;
         if (st->scores_buf) {
-            uint8_t *t = (uint8_t *)st->scores_buf + (size_t)mkv * nh * 4 * sizeof(float);
+            uint8_t *t = (uint8_t *)st->scores_buf + (size_t)mkv * nh * ST_ATTN_QB * sizeof(float);
             int ok = 1;
             for (int i = 0; i < 64; i++) if (t[i] != 0xA5) { ok = 0; break; }
             if (!ok) fprintf(stderr, "[CANARY] scores_buf tail overwritten\n");

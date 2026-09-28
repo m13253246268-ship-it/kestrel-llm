@@ -1,0 +1,54 @@
+  vLLM-Kestrel: Axiom-Guided Exact-Attention         
+  Large Language Model Inference Engine          
+
+[DEV] device=arm-generic arch=arm64 class=embedded model=- npu=none recommended_wmode=dual
+
+=== [STREAM] layer-resident validation (VQF only) ===
+[STREAM] vqf_load OK (0.00s): dim=2048 layers=48 heads=32 kv=4 ffn=98304 vocab=151936 max_seq=8192
+[STREAM] rss_after_load  = 988 kB
+[TOK] Loaded 151669 tokens from vocab.bin (max_len=256)
+[TOK] match mode: indexed (slots=524288, 2.0 MB, load=0.29)
+[TOK] Special tokens: bos=151643 eos=151645 im_start=151644 im_end=151645 pad=151643
+[STREAM] tokenizer: 151669 tokens (eos=151645 im_start=151644 im_end=151645)
+[STREAM] rss_after_init  = 21768 kB
+[STREAM] prompt tokens = 4086 (--stream-ctx 4096)
+[STREAM] warmup done in 131.386s (discarded: 1 prefill + 8 decode)
+[STREAM] prefill 4086 tokens in 130.072s (31 tok/s) [batch]
+[STREAM] rss_after_prefill = 14785936 kB
+[STREAM] decode mode: greedy (rep_pen=1.000 win=32)
+[STREAM] TOKIDS: 151667 t=1 ms=133 rss=14785936kB
+ 198 t=2 ms=133 rss=14785936kB
+ 99692 t=3 ms=133 rss=14785936kB
+ 3837 t=4 ms=133 rss=14785936kB
+ 20002 t=5 ms=133 rss=14785936kB
+ 104029 t=6 ms=133 rss=14785936kB
+ 11622 t=7 ms=133 rss=14785936kB
+ 104811 t=8 ms=133 rss=14785936kB
+ 105321 t=9 ms=133 rss=14786788kB
+ 104136 t=10 ms=133 rss=14786788kB
+ 2073 t=11 ms=133 rss=14792092kB
+ 100062 t=12 ms=133 rss=14795548kB
+ 99371 t=13 ms=133 rss=14795812kB
+ 58814 t=14 ms=133 rss=14800036kB
+ 113272 t=15 ms=133 rss=14804788kB
+ 55807 t=16 ms=133 rss=14810932kB
+ 104544 t=17 ms=133 rss=14863648kB
+ 42411 t=18 ms=133 rss=14884768kB
+ 87267 t=19 ms=133 rss=14919472kB
+ 101219 t=20 ms=133 rss=14941096kB
+ 100134 t=21 ms=133 rss=14962864kB
+ 102988 t=22 ms=133 rss=14988208kB
+ 99361 t=23 ms=133 rss=15005488kB
+ 100631 t=24 ms=133 rss=15026608kB
+ 18493 t=25 ms=133 rss=15048376kB
+ 99190 t=26 ms=133 rss=15065272kB
+ 78556 t=27 ms=134 rss=15070408kB
+ 104066 t=28 ms=133 rss=15087304kB
+ 3837 t=29 ms=133 rss=15087628kB
+ 85106 t=30 ms=133 rss=15108748kB
+ 110485 t=31 ms=134 rss=15117844kB
+ 30858 t=32 ms=133 rss=15122068kB
+
+[STREAM] decoded 32 tokens, 133 ms/tok (7.52 tok/s)
+[STREAM] text: <think>Ċ好的，用户让我用中文一句话解释“逐层加载推理”。看起来他可能是在学习某种技术或者在做相关的工作，需要简洁明
+[STREAM] rss_end = 15122068 kB

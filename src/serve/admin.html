@@ -31,7 +31,7 @@ header h1{font-size:16px;margin:0;font-weight:600}
 table.combos{width:100%;border-collapse:collapse;font-size:12px;margin-top:4px}
 table.combos th,table.combos td{border-bottom:1px solid var(--bd);padding:6px 8px;text-align:left;vertical-align:top}
 table.combos th{color:var(--tx2);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.4px}
-table.combos tr:last-child td{border-bottom:none}
+table.combos tr:last-child td{border-bottom:no e}
 table.combos tr:hover td{background:var(--panel2)}
 table.combos td.ev{color:var(--ok);white-space:nowrap}
 table.combos td.act{white-space:nowrap;text-align:right}
@@ -101,6 +101,7 @@ a{color:var(--acc)}
   <span id="cfgBadge" class="badge">配置: -</span>
   <span style="flex:1"></span>
   <button id="langBtn" class="navlink" type="button" title="切换为中文">EN</button>
+  <a class="navlink" href="/review" data-en="Review console /review">审查台 /review</a>
   <a class="navlink" href="/chat" target="_blank" data-en="Chat /chat">对话页 /chat</a>
   <span id="clock" style="color:var(--tx2);font-size:12px"></span>
 </header>
@@ -169,9 +170,18 @@ a{color:var(--acc)}
     <div class="chkrow"><input type="checkbox" id="f_prefix_cache"><label for="f_prefix_cache" data-en="Prefix cache (--prefix-cache)">前缀缓存 (--prefix-cache)</label></div>
     <div class="chkrow"><input type="checkbox" id="f_prefill_q8"><label for="f_prefill_q8">Prefill Q8 (--prefill-q8)</label></div>
     <div class="chkrow"><input type="checkbox" id="f_sparse_attn"><label for="f_sparse_attn"><span data-en="Sparse attention (--sparse-attn)">稀疏注意力 (--sparse-attn)</span><span class="ptag" data-en="Long context">长上下文</span><span class="ptag x86no" data-en="x86 total prefill only −6.7%">x86 总 prefill 仅 −6.7%</span></label></div>
-    <label class="fld"><span class="t" data-en="sparse-k (effective only when &lt; the context block count; block size 32)">sparse-k（须 &lt; 上下文块数才生效，块大小 32）</span><input type="number" id="f_sparse_k" min="1" value="32"></label>
+    <label class="fld"><span class="t" data-en="Decode sparse-k (effective only when &lt; the context block count; block size 32)">解码 sparse-k（须 &lt; 上下文块数才生效，块大小 32）</span><input type="number" id="f_sparse_k" min="1" value="32"></label>
+    <div class="chkrow"><input type="checkbox" id="f_sparse_prefill"><label for="f_sparse_prefill"><span data-en="Sparse prefill too (env VLLM_SPARSE_PREFILL=1) — OFF by default: the prefill kernel's output IS what gets written into the KV, so its approximation damages the context representation. If you turn it on, use the two prefill knobs below.">prefill 也走稀疏 (env VLLM_SPARSE_PREFILL=1) —— 默认关：prefill 的输出就是写进 KV 的内容，它的近似会损坏上下文表示；开它请配合下面两个 prefill 旋钮</span><span class="ptag x86no" data-en="needle loss if left at 0 granularity">粒度为 0 时已知丢针</span></label></div>
+    <label class="fld"><span class="t" data-en="Prefill sparse-k (--sparse-pf-k; 0 = follow the decode sparse-k)">prefill sparse-k（--sparse-pf-k；0 = 沿用解码档）</span><input type="number" id="f_sparse_pf_k" min="0" value="32"></label>
+    <label class="fld"><span class="t" data-en="Prefill block-selection granularity (--sparse-pf-group G): tokens sharing one selection. 0 = one representative query per whole batch (old behaviour, loses the needle); 4~8 recommended">prefill 选块粒度（--sparse-pf-group G，每 G 个 token 共享一次选块）：0 = 整批一个代表 query（旧行为，会丢针）；推荐 4~8</span><input type="number" id="f_sparse_pf_group" min="0" value="4"></label>
     <div class="chkrow"><input type="checkbox" id="f_disk_kv"><label for="f_disk_kv"><span data-en="Disk KV persistence (--disk-kv, reuse conversation prefix KV across processes after restart)">磁盘 KV 持久化 (--disk-kv，重启后跨进程复用对话前缀 KV)</span><span class="ptag ram" data-en="KV on disk">KV 落盘</span><span class="ptag x86" data-en="x86 review −97%">x86 复核 −97%</span></label></div>
     <label class="fld"><span class="t" data-en="KV checkpoint directory">KV checkpoint 目录</span><input type="text" id="f_disk_kv_dir" placeholder="kv_disk（引擎工作目录）" data-en-ph="kv_disk (engine working directory)"></label>
+    <div class="sec" data-en="Industrial Edge: Preset Contexts &amp; Sessions">工业边缘：预置上下文与会话</div>
+    <label class="fld"><span class="t" data-en="Rulebook dir (--rulebook-dir; empty = off)">规则包目录 (--rulebook-dir，留空=关闭)</span><input type="text" id="f_rulebook_dir" placeholder="rulebooks" data-en-ph="rulebooks"></label>
+    <label class="fld"><span class="t" data-en="Session dir (--session-dir; empty = off)">会话目录 (--session-dir，留空=关闭)</span><input type="text" id="f_session_dir" placeholder="sessions" data-en-ph="sessions"></label>
+    <label class="fld"><span class="t" data-en="Session file limit (--session-limit, LRU; 0 = default 1024)">会话文件上限 (--session-limit，LRU；0=默认 1024)</span><input type="number" id="f_session_limit" min="0" value="0"></label>
+    <label class="fld"><span class="t" data-en="Audit log (--audit-log; empty = &lt;session dir&gt;/admin_audit.jsonl, both empty = off)">审计日志 (--audit-log；留空=会话目录/admin_audit.jsonl，两者都空则关闭)</span><input type="text" id="f_audit_log" placeholder="sessions/admin_audit.jsonl" data-en-ph="sessions/admin_audit.jsonl"></label>
+    <div style="font-size:11px;color:var(--tx2)" data-en-html="Rulebooks are built OFFLINE with <b>--rulebook-build &lt;file&gt; --rulebook-id &lt;id&gt; ...</b> (see README). Session / rulebook / audit review lives on a SEPARATE page: <b>/review</b> (not on this page). Changes here require an engine restart — the supervisor rebuilds the command line from this config.">规则包用 <b>--rulebook-build &lt;文件&gt; --rulebook-id &lt;id&gt; ...</b> 离线预置。会话 / 规则包 / 审计的审查在<b>独立页 /review</b>（不在本页）。此处改动需重启引擎——supervisor 会据此重建命令行。</div>
     <div class="sec" data-en="Sampling &amp; Speculative Decoding">采样与推测解码</div>
     <div class="chkrow"><input type="checkbox" id="f_spec"><label for="f_spec"><span data-en="Speculative decoding (--spec, n-gram draft + batch verify, greedy mode only)">推测解码 (--spec，n-gram 草稿 + 批量验证，仅贪婪模式)</span><span class="ptag" data-en="Client must send top_p=1.0">须客户端传 top_p=1.0</span><span class="ptag x86no" data-en="x86 2.4× slower">x86 反慢 2.4×</span></label></div>
     <label class="fld"><span class="t" data-en="Draft length (--spec-k)">草稿长度 (--spec-k)</span><input type="number" id="f_spec_k" min="1" max="16" value="4"></label>
@@ -387,6 +397,8 @@ a{color:var(--acc)}
     </div>
     <div class="msg" id="cfgmsg"></div>
   </div>
+
+  <!-- 会话审查 / 规则包 / 审计 已拆分为独立页：/review（见页面顶部导航） -->
 
   <!-- 日志 -->
   <div class="card" style="grid-column:1/-1">
@@ -689,8 +701,15 @@ function fillForm(c){
   $("f_prefill_q8").checked = !!c.prefill_q8;
   $("f_sparse_attn").checked = !!c.sparse_attn;
   $("f_sparse_k").value = c.sparse_k || 32;
+  $("f_sparse_prefill").checked = ((c.env || {}).VLLM_SPARSE_PREFILL === "1");
+  $("f_sparse_pf_k").value = c.sparse_pf_k == null ? 32 : c.sparse_pf_k;
+  $("f_sparse_pf_group").value = c.sparse_pf_group == null ? 4 : c.sparse_pf_group;
   $("f_disk_kv").checked = !!c.disk_kv;
   $("f_disk_kv_dir").value = c.disk_kv_dir || "";
+  $("f_rulebook_dir").value = c.rulebook_dir || "";
+  $("f_session_dir").value = c.session_dir || "";
+  $("f_session_limit").value = c.session_limit == null ? 0 : c.session_limit;
+  $("f_audit_log").value = c.audit_log || "";
   $("f_spec").checked = !!c.spec;
   $("f_spec_k").value = c.spec_k || 4;
   $("f_min_p").value = c.min_p == null ? 0 : c.min_p;
@@ -754,8 +773,15 @@ function collectForm(){
     prefill_q8: bool("f_prefill_q8"),
     sparse_attn: bool("f_sparse_attn"),
     sparse_k: num("f_sparse_k"),
+    sparse_prefill: bool("f_sparse_prefill"),
+    sparse_pf_k: num("f_sparse_pf_k"),
+    sparse_pf_group: num("f_sparse_pf_group"),
     disk_kv: bool("f_disk_kv"),
     disk_kv_dir: $("f_disk_kv_dir").value.trim(),
+    rulebook_dir: $("f_rulebook_dir").value.trim(),
+    session_dir: $("f_session_dir").value.trim(),
+    session_limit: num("f_session_limit"),
+    audit_log: $("f_audit_log").value.trim(),
     spec: bool("f_spec"),
     spec_k: num("f_spec_k"),
     min_p: parseFloat($("f_min_p").value) || 0,
@@ -783,6 +809,9 @@ function collectForm(){
 }
 function collectEnv(){
   const ev = { OMP_NUM_THREADS: $("f_omp").value.trim() || "4" };
+  /* 稀疏 prefill 只有 env 门（VLLM_SPARSE_PREFILL），CLI 侧是 --sparse-pf-k / --sparse-pf-group，
+   * 由 vllm_mgr.py 按本配置组装。 */
+  if ($("f_sparse_prefill").checked) ev.VLLM_SPARSE_PREFILL = "1";
   if (!$("f_q8_8x8").checked) ev.VLLM_Q8_8X8 = "0";
   if (!$("f_q8_repack").checked) ev.VLLM_DISABLE_Q8_REPACK = "1";
   if (!$("f_q4_repack").checked) ev.VLLM_DISABLE_Q4_REPACK = "1";
@@ -869,6 +898,9 @@ function applyFields(o){
   if (o.prefix_kv != null)       $("f_prefix_kv").checked = !!o.prefix_kv;
   if (o.sparse_attn != null)     $("f_sparse_attn").checked = !!o.sparse_attn;
   if (o.sparse_k != null)        $("f_sparse_k").value = String(o.sparse_k);
+  if (o.sparse_prefill != null)  $("f_sparse_prefill").checked = !!o.sparse_prefill;
+  if (o.sparse_pf_k != null)     $("f_sparse_pf_k").value = String(o.sparse_pf_k);
+  if (o.sparse_pf_group != null) $("f_sparse_pf_group").value = String(o.sparse_pf_group);
   if (o.l3_evict != null)        $("f_l3_evict").checked = !!o.l3_evict;
   if (o.l3_ratio != null)        $("f_l3_ratio").value = String(o.l3_ratio);
   if (o.l3_min_seq != null)      $("f_l3_min_seq").value = String(o.l3_min_seq);
@@ -1410,6 +1442,10 @@ $("langBtn").onclick = function(){
    * 不调 fillForm 以免覆盖用户未保存的表单编辑。 */
   eng("/admin/api/config").then(function(r){ if (r && r.devices) fillDeviceSelect(r); }).catch(function(){});
 };
+/* ============ 会话审查 / 规则包 / 审计 已拆分为独立页 /review ============
+ * 原「预置上下文 / 会话审查 / 管理面审计」三块卡片与脚本已迁出本页，
+ * 见 src/serve/review.html（引擎路由 /review）。本页只保留引擎/模型/配置/日志。 */
+
 $("mgrUrl").textContent = mgrBase;
 $("engUrl").textContent = location.protocol + "//" + location.hostname + ":" + (location.port || 80);
 refreshInitTexts();
