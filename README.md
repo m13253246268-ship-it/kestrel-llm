@@ -20,7 +20,7 @@
 | Weight residency | Fully resident (all layers) | New **per-layer residency** (`VLLM_VQF_STREAM=1`): resident weight RSS decoupled from model size / layer count; **plaintext VQF only** — VQF-Enc / SM2-signed weights are explicitly rejected (must stay fully resident) |
 | KV & long context | KV v1 | **KV v2 lazy allocation** + L3 tiered residency + P3 (L3 eviction × prefix reuse coexisting) |
 | Security & compliance | VQF at-rest encryption (SM4-CTR + HMAC-SM3), SM2 supply-chain signature | Adds **verifiable-inference attestation (schema 3, bound to the raw request body)**, verified in-browser or offline with zero dependencies |
-| x86-64 | none | Shipped x86-64 portability layer (`tools/build/build_x64.ps1` / `tools/build/check_x64.ps1`), **for functional self-test and bit-exactness comparison only — never a performance baseline** |
+| x86-64 | none | Shipped x86-64 portability layer (`tools/build/build_x64.ps1` / `tools/build/check_x64.ps1`), **for functional self-test and numerical-consistency comparison only — never a performance baseline** |
 | Benchmark points | 2026-09-05: cold start / 8K long context / KV restore (with llama.cpp side-by-side) | **2026-09-12**: per-layer vs full residency × {2B / 8B / 30B-A3B} × {combo ⑧ baseline, combo ①, combo ①+⑤}, 14 serve configurations |
 
 > Why they must not be mixed: v1 removed the GGUF/safetensors loading path and introduced
@@ -406,7 +406,7 @@ The time in "trade time for memory" scales with weight size divided by storage b
 - It does not coexist with expert windows (`VLLM_EW*`; EW owns the layer entry hook).
 - Per-layer residency compresses **weight residency**; the KV base is constrained separately by KV v2 lazy allocation (with `VLLM_KV_NOF32=1` resident memory can be pushed lower -- see [docs/KV缓存v2-惰性分配与分层驻留方案.md](docs/KV缓存v2-惰性分配与分层驻留方案.md)).
 - **The 2B tier has been removed from this chapter**: the `Qwen3-VL-2B-Instruct` dual weights (4.16 GB) used earlier are no longer on the active board; what exists now is `Qwen3-VL-2B-q8fix` (3.19 GB, q8 and not dual), a different quantization basis that must not be mixed with the old figures.
-- **The x86-64 branch is for functional self-test and bit-exactness comparison only** and is never a performance baseline.
+- **The x86-64 branch is for functional self-test and numerical-consistency comparison only** and is never a performance baseline.
 
 ---
 
@@ -432,9 +432,11 @@ cmake -B build-rk3588 && cmake --build build-rk3588 -j8
 #### x86_64 native build (Windows / MinGW, for functional and consistency self-tests)
 
 The engine's **primary target is aarch64**; the x86-64 branch (`vllm_platform.h`) exists only
-for **functional self-tests and bit-exactness comparison** and is **never a performance
+for **functional self-tests and numerical-consistency comparison** and is **never a performance
 baseline** — absolute throughput or speedups measured on x86 must not be extrapolated to the
-board.
+board. The two sides use different kernels (AVX2/scalar vs NEON/dotprod), so **cross-architecture
+bit-exact TOKIDS equality is not guaranteed** (measured bound: see the "bit-level determinism"
+section of [wiki/架构总览.md](wiki/架构总览.md)).
 
 ```powershell
 # Windows / MinGW-w64 (gcc must be on PATH, or pass -Gcc explicitly)
@@ -763,7 +765,7 @@ third-party project runtime is ever shipped with the engine.
   bumped to `VERSION 1.0.0`.
 - **x86_64 branch shipped**: `vllm_platform.h` provides an x86-64 (MinGW/MSVC) portability
   layer; `tools/build/build_x64.ps1` / `tools/build/check_x64.ps1` were added (parameterized, overridable
-  via `VLLM_GCC` / `VLLM_X64_OUTDIR`). **x86 is for functional self-test and bit-exactness
+  via `VLLM_GCC` / `VLLM_X64_OUTDIR`). **x86 is for functional self-test and numerical-consistency
   comparison only, never a performance baseline.**
 
 **Performance and memory**
