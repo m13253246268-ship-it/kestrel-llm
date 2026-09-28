@@ -1,0 +1,51 @@
+  vLLM-Kestrel: Axiom-Guided Exact-Attention         
+  Large Language Model Inference Engine          
+
+[DEV] device=arm-generic arch=arm64 class=embedded model=- npu=none recommended_wmode=dual
+
+=== [STREAM] layer-resident validation (VQF only) ===
+[STREAM] vqf_load OK (0.00s): dim=4096 layers=36 heads=32 kv=8 ffn=12288 vocab=151936 max_seq=8192
+[STREAM] rss_after_load  = 984 kB
+[TOK] Loaded 151669 tokens from vocab.bin (max_len=256)
+[TOK] match mode: indexed (slots=524288, 2.0 MB, load=0.29)
+[TOK] Special tokens: bos=151643 eos=151645 im_start=151644 im_end=151645 pad=151643
+[STREAM] tokenizer: 151669 tokens (eos=151645 im_start=151644 im_end=151645)
+[STREAM] rss_after_init  = 18588 kB
+[STREAM] prompt tokens = 502 (--stream-ctx 512)
+[STREAM] warmup done in 77.490s (discarded: 1 prefill + 8 decode)
+[STREAM] prefill 502 tokens in 72.262s (7 tok/s) [batch]
+[STREAM] rss_after_prefill = 4415656 kB
+[STREAM] decode mode: greedy (rep_pen=1.000 win=32)
+[STREAM] TOKIDS: 100062 t=1 ms=616 rss=4415656kB
+ 99371 t=2 ms=616 rss=4415656kB
+ 58814 t=3 ms=616 rss=4415656kB
+ 113272 t=4 ms=617 rss=4415656kB
+ 101158 t=5 ms=617 rss=4415656kB
+ 18493 t=6 ms=617 rss=4415656kB
+ 104949 t=7 ms=617 rss=4415656kB
+ 113272 t=8 ms=617 rss=4415656kB
+ 101925 t=9 ms=617 rss=4415976kB
+ 3837 t=10 ms=618 rss=4416300kB
+ 59879 t=11 ms=618 rss=4416888kB
+ 99371 t=12 ms=618 rss=4417152kB
+ 104137 t=13 ms=619 rss=4417416kB
+ 58814 t=14 ms=618 rss=4417680kB
+ 33108 t=15 ms=618 rss=4418268kB
+ 108248 t=16 ms=619 rss=4418916kB
+ 71356 t=17 ms=619 rss=4419240kB
+ 32665 t=18 ms=619 rss=4419564kB
+ 3837 t=19 ms=619 rss=4420092kB
+ 23031 t=20 ms=619 rss=4420416kB
+ 101940 t=21 ms=619 rss=4420740kB
+ 111390 t=22 ms=619 rss=4421064kB
+ 109054 t=23 ms=620 rss=4421652kB
+ 62926 t=24 ms=620 rss=4422240kB
+ 100627 t=25 ms=620 rss=4422564kB
+ 113272 t=26 ms=620 rss=4422828kB
+ 101991 t=27 ms=621 rss=4423416kB
+ 105535 t=28 ms=621 rss=4423740kB
+ 1773 t=29 ms=621 rss=4424004kB
+
+[STREAM] decoded 29 tokens, 619 ms/tok (1.62 tok/s)
+[STREAM] text: 逐层加载推理是一种在模型推理过程中，按层逐步加载和激活网络参数，以减少内存占用并提高推理效率的技术。
+[STREAM] rss_end = 4424004 kB

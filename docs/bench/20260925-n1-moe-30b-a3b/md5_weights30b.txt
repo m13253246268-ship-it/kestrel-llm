@@ -1,0 +1,4 @@
+3cf26c96ddafb234658c0287d85ef25b  /root/model/qwen3-30b-a3b/model-00001-of-00016.safetensors
+c200d04bc9dbe38c4bdcd9190ca3f800  /root/model/qwen3-30b-a3b/model-00002-of-00016.safetensors
+2672e85688d6da95c84e9e9560768f47  /root/model/qwen3-30b-a3b/model-00003-of-00016.safetensors
+6f4f35704ecc52b71daec12cf806b8f1  /root/model/qwen3-30b-a3b/model-00004-of-00016.safetensors

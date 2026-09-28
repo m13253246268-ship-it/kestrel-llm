@@ -18,6 +18,8 @@
 #include "vllm_attest.h"     /* verifiable-inference attestation (方案 2) */
 #include "vqf.h"             /* vqf_stream_* 运行时权重逐层驻留控制 (res policy) */
 #include "embedded_web.h"
+#include "vllm_rulebook.h"   /* 规则包注册中心：预置命名上下文（--rulebook-dir） */
+#include "vllm_session.h"    /* 服务端会话存储：会话分区 + 历史审查（--session-dir） */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -397,6 +399,10 @@ static void l3_user_apply(VLLMServerCtx *ctx, const char *user) {
 /* KV prefix reuse: minimum shared-prefix length (tokens) worth skipping. */
 #define PREFIX_KV_MIN_LCP 16
 
+/* 预置命名上下文（规则包）注入时从上下文窗口里保留的余量：规则前缀之外还要
+ * 放得下对话与生成本身，否则 prompt 会超窗（400）。 */
+#define RB_BUDGET_RESERVE 1024
+
 /* P3 前缀复用门（VLLM_L3_PREFIX_REUSE，默认关）。
  * 语义：L3 关 → 恒允许（与改动前逐位相同）；L3 开 → 只有门开才允许。
  * 注意 g_l3_evict 可被 admin 在运行时切（vllm_server.c 的 L3 on/off 分支），
@@ -487,6 +493,20 @@ static void ist_reset(VLLMServerCtx *ctx, int keep_lcp) {
         }
     }
     if (reuse) {
+        /* P3 修复（2026-09-17）：l3_restore_prefix() 只把**前缀范围内**的块从 Q4
+         * 载荷重建回 RAM（其 n_blocks = ceil(prefix_len/bs)），而本请求**余量**
+         * （keep_lcp..n）要写入的块可能同样被 Phase-2 驱逐置成了 NULL ——
+         * st_qwen_kv_rebuild_freed() 原先只在全量 prefill 分支调过。
+         * 症状：部分前缀复用（针位不同的长提示）时，续算 prefill 写 NULL 块 →
+         * 进程直接消失，日志停在 "reuse N-token KV prefix, prefill rest" 之后，
+         * 没有任何 [PREFILL] 进度行（板端 8B / 7.2K / ROUND1 复现）。
+         * 注意 vllm_safetensors.c 里该函数的注释已记录过同类事故：
+         * "the previous version crashed with a NULL deref on the second prefill
+         * after an eviction" —— 那次只修了全量路径。 */
+        size_t rb = st_qwen_kv_rebuild_freed(st);
+        if (rb > 0)
+            fprintf(stderr, "[KV] rebuilt %.1f MB of L3-freed KV blocks "
+                            "(reuse path)\n", (double)rb / 1048576.0);
         for (int l = 0; l < nl; l++) st->cache_len[l] = keep_lcp;
         st->seq_len = keep_lcp;
         st->mrope_pos = 0;   /* text-only; prefill_ex sets it for multimodal */
@@ -661,6 +681,135 @@ void vllm_server_reset_session(VLLMServerCtx *ctx) {
     ctx->last_mark_cap = 0;
     ctx->last_was_mm = 0;
     dkv_free_list(ctx);
+}
+
+/* ================================================================
+ * 规则包预处理（工业边缘：预置命名上下文）
+ *
+ * 声明见 vllm_server.h。流程：渲染 system 前导块 → ist_reset(全量) →
+ * st_qwen_model_prefill_batch → st_kv_disk_save 落盘 KV 快照 → 写元数据 →
+ * 复位上下文。**不新增数值路径**：prefill 与落盘全部复用既有原语。
+ *
+ * 超出窗口的手册（n > max_kv_slots 或 DISKKV_MAX_TOKENS）不在此落快照：运行
+ * 时由 vllm_rb_select_text 分块检索注入，并在首次成功使用后懒预热快照。
+ * ================================================================ */
+int vllm_rb_build(VLLMServerCtx *ctx, const char *text,
+                  const struct VLLMRulebook *meta, char *err, size_t errcap) {
+    if (err && errcap) err[0] = '\0';
+    if (!ctx || !ctx->rulebook_on || !ctx->rulebook_dir[0]) {
+        if (err) snprintf(err, errcap, "rulebook dir not configured (--rulebook-dir)");
+        return -1;
+    }
+    if (ctx->load_state != 2 || !ctx->ist || !ctx->tok || !ctx->w) {
+        if (err) snprintf(err, errcap, "model not loaded");
+        return -1;
+    }
+    if (!text || !text[0]) {
+        if (err) snprintf(err, errcap, "empty rulebook text");
+        return -1;
+    }
+    if (strlen(text) > VLLM_RB_MAX_TEXT) {
+        if (err) snprintf(err, errcap, "rulebook text too large (>%d bytes)",
+                          VLLM_RB_MAX_TEXT);
+        return -1;
+    }
+    if (meta) {
+        char probe[VLLM_RB_ID_MAX];
+        snprintf(probe, sizeof(probe), "%s", meta->id);
+        if (!probe[0]) { if (err) snprintf(err, errcap, "rulebook id required"); return -1; }
+    } else {
+        if (err) snprintf(err, errcap, "rulebook metadata required");
+        return -1;
+    }
+
+    VLLMRulebook rb;
+    memset(&rb, 0, sizeof(rb));
+    rb = *meta;
+    rb.text = NULL;                     /* 源文本由调用方持有，此处不用 */
+    rb.created_s = (long)time(NULL);
+    rb.updated_s = rb.created_s;
+    vllm_rb_hash_hex(text, strlen(text), rb.hash);
+    vllm_rb_model_fp(ctx, rb.model_fp);
+    rb.n_chunks = vllm_rb_chunk_count(text);
+
+    STQwenInferenceState *st = ctx->ist;
+    int max_ids = st->max_kv_slots;
+    if (max_ids < 1024) max_ids = 1024;
+
+    int *ids = (int *)malloc(((size_t)max_ids + 16) * sizeof(int));
+    int *scratch = (int *)malloc(((size_t)max_ids + 16) * sizeof(int));
+    if (!ids || !scratch) {
+        free(ids); free(scratch);
+        if (err) snprintf(err, errcap, "out of memory");
+        return -1;
+    }
+    /* n_tokens 必须报**真实**长度：源文本可能远超窗口，若沿用窗口大小的缓冲
+     * 编码会被截断低报（超长手册的分块检索与审查视图都依赖这个数字）。
+     * 最坏情况 1 token/字节，文本上限 VLLM_RB_MAX_TEXT → 至多约 1MB 缓冲，
+     * 只在离线预处理路径分配，不影响服务路径。 */
+    {
+        size_t tcap = strlen(text) + 16;
+        int *tcnt = (int *)malloc(tcap * sizeof(int));
+        if (tcnt) {
+            rb.n_tokens = qwen_tokenizer_encode(ctx->tok, text, tcnt, (int)tcap);
+            free(tcnt);
+        }
+    }
+
+    char *block = vllm_rb_render_block(text);
+    if (!block) {
+        free(ids); free(scratch);
+        if (err) snprintf(err, errcap, "out of memory");
+        return -1;
+    }
+    int n = qwen_tokenizer_encode(ctx->tok, block, ids, max_ids + 16);
+    free(block);
+    free(scratch);
+    if (n <= 0) {
+        free(ids);
+        if (err) snprintf(err, errcap, "tokenization failed");
+        return -1;
+    }
+
+    /* 元数据先落盘（同时建目录），随后才写 KV 快照。 */
+    if (vllm_rb_write_meta(ctx, &rb, text, err, errcap) != 0) {
+        free(ids);
+        return -1;
+    }
+
+    int snap_ok = 0;
+    if (n <= max_ids && n <= DISKKV_MAX_TOKENS) {
+        ist_reset(ctx, 0);               /* 独立于既有上下文的全量复位 */
+        if (st_qwen_model_prefill_batch(st, ids, n) != 0) {
+            if (err) snprintf(err, errcap, "prefill failed");
+            ist_reset(ctx, 0);
+            free(ids);
+            return -1;
+        }
+        char path[1800];
+        vllm_rb_kv_path(ctx, &rb, ids, n, path, sizeof(path));
+        if (st_kv_disk_save(st, path, ids, n) == 0) snap_ok = 1;
+    }
+
+    /* 复位：预处理用的 prefill 不作为后续请求的复用前缀。 */
+    ist_reset(ctx, 0);
+    ctx->last_n = 0;
+    ctx->last_was_mm = 0;
+
+    fprintf(stderr, "[RB] built '%s' v%s: text=%d tok, block=%d tok, chunks=%d, "
+                    "model_fp=%s, kv_snapshot=%s\n",
+            rb.id, rb.version[0] ? rb.version : "-", rb.n_tokens, n, rb.n_chunks,
+            rb.model_fp[0] ? rb.model_fp : "-", snap_ok ? "yes" : "no (runtime lazy)");
+    fflush(stderr);
+    if (!snap_ok) {
+        if (err) snprintf(err, errcap,
+                          "metadata written; text exceeds prefill window "
+                          "(block=%d > %d/%d) -> chunked injection at runtime",
+                          n, max_ids, DISKKV_MAX_TOKENS);
+        /* 元数据已落盘，手册可用；仅无预处理快照，不算失败。 */
+    }
+    free(ids);
+    return 0;
 }
 
 /* Longest shared prefix of the request tokens with any checkpoint; returns
@@ -898,6 +1047,35 @@ static int spec_build_draft(const int *prompt, int n_prompt,
     return 0;
 }
 
+/* VLLM_SPEC_VEXACT=1：声明「验证路径已与 decode 位级等价」，因而可直接采用
+ * `st_qwen_model_prefill_batch` 写入的 KV，免去 KV 回滚 + 逐 token 重放。
+ * 依据：L1 对拍实测 PASS（2026-09-24，板端 8B-q4，`VLLM_SPEC_VNORM=1` +
+ * VEXACT + `spec_k<=3` ⇒ 逐层 KV 行与逐 token decode 全等，见
+ * `src/model/vllm_safetensors.c` 的 spec_verify_attention 注释）。
+ * 前置条件（缺一不可，否则应回退到重放路径）：
+ *   ① VLLM_SPEC_VNORM=1（批式 RMSNorm 归约序对齐）
+ *   ② VLLM_SPEC_VEXACT=1（验证注意力走 decode 同核 + 小批强制 C tile 序）
+ *   ③ spec_k <= 8（VEXACT 下 `q4x4_gemm_batched` 对 n_batch<=8 强制逐 token
+ *      C tile 序且 tile 拉满；>8 会回到非等价的 M4h 主段）
+ * 默认 0 = 原「回滚 + 重放」路径（零回归）。 */
+static int spec_vexact_env(void) {
+    const char *e = getenv("VLLM_SPEC_VEXACT");
+    return (e && e[0] == '1') ? 1 : 0;
+}
+
+/* VLLM_SPEC_FAST=1：放开「位级一致」硬约束，改求「输出 token 几乎一致」。
+ * 验证走 st_qwen_model_prefill_batch 的默认路径（n_batch=K>3 自动走 asm 快路
+ * GEMM + batched attention），免去 KV 回滚 + 逐 token 重放，直接采用验证 KV
+ * 与验证 logits。代价：验证路径（asm 快路 f16 scale + 32 元素一次）与 decode
+ * 路径（C tile f32 scale + 16 元素一次）位级不同，logits 差 ULP + 系统性 f16
+ * 偏差，near-tie 位置可能翻转 → 输出与无 spec 几乎一致但非逐 token 位级一致
+ * （重复/模板文本更明显，历史既证 repeat_same 90 vs 86）。
+ * 默认 0 = 原「回滚 + 重放」路径（位级一致，零回归）。 */
+static int spec_fast_env(void) {
+    const char *e = getenv("VLLM_SPEC_FAST");
+    return (e && e[0] == '1') ? 1 : 0;
+}
+
 /* Emit one generated token: record id, decode to text, append to the output
  * (SSE chunk or buffer), update gen / first-token time. Returns 1 if the
  * token is an end token (stop decoding), -1 if the streaming client went
@@ -999,12 +1177,56 @@ static int decode_loop(VLLMServerCtx *ctx, double temperature, double top_p,
     int spec_k = ctx->spec_k;
     if (spec_k < 1) spec_k = 1;
     if (spec_k > SPEC_DRAFT_MAX) spec_k = SPEC_DRAFT_MAX;
+    /* VEXACT 前置条件③：spec_k<=8。q4 GEMM 在 n_batch>3 时会切到「M4h 舍入序」
+     * 主段；VEXACT 下 `q4x4_gemm_batched` 对 n_batch<=8 强制走逐 token C tile 序
+     * （与 decode 同一 worker ⇒ 位级等价）并把 tile 拉满到整批，故上限取该区间 8。 */
+    int spec_vexact = spec_vexact_env();
+    if (spec_vexact && spec_k > 8) spec_k = 8;
+    if (spec_vexact) {
+        static int vexact_logged = 0;
+        if (!vexact_logged) {
+            vexact_logged = 1;
+            fprintf(stderr, "[SPEC] VLLM_SPEC_VEXACT=1：spec_k<=%d、验证 KV 直接采用"
+                            "（免重放）；前置 VLLM_SPEC_VNORM=1 须同时开启\n", spec_k);
+            fflush(stderr);
+        }
+    }
+    /* VLLM_SPEC_FAST：放开位级一致（免重放 + asm 快路验证，输出几乎一致）。 */
+    int spec_fast = spec_fast_env();
+    if (spec_fast) {
+        static int fast_logged = 0;
+        if (!fast_logged) {
+            fast_logged = 1;
+            fprintf(stderr, "[SPEC] VLLM_SPEC_FAST=1：验证走 asm 快路 + 免重放，"
+                            "输出与无 spec 几乎一致（near-tie 可能翻转，非位级一致）\n");
+            fflush(stderr);
+        }
+    }
     float *vlog = NULL;
     if (spec_on) {
         /* +1 extra batch slot: slot K holds the pre-verify context logits
          * backup for the lossless decode-path replay (see spec block). */
         vlog = (float *)malloc((size_t)(SPEC_DRAFT_MAX + 1) * vc * sizeof(float));
         if (!vlog) spec_on = 0;
+    }
+    /* 神经草稿头（P2）：VLLM_SPEC_DRAFT=<f32 权重文件> 时用 1 层草稿头替换 n-gram
+     * 草稿生成。草稿头前向吃主模型最后一层 hidden（st->hidden）。 */
+    STDraftHead draft_head;
+    int draft_head_on = 0;
+    memset(&draft_head, 0, sizeof(draft_head));
+    if (spec_on) {
+        const char *dp = getenv("VLLM_SPEC_DRAFT");
+        if (dp && dp[0]) {
+            if (st_draft_head_load(&draft_head, dp, st->cfg.dim, st->cfg.ffn_dim,
+                                   st->cfg.n_kv_heads, st->cfg.head_dim) == 0) {
+                draft_head_on = 1;
+                fprintf(stderr, "[SPEC] VLLM_SPEC_DRAFT=%s：神经草稿头（f32 1层）替换 n-gram\n", dp);
+                fflush(stderr);
+            } else {
+                fprintf(stderr, "[SPEC] VLLM_SPEC_DRAFT 加载失败：%s\n", dp);
+                fflush(stderr);
+            }
+        }
     }
     int spec_tries = 0, spec_hits = 0, spec_kv_rolls = 0;
 
@@ -1016,7 +1238,11 @@ static int decode_loop(VLLMServerCtx *ctx, double temperature, double top_p,
         int nl = st->weights.n_layers_allocated;
 
         if (spec_on && gn < gcap) {
-            int K = spec_build_draft(prompt_ids, n_prompt, gids, gn, spec_k, draft);
+            int K;
+            if (draft_head_on)
+                K = st_draft_head_forward(st, &draft_head, st->hidden, spec_k, draft, vlog);
+            else
+                K = spec_build_draft(prompt_ids, n_prompt, gids, gn, spec_k, draft);
             if (K > 0) {
                 spec_tries++;
                 /* Draft starts at the current KV length (multimodal prompts
@@ -1067,15 +1293,31 @@ static int decode_loop(VLLMServerCtx *ctx, double temperature, double top_p,
                 if (st->mrope_pos > 0) st->mrope_pos = gv_pos;
                 memcpy(st->logits, saved_logits, (size_t)vc * sizeof(float));
                 int real_acc = 0;
-                for (int i = 0; i < acc_probe; i++) {
-                    int top = 0;
-                    float tb = -1.0e30f;
-                    for (int t = 0; t < vc; t++)
-                        if (st->logits[t] > tb) { tb = st->logits[t]; top = t; }
-                    if (top == tok->eos_id || top == tok->im_end_id) break;
-                    if (top != draft[i]) break;
-                    st_qwen_model_forward(st, draft[i]);
-                    real_acc++;
+                int fast = spec_fast || spec_vexact;
+                if (fast) {
+                    /* FAST/VEXACT 免重放：直接采用验证 KV——把长度计数设回
+                     * 「已接受前缀」即可（被拒位置的行落在 cache_len 之外，
+                     * 稍后被正常 forward 覆盖），logits 取该前缀末位的验证输出。
+                     *   VEXACT = 验证 KV 与 decode 位级等价（L1 实测 PASS）
+                     *   FAST   = 放开位级一致，验证走 asm 快路（输出几乎一致） */
+                    real_acc = acc_probe;
+                    for (int l = 0; l < nl; l++) st->cache_len[l] = L + real_acc;
+                    st->seq_len = L + real_acc;
+                    if (st->mrope_pos > 0) st->mrope_pos = gv_pos + real_acc;
+                    if (real_acc > 0)
+                        memcpy(st->logits, vlog + (size_t)(real_acc - 1) * vc,
+                               (size_t)vc * sizeof(float));
+                } else {
+                    for (int i = 0; i < acc_probe; i++) {
+                        int top = 0;
+                        float tb = -1.0e30f;
+                        for (int t = 0; t < vc; t++)
+                            if (st->logits[t] > tb) { tb = st->logits[t]; top = t; }
+                        if (top == tok->eos_id || top == tok->im_end_id) break;
+                        if (top != draft[i]) break;
+                        st_qwen_model_forward(st, draft[i]);
+                        real_acc++;
+                    }
                 }
                 if (getenv("VLLM_SPEC_DBG")) {
                     int q2 = 0;
@@ -1228,6 +1470,7 @@ static int decode_loop(VLLMServerCtx *ctx, double temperature, double top_p,
         fflush(stderr);
     }
     free(vlog);
+    if (draft_head_on) st_draft_head_free(&draft_head);
 
     if (met) {
         double t_end = st_now_sec();
@@ -1258,16 +1501,23 @@ static int decode_loop(VLLMServerCtx *ctx, double temperature, double top_p,
         if (ln > 0) vhttp_stream_write(conn, line, (size_t)ln);
         /* Final event: per-request metrics for the chat client. */
         if (met) {
-            char mline[512];
+            char mline[768];
             double tok_s = met->total_ms > 0.0
                            ? (double)met->n_tokens * 1000.0 / met->total_ms : 0.0;
-            snprintf(mline, sizeof(mline),
+            int ln2 = snprintf(mline, sizeof(mline),
                      "data: {\"object\":\"chat.completion.metrics\",\"metrics\":"
                      "{\"prompt_tokens\":%d,\"last_user_tokens\":%d,\"n_tokens\":%d,"
-                     "\"ttft_ms\":%.1f,\"tpot_ms\":%.1f,\"total_ms\":%.1f,\"prefill_ms\":%.1f,\"tok_s\":%.2f}}\n\n",
+                     "\"ttft_ms\":%.1f,\"tpot_ms\":%.1f,\"total_ms\":%.1f,"
+                     "\"prefill_ms\":%.1f,\"tok_s\":%.2f,"
+                     "\"trace_id\":\"%s\",\"rulebook_id\":\"%s\","
+                     "\"rulebook_version\":\"%s\",\"rulebook_tokens\":%d,"
+                     "\"reused_prefix\":%s}}\n\n",
                      met->prompt_tokens, met->last_user_tokens, met->n_tokens,
-                     met->ttft_ms, met->tpot_ms, met->total_ms, met->prefill_ms, tok_s);
-            vhttp_stream_write(conn, mline, (size_t)strlen(mline));
+                     met->ttft_ms, met->tpot_ms, met->total_ms, met->prefill_ms, tok_s,
+                     met->trace_id, met->rulebook_id, met->rulebook_version,
+                     met->rulebook_tokens, met->reused_prefix ? "true" : "false");
+            if (ln2 > 0 && ln2 < (int)sizeof(mline))
+                vhttp_stream_write(conn, mline, (size_t)ln2);
         }
         /* history_tokens 事件：完整 token 序列（prompt + generated），客户端
          * 保存供下轮 context_tokens 精确复用。 */
@@ -1345,6 +1595,8 @@ static int decode_loop(VLLMServerCtx *ctx, double temperature, double top_p,
 static int run_completion(VLLMServerCtx *ctx, const char *prompt,
                           const char *tail_prompt,
                           const int *ctx_tokens, int n_ctx,
+                          const int *pfx_tokens, int pfx_n,
+                          const char *pfx_kv_path,
                           double temperature, double top_p, double min_p,
                           int top_k, int thinking,
                           int max_tokens, int stream, VHttpConn *conn,
@@ -1376,7 +1628,11 @@ static int run_completion(VLLMServerCtx *ctx, const char *prompt,
      *    它恢复的是原始 f32 KV 快照，不经 Q4、无 NULL 块问题，与 L3 重建是
      *    两套机制，混进同一门会让归因困难。
      * context_tokens 是其上层的精确变体：客户端回传的序列与 last_ids 完全
-     * 一致（LCP==n_ctx）时 KV 行真实存在，可直接 keep。 */
+     * 一致（LCP==n_ctx）时 KV 行真实存在，可直接 keep。
+     * pfx_tokens/pfx_n/pfx_kv_path 是"预置命名上下文"（规则包）的变体：prompt
+     * 前缀与规则包渲染块逐 token 一致（pfx_n 个）时，用 pfx_kv_path 指向的
+     * KV 快照恢复该段前缀（st_kv_disk_load），只 prefill 余量。读不到快照或
+     * 前缀不匹配即静默回退全量 prefill（正确性优先）。 */
     int keep = 0;
     if (ctx_tokens && n_ctx > 0 && ctx->prefix_kv && prefix_kv_allowed() &&
         !ctx->last_was_mm &&
@@ -1417,8 +1673,29 @@ static int run_completion(VLLMServerCtx *ctx, const char *prompt,
         n_ids = qwen_tokenizer_encode(tok, prompt, ids, max_ids + 16);
         if (n_ids <= 0) { free(ids); return -1; }
         if (n_ids > max_ids) { free(ids); return -2; }
+        /* 预置命名上下文（规则包）KV 快照复用：优先级最高（前缀最长且最稳
+         * 定）。门与既有前缀复用一致（prefix_kv / prefix_kv_allowed /
+         * !last_was_mm）；`--no-prefix-kv` 或 reuse_prefix_cache=false 时调用
+         * 方不传 pfx_kv_path，自然回退全量 prefill。 */
         if (ctx->prefix_kv && prefix_kv_allowed() && !ctx->last_was_mm &&
-            ctx->last_n > 0) {
+            pfx_tokens && pfx_kv_path && pfx_kv_path[0] &&
+            pfx_n >= PREFIX_KV_MIN_LCP && pfx_n < n_ids &&
+            kv_lcp(pfx_tokens, pfx_n, ids, n_ids) == pfx_n) {
+            if (st_kv_disk_load(st, pfx_kv_path, pfx_n) == 0) {
+                keep = pfx_n;
+                ctx->rulebook_hits++;
+                if (met) met->reused_prefix = 1;
+                fprintf(stderr, "[RB] reuse %d-token preset-context KV prefix, "
+                                "prefill rest\n", pfx_n);
+                fflush(stderr);
+            } else {
+                fprintf(stderr, "[RB] preset-context KV snapshot unusable: %s "
+                                "(full prefill)\n", pfx_kv_path);
+                fflush(stderr);
+            }
+        }
+        if (keep == 0 && ctx->prefix_kv && prefix_kv_allowed() &&
+            !ctx->last_was_mm && ctx->last_n > 0) {
             int l = kv_lcp(ctx->last_ids, ctx->last_n, ids, n_ids);
             /* l == n_ids（新 prompt 与上次完全相同）不能直接 keep = n_ids：
              * prefill rest=0 不刷新 logits，decode 首步会采样到上次请求末尾的
@@ -2234,6 +2511,66 @@ static void attest_attach(VJson *root, const char *user, const char *body_sha,
     }
 }
 
+/* ---------- 工业边缘：预置上下文 / 会话的落盘收尾 ---------- */
+
+/* 推理成功后把规则包前缀 KV 落盘（首次使用时懒预热；此后同规则+同分块选择
+ * 即可直接复用）。门与既有 disk-kv 一致：L3 驱逐时冷块可能已是 NULL，跳过。 */
+static void rb_lazy_snapshot(VLLMServerCtx *ctx, const char *rb_id,
+                             const char *rb_ver, const int *ids, int n) {
+    if (!ctx->rulebook_on || !ctx->ist || !rb_id || !rb_id[0]) return;
+    if (!ids || n < PREFIX_KV_MIN_LCP) return;
+    if (g_l3_evict) return;                       /* L3 可能已把冷块置 NULL */
+    if (n > DISKKV_MAX_TOKENS) return;            /* 与既有快照上限同源 */
+    if (n > ctx->ist->cache_len[0]) return;       /* 该前缀 KV 尚未算好 */
+    VLLMRulebook tag;
+    memset(&tag, 0, sizeof(tag));
+    snprintf(tag.id, sizeof(tag.id), "%s", rb_id);
+    snprintf(tag.version, sizeof(tag.version), "%s", rb_ver ? rb_ver : "");
+    char path[1800];
+    vllm_rb_kv_path(ctx, &tag, ids, n, path, sizeof(path));
+    FILE *f = fopen(path, "rb");
+    if (f) { fclose(f); return; }                 /* 快照已存在 */
+    if (st_kv_disk_save(ctx->ist, path, ids, n) != 0) return;
+    fprintf(stderr, "[RB] cached %d-token preset-context KV -> %s\n", n, path);
+    fflush(stderr);
+}
+
+/* 推理成功后把会话时间线（含本轮 assistant）落盘；写失败只告警，不影响响应。
+ * 目录 LRU 清理按 1/32 概率触发（会话目录有上限，无需每请求遍历）。 */
+static void sess_commit(VLLMServerCtx *ctx, const VJson *body, const char *sid,
+                        const char *tenant, const char *user,
+                        const char *rb_id, const char *answer, int n_tok,
+                        double last_ms) {
+    if (!ctx->session_on || !sid || !sid[0]) return;
+    const VJson *tl = vjson_obj_get(body, "__sess_timeline");
+    if (!tl) return;
+    VJson *fin = vllm_sess_append_turns(tl, NULL, answer);
+    char err[256];
+    if (vllm_sess_write(ctx, tenant, user, sid, rb_id, fin, n_tok, last_ms, err,
+                        sizeof(err)) != 0) {
+        fprintf(stderr, "[SESS] write failed: %s\n", err);
+        fflush(stderr);
+    } else if (getenv("VLLM_DEBUG_SESSION")) {
+        fprintf(stderr, "[SESS] saved %s (%d msgs)\n", sid,
+                (int)vjson_array_len(fin));
+        fflush(stderr);
+    }
+    vjson_free(fin);
+    static int gc_tick = 0;
+    if ((++gc_tick & 31) == 0) vllm_sess_gc(ctx);
+}
+
+/* 把请求级标识填进 metrics（随响应/SSE 返回，供审计与排障对齐）。 */
+static void met_fill_ids(VLLMMetrics *met, const char *trace, const char *rbid,
+                         const char *rbver, int rbtok) {
+    if (!met) return;
+    snprintf(met->trace_id, sizeof(met->trace_id), "%s", trace ? trace : "");
+    snprintf(met->rulebook_id, sizeof(met->rulebook_id), "%s", rbid ? rbid : "");
+    snprintf(met->rulebook_version, sizeof(met->rulebook_version), "%s",
+             rbver ? rbver : "");
+    met->rulebook_tokens = rbtok;
+}
+
 static void handle_chat(VLLMServerCtx *ctx, const VHttpRequest *req,
                         VHttpResponse *resp, VHttpConn *conn) {
     /* Inference endpoints are unavailable until the model is loaded
@@ -2248,8 +2585,16 @@ static void handle_chat(VLLMServerCtx *ctx, const VHttpRequest *req,
     }
 
     const VJson *messages = vjson_obj_get(body, "messages");
-    if (!messages || messages->type != VJ_ARRAY || vjson_array_len(messages) == 0) {
-        json_error(resp, 400, "'messages' array is required");
+    int have_msgs = messages && messages->type == VJ_ARRAY &&
+                    vjson_array_len(messages) > 0;
+    /* 工业边缘：会话模式下允许"只发本轮 query + session_id"（历史由服务端从
+     * 会话文件重建，客户端上行更小）。其余情况仍要求 messages 非空。 */
+    const char *q_probe = vjson_str(vjson_obj_get(body, "query"));
+    const char *sid_probe = vjson_str(vjson_obj_get(body, "session_id"));
+    int query_only = q_probe && q_probe[0] && sid_probe && sid_probe[0];
+    if (!have_msgs && !query_only) {
+        json_error(resp, 400,
+                   "'messages' array is required (or session_id + query)");
         vjson_free(body);
         return;
     }
@@ -2284,6 +2629,41 @@ static void handle_chat(VLLMServerCtx *ctx, const VHttpRequest *req,
     if ((jv = vjson_obj_get(body, "stream")) && jv->type == VJ_BOOL)
         stream = jv->u.boolean;
     const char *user = vjson_str(vjson_obj_get(body, "user"));
+
+    /* ---- 工业边缘：预置命名上下文 + 会话分区（可选，缺省不改行为） ----
+     * session_id / tenant_id / user_id 三元组对会话分区；rulebook_id 选中一个
+     * 预置上下文（规则包）；rulebook_version 由客户端钉住版本（不匹配即拒绝，
+     * 使规则变更必然失效旧缓存）；query 是"客户端只发本轮提问"的简写（服务端
+     * 从会话文件重建历史）；reuse_prefix_cache=false 显式关闭规则前缀复用。 */
+    const char *session_id = vjson_str(vjson_obj_get(body, "session_id"));
+    const char *tenant_id  = vjson_str(vjson_obj_get(body, "tenant_id"));
+    const char *user_id    = vjson_str(vjson_obj_get(body, "user_id"));
+    const char *query      = vjson_str(vjson_obj_get(body, "query"));
+    int reuse_prefix = 1;
+    if ((jv = vjson_obj_get(body, "reuse_prefix_cache")) && jv->type == VJ_BOOL)
+        reuse_prefix = jv->u.boolean;
+    char rb_id_buf[VLLM_RB_ID_MAX];
+    char rb_ver_buf[VLLM_RB_VER_MAX];
+    rb_id_buf[0] = '\0';
+    rb_ver_buf[0] = '\0';
+    int rb_tokens_val = 0;   /* 规则前缀实际注入的 token 数（观测/响应） */
+    {
+        const char *s = vjson_str(vjson_obj_get(body, "rulebook_id"));
+        if (s && s[0]) snprintf(rb_id_buf, sizeof(rb_id_buf), "%s", s);
+        s = vjson_str(vjson_obj_get(body, "rulebook_version"));
+        if (s && s[0]) snprintf(rb_ver_buf, sizeof(rb_ver_buf), "%s", s);
+    }
+    /* 会话分区用 user_id（未给则退回 user 字段），anon 为兜底。 */
+    const char *part_user = (user_id && user_id[0]) ? user_id
+                            : ((user && user[0]) ? user : "anon");
+    /* trace_id：本请求追溯标识（响应/SSE 的 metrics 里返回，供审计对齐）。 */
+    char trace_id[48];
+    {
+        char bh[VLLM_RB_HASH_HEX];
+        vllm_rb_hash_hex(req->body, req->body_len, bh);
+        snprintf(trace_id, sizeof(trace_id), "%.8s%08lx",
+                 bh, (unsigned long)unix_now() & 0xFFFFFFFFul);
+    }
 
     /* context_mode (per-request context budget):
      *   "full"  (default) : whole conversation history every turn
@@ -2327,8 +2707,124 @@ static void handle_chat(VLLMServerCtx *ctx, const VHttpRequest *req,
         }
     }
 
+    /* ---- 服务端会话历史重建（--session-dir）----
+     * 带 session_id 且带 query 时，客户端只发本轮提问；服务端从会话文件取回
+     * 时间线并拼上本轮 user，历史只在本会话（tenant/user/session 分区）内使用。
+     * 只带 session_id 不带 query 时以客户端 messages 为准，推理后整条时间线
+     * 落盘，供管理页审查。 */
+    int sess_active = 0;
+    if (ctx->session_on && session_id && session_id[0]) {
+        char *raw = vllm_sess_read(ctx, tenant_id, part_user, session_id);
+        VJson *stored = raw ? vllm_sess_parse(raw) : NULL;
+        const VJson *stored_msgs = stored ? vjson_obj_get(stored, "messages") : NULL;
+        if (stored_msgs && stored_msgs->type != VJ_ARRAY) stored_msgs = NULL;
+        /* 会话绑定的规则包：本次未显式指定时继承（会话→规则的一致性）。 */
+        if (!rb_id_buf[0] && stored) {
+            const char *s = vjson_str(vjson_obj_get(stored, "rulebook_id"));
+            if (s && s[0]) snprintf(rb_id_buf, sizeof(rb_id_buf), "%s", s);
+        }
+        int server_hist = (query && query[0]);
+        VJson *tl = server_hist ? vllm_sess_append_turns(stored_msgs, query, NULL)
+                                : vjson_clone(messages);
+        if (server_hist) ctx->session_turns++;
+        /* 逻辑时间线（不含规则前导块）挂在 body 上：body 在 handle_chat 的所有
+         * 退出路径都会被 vjson_free，故无需在错误分支逐个释放。 */
+        vjson_obj_set(body, "__sess_timeline", tl);
+        if (server_hist) {
+            vjson_obj_set(body, "messages", vjson_clone(tl));
+            messages = vjson_obj_get(body, "messages");
+        }
+        sess_active = 1;
+        {
+            char sp[1400];
+            vllm_sess_path(ctx, tenant_id, part_user, session_id, sp, sizeof(sp));
+            fprintf(stderr, "[SESS] %s%s tenant=%s user=%s msgs=%d\n", sp,
+                    server_hist ? " (server-history)" : " (client-array)",
+                    tenant_id && tenant_id[0] ? tenant_id : "anon", part_user,
+                    (int)vjson_array_len(messages));
+            fflush(stderr);
+        }
+        free(raw);
+        vjson_free(stored);
+    }
+    /* "只发 query" 依赖会话存储：未开 --session-dir 时无历史可重建，明确拒绝。 */
+    if (!have_msgs && !sess_active) {
+        json_error(resp, 400, "session_id + query requires --session-dir on the "
+                              "server (or send a 'messages' array)");
+        vjson_free(body);
+        return;
+    }
+
     int max_ids = ctx->ist->max_kv_slots;
     if (max_ids < 1024) max_ids = 1024;
+
+    /* ---- 预置命名上下文（规则包）注入（--rulebook-dir）----
+     * 规则文本作为**最前面的 system 前导块**注入（客户端自己的 system 消息随
+     * 后排），使其成为 prompt 的稳定前缀 —— 与预处理时落盘的 KV 快照同源，
+     * 于是该段 KV 可被逐 token 复用（见 run_completion 的 pfx_* 参数）。 */
+    if (ctx->rulebook_on && rb_id_buf[0]) {
+        VLLMRulebook rb;
+        if (vllm_rb_load(ctx, rb_id_buf, &rb) != 0) {
+            char msg[256];
+            snprintf(msg, sizeof(msg), "rulebook '%s' not found", rb_id_buf);
+            json_error(resp, 404, msg);
+            vjson_free(body);
+            return;
+        }
+        if (rb_ver_buf[0] && strcmp(rb_ver_buf, rb.version) != 0) {
+            char msg[384];
+            snprintf(msg, sizeof(msg),
+                     "rulebook '%s' version mismatch: requested '%s', available '%s'",
+                     rb_id_buf, rb_ver_buf, rb.version);
+            json_error(resp, 409, msg);
+            vllm_rb_free(&rb);
+            vjson_free(body);
+            return;
+        }
+        /* 模型指纹一致才敢复用 KV 快照（防"重建引擎后混用旧检查点"这一项目
+         * 自陈的唯一真实风险）；不一致仍注入文本，只是回退全量 prefill。 */
+        char cur_fp[VLLM_RB_HASH_HEX];
+        vllm_rb_model_fp(ctx, cur_fp);
+        int fp_ok = rb.model_fp[0] && cur_fp[0] &&
+                    strcmp(rb.model_fp, cur_fp) == 0;
+        if (!fp_ok) {
+            fprintf(stderr, "[RB] model fingerprint mismatch (rulebook=%s "
+                            "current=%s): KV snapshot invalidated -> full prefill\n",
+                    rb.model_fp[0] ? rb.model_fp : "-", cur_fp[0] ? cur_fp : "-");
+            fflush(stderr);
+        }
+        /* 规则前缀之外必须留出对话与生成余量，否则 prompt 超窗（400）。 */
+        int budget = max_ids - RB_BUDGET_RESERVE;
+        if (budget < 256) budget = 256;
+        char *luq = last_user_text_str(messages);
+        const char *qsel = (query && query[0]) ? query : luq;
+        int sel_tok = 0;
+        char *sel = vllm_rb_select_text(ctx, &rb, qsel, budget, &sel_tok);
+        const char *inject = sel ? sel : (rb.text ? rb.text : "");
+        VJson *arr2 = vjson_new_array();
+        VJson *sm = vjson_new_object();
+        vjson_obj_set(sm, "role", vjson_new_string("system"));
+        vjson_obj_set(sm, "content", vjson_new_string(inject));
+        vjson_array_push(arr2, sm);
+        size_t nm = vjson_array_len(messages);
+        for (size_t i = 0; i < nm; i++)
+            vjson_array_push(arr2, vjson_clone(vjson_array_get(messages, i)));
+        vjson_obj_set(body, "messages", arr2);
+        messages = vjson_obj_get(body, "messages");
+
+        snprintf(rb_ver_buf, sizeof(rb_ver_buf), "%s", rb.version);
+        rb_tokens_val = sel_tok;
+        vjson_obj_set(body, "__rb_inject", vjson_new_string(inject));
+        vjson_obj_set(body, "__rb_reuse", vjson_new_bool(fp_ok));
+        fprintf(stderr, "[RB] inject rulebook '%s' v%s: %d tokens%s%s\n",
+                rb.id, rb.version[0] ? rb.version : "-", sel_tok,
+                sel ? " (partial)" : " (full)",
+                fp_ok ? "" : " [KV reuse disabled]");
+        fflush(stderr);
+        free(sel);
+        free(luq);
+        vllm_rb_free(&rb);
+    }
 
     /* "上一问长度" metric: token count of the last user message (text). */
     int last_user_tokens = last_user_text_tokens(ctx, messages);
@@ -2702,10 +3198,17 @@ static void handle_chat(VLLMServerCtx *ctx, const VHttpRequest *req,
         vjson_free(body);
         return;
     }
+    /* 规则包未启用（无 --rulebook-dir）时不得把请求里的 id 回显成"已生效的
+     * 规则包"：metrics / 审计把 rulebook_id 当作"实际使用的规则"的证据，
+     * 回显未生效的 id 会让排障与审计误判。降级模式下留空（配合
+     * rulebook_tokens=0 / reused_prefix=false，调用方能量化"未生效"）。 */
+    const char *met_rb_id  = ctx->rulebook_on ? rb_id_buf  : "";
+    const char *met_rb_ver = ctx->rulebook_on ? rb_ver_buf : "";
     if (batch_mode) {
         /* ---- continuous-batching path (shared weights, private KV) ---- */
         VLLMMetrics met; memset(&met, 0, sizeof(met));
         met.last_user_tokens = last_user_tokens;
+        met_fill_ids(&met, trace_id, met_rb_id, met_rb_ver, rb_tokens_val);
         VBatchReq r; memset(&r, 0, sizeof(r));
         r.prompt = prompt;
         r.temperature = temperature;
@@ -2794,6 +3297,37 @@ static void handle_chat(VLLMServerCtx *ctx, const VHttpRequest *req,
     /* Per-user L3 isolation (reap offline users, bind this request's file). */
     l3_user_apply(ctx, user);
 
+    /* ---- 预置上下文 KV 快照复用（串行文本路径）----
+     * 渲染规则前导块并编码，得到"本次实际注入前缀"的 token 序列与该选择对应
+     * 的快照路径；run_completion 校验 prompt 前缀与之逐 token 一致后，从快照
+     * 恢复整段 KV，只 prefill 余量。batch 路径不支持（与既有前缀复用同一
+     * 边界）；reuse_prefix_cache=false 或模型指纹不符时不传路径 → 全量 prefill。 */
+    int *rb_ids = NULL; int n_rb = 0;
+    char rb_kv_path[1800];
+    rb_kv_path[0] = '\0';
+    {
+        const char *rx = vjson_str(vjson_obj_get(body, "__rb_inject"));
+        int rb_reuse_ok = vjson_bool(vjson_obj_get(body, "__rb_reuse"));
+        if (rx && rx[0] && reuse_prefix && rb_reuse_ok) {
+            char *blk = vllm_rb_render_block(rx);
+            if (blk) {
+                rb_ids = (int *)malloc(((size_t)max_ids + 16) * sizeof(int));
+                if (rb_ids)
+                    n_rb = qwen_tokenizer_encode(ctx->tok, blk, rb_ids,
+                                                 max_ids + 16);
+                free(blk);
+            }
+            if (rb_ids && n_rb > 0) {
+                VLLMRulebook tag;
+                memset(&tag, 0, sizeof(tag));
+                snprintf(tag.id, sizeof(tag.id), "%s", rb_id_buf);
+                snprintf(tag.version, sizeof(tag.version), "%s", rb_ver_buf);
+                vllm_rb_kv_path(ctx, &tag, rb_ids, n_rb, rb_kv_path,
+                                sizeof(rb_kv_path));
+            }
+        }
+    }
+
     if (stream) {
         resp->status = 200;
         resp->content_type = "text/event-stream";
@@ -2808,10 +3342,18 @@ static void handle_chat(VLLMServerCtx *ctx, const VHttpRequest *req,
         StrBuf sink; sb_init(&sink);
         VLLMMetrics met; memset(&met, 0, sizeof(met));
         met.last_user_tokens = last_user_tokens;
+        met_fill_ids(&met, trace_id, met_rb_id, met_rb_ver, rb_tokens_val);
         int rc = run_completion(ctx, prompt, tail_prompt, ctx_tokens, n_ctx,
+                                rb_ids, n_rb, rb_kv_path,
                                 temperature, top_p, min_p, top_k, thinking,
                                 max_tokens, 1, conn, &sink, &met, NULL, NULL,
                                 user, bodyhash);
+        if (rc == 0) {
+            sess_commit(ctx, body, session_id, tenant_id, part_user,
+                        rb_id_buf[0] ? rb_id_buf : NULL,
+                        sink.s ? sink.s : "", met.n_tokens, met.total_ms);
+            rb_lazy_snapshot(ctx, rb_id_buf, rb_ver_buf, rb_ids, n_rb);
+        }
         sb_free(&sink);
         (void)rc;   /* streaming errors surface as a dropped connection */
         infer_done(ctx);
@@ -2819,12 +3361,20 @@ static void handle_chat(VLLMServerCtx *ctx, const VHttpRequest *req,
         StrBuf out; sb_init(&out);
         VLLMMetrics met; memset(&met, 0, sizeof(met));
         met.last_user_tokens = last_user_tokens;
+        met_fill_ids(&met, trace_id, met_rb_id, met_rb_ver, rb_tokens_val);
         int *hist_ids = NULL; int hist_n = 0;
         int rc = run_completion(ctx, prompt, tail_prompt, ctx_tokens, n_ctx,
+                                rb_ids, n_rb, rb_kv_path,
                                 temperature, top_p, min_p, top_k, thinking,
                                 max_tokens, 0, NULL, &out, &met,
                                 &hist_ids, &hist_n, user, bodyhash);
         infer_done(ctx);
+        if (rc == 0) {
+            sess_commit(ctx, body, session_id, tenant_id, part_user,
+                        rb_id_buf[0] ? rb_id_buf : NULL,
+                        out.s ? out.s : "", met.n_tokens, met.total_ms);
+            rb_lazy_snapshot(ctx, rb_id_buf, rb_ver_buf, rb_ids, n_rb);
+        }
         if (rc == -2) {
             json_error(resp, 400, "Prompt exceeds the context limit");
         } else if (rc != 0) {
@@ -2867,7 +3417,16 @@ static void handle_chat(VLLMServerCtx *ctx, const VHttpRequest *req,
                 vjson_obj_set(mj, "prefill_ms", vjson_new_number(met.prefill_ms));
                 vjson_obj_set(mj, "tok_s", vjson_new_number(
                     met.total_ms > 0.0 ? (double)met.n_tokens * 1000.0 / met.total_ms : 0.0));
+                /* 工业边缘：请求级标识（追溯 / 规则包版本 / 前缀复用命中）。 */
+                vjson_obj_set(mj, "trace_id", vjson_new_string(trace_id));
+                vjson_obj_set(mj, "rulebook_id", vjson_new_string(met_rb_id));
+                vjson_obj_set(mj, "rulebook_version", vjson_new_string(met_rb_ver));
+                vjson_obj_set(mj, "rulebook_tokens",
+                              vjson_new_number((double)rb_tokens_val));
+                vjson_obj_set(mj, "reused_prefix",
+                              vjson_new_bool(met.reused_prefix));
                 vjson_obj_set(root, "metrics", mj);
+                vjson_obj_set(root, "trace_id", vjson_new_string(trace_id));
                 /* 方案 2：文本串行非流式出证。 */
                  attest_attach(root, user, bodyhash, out.s ? out.s : "",
                               met.prompt_tokens, met.n_tokens, "stop",
@@ -2888,6 +3447,7 @@ static void handle_chat(VLLMServerCtx *ctx, const VHttpRequest *req,
     free(prompt);
     free(ctx_tokens);
     free(tail_prompt);
+    free(rb_ids);
     vjson_free(body);
 }
 
@@ -3036,7 +3596,8 @@ static void handle_completions(VLLMServerCtx *ctx, const VHttpRequest *req,
 
     StrBuf out; sb_init(&out);
     VLLMMetrics met; memset(&met, 0, sizeof(met));
-    int rc = run_completion(ctx, full, NULL, NULL, 0, temperature, top_p, min_p,
+    int rc = run_completion(ctx, full, NULL, NULL, 0, NULL, 0, NULL,
+                            temperature, top_p, min_p,
                             top_k, thinking, max_tokens, 0, NULL, &out, &met, NULL,
                             NULL, user, bodyhash);
     infer_done(ctx);
@@ -3388,10 +3949,16 @@ static void handle_chat_page(VHttpResponse *resp) {
 void vllm_admin_route(VLLMServerCtx *ctx, const VHttpRequest *req,
                       VHttpResponse *resp);
 
+/* Defined in vllm_admin.c: 审查台独立页（/review），与 /admin/ 分离。 */
+void vllm_review_page(VHttpResponse *resp);
+
 static void server_handler(const VHttpRequest *req, VHttpResponse *resp,
                            VHttpConn *conn, void *ud) {
     VLLMServerCtx *ctx = (VLLMServerCtx *)ud;
-    resp->status = 404;
+    /* 匹配到的路由默认成功：各 handler 自行覆盖（错误分支显式置 400/403/404/5xx）。
+     * 未匹配的路由在下方各自的 else 分支里显式置 404 —— 这里不能预置 404，
+     * 否则 handler 里的错误码会被"已置 404"状态吞掉/顶替。 */
+    resp->status = 200;
     resp->content_type = "application/json";
 
     /* Unload gate: every HTTP handler is counted (inflight_handlers). The
@@ -3439,6 +4006,10 @@ static void server_handler(const VHttpRequest *req, VHttpResponse *resp,
         handle_completions(ctx, req, resp, conn);
     } else if (strncmp(req->path, "/admin", 6) == 0) {
         vllm_admin_route(ctx, req, resp);
+    } else if (strcmp(req->path, "/review") == 0 ||
+               strcmp(req->path, "/review/") == 0) {
+        /* 审查台：独立页面（数据仍走同源的 /admin/api/*，单一管理面 API）。 */
+        vllm_review_page(resp);
     } else if (strcmp(req->path, "/chat") == 0 || strcmp(req->path, "/chat/") == 0) {
         handle_chat_page(resp);
     } else if (strcmp(req->path, "/") == 0) {

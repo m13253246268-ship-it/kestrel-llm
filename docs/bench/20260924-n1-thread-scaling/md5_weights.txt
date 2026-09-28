@@ -1,0 +1,4 @@
+8012a51fdb79d60217512eb2d1afd066  /root/model/qwen3vl8b/model-00001-of-00004.safetensors
+6513dfbc4e61edbab2f8272ee9c37370  /root/model/qwen3vl8b/model-00002-of-00004.safetensors
+213b255f999353b0a64942000c4b6ae3  /root/model/qwen3vl8b/model-00003-of-00004.safetensors
+55a35a6f0f79a24371a16bce129e3a15  /root/model/qwen3vl8b/model-00004-of-00004.safetensors

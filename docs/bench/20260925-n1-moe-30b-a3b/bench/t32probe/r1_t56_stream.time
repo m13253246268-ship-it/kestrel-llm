@@ -1,0 +1,32 @@
+[VQF] MoE v3: experts=128 top_k=8 moe_ffn=768 shared=0 ffn_dim=98304 router=48.0MB (f32 resident) experts=q4
+[VQF-STREAM] enabled keep=1 nl=48 segs=11 per-layer=334.1MB data=16847.2MB resident~808.4MB rss=988kB
+[QWEN] Inference state ready (max_seq=8192).
+[PREFILL] 246/246 tokens done
+[PREFILL-TIMING] n=246 total=5031.0ms | GEMM=4816.6ms(95.7%) ATTN=78.6ms( 1.6%) OTHER=135.8ms( 2.7%)
+[PREFILL-KERNELS] QKV=132.2ms( 2.7%) O=108.0ms( 2.2%) GATEUP=4576.4ms(95.0%) DOWN=0.0ms( 0.0%)
+[PREFILL] 246/246 tokens done
+[PREFILL-TIMING] n=246 total=4998.6ms | GEMM=4798.9ms(96.0%) ATTN=78.6ms( 1.6%) OTHER=121.1ms( 2.4%)
+[PREFILL-KERNELS] QKV=131.1ms( 2.7%) O=108.0ms( 2.3%) GATEUP=4559.8ms(95.0%) DOWN=0.0ms( 0.0%)
+	Command being timed: "env VLLM_VQF_STREAM=1 OMP_NUM_THREADS=56 VLLM_THREADS=56 /root/GitHupSRC/build-rk3588/vllm_kestrel --stream-test --model /root/model/qwen3-30b-a3b --stream-ctx 256 --stream-n 32 --warmup"
+	User time (seconds): 483.04
+	System time (seconds): 84.08
+	Percent of CPU this job got: 2080%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:27.25
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 1013264
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 43061
+	Minor (reclaiming a frame) page faults: 4636092
+	Voluntary context switches: 1620015
+	Involuntary context switches: 1064
+	Swaps: 0
+	File system inputs: 0
+	File system outputs: 64
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0

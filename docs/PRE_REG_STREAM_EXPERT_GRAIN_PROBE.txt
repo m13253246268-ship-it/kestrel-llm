@@ -1,0 +1,393 @@
+PRE_REG_STREAM_EXPERT_GRAIN_PROBE.txt -- 方向 E（逐层驻留的权重读取降到「专家级」）立项探针
+跑前冻结（探针先行）。ASCII 判据编号。禁止事后改阈值。
+
+================================================================================
+0. 要决定什么
+================================================================================
+是否立项「方向 E」：把逐层驻留（VLLM_VQF_STREAM）档下 decode 的权重读取/页驻留粒度
+从「整层」降到「专家级」，使每 token 的 madvise 区间与「本 token 实际激活的
+top_k=8 专家」成正比，而不是与整层（128 专家）成正比。
+
+已确认的两轴事实（见 §1）：
+  · 计算是稀疏的：decode 只算 top_k=8 个激活专家（st_moe_ffn_sparse_q4）。
+  · 但驻留是整层的：vqf_stream_setup 按 step=bytes/nl 建 seg，对 q4_gate/up/down
+    而言该段含全部 128 专家（per-layer=334.1MB）；层入口对整个 l+1 层发
+    WILLNEED、对 l-keep 整层发 DONTNEED。
+
+本探针不实现「专家级驻留」，只量该方向的**乐观地板**：把专家段的 madvise 区间
+直接清零（纯按需缺页）后 decode 剩多少。地板达标才授权设计真正的
+「常驻集有界 + 专家级驱逐」策略（形态 A）；地板不达标则整条方向关闭。
+
+================================================================================
+1. 背景数字（本轮实测，引用须同引口径）
+================================================================================
+N1/aarch64（Neoverse-N1 64 核 / 245GiB / 页缓存热），Qwen3-30B-A3B q4 VQF 17.67GB：
+  full    decode 109.5 ms/tok（t32）
+  stream  decode 387.0 ms/tok（t32）  ⇒ Δ = +277.5 ms/tok
+  Δ 在 T=32/40/48/56/64 上为 277.5/281.0/293.0/292.0/306.5（几乎不随算力变）
+  逐层 TOKIDS 与全层逐位相同（md5 b1304c6459e0，0/32 差异）
+  来源 docs/bench/20260925-n1-moe-30b-a3b/{MANIFEST.txt §3.2, bench/t32probe/}
+
+机制量化（本探针的依据）：
+  现档每 token madvise 区间 = 334.1MiB/layer × 48 × 2(WILLNEED+DONTNEED)
+                            = 32.0 GiB ≈ 8.21M 页
+  277.5 ms / 8.21M 页 ≈ 33.8 ns/页（syscall 计数被排除：1056 次/token 仅 ≈263µs/次）
+  跨模型反证：8B（稠密 6.60GB）Δ=+157ms；30B-A3B（MoE，激活 ~1.6GB）Δ=+398ms。
+            Δ 之比 2.54 ≈ 模型字节比 2.68，≠ 激活字节比 0.24
+            ⇒ 开销 ∝ 被 madvise 的整层区间字节，不 ∝ 激活权重
+  来源 wiki/性能与基准.md L44-49（板端 v1.0 --stream-test 冷页缓存，8B/30B）
+
+几何（专家级收窄的可行性边界）：
+  gate/up 专家段 = 768×2048 elt → 884736 B = 216 页（精确整页对齐）⇒ 可 0% 过取
+  down         = rows=d, cols=ff, 4 行组 221184 B=54 页；专家列带 1728 B/行组
+                 → 页 4096 B 与专家带 1728 B 不对齐、页被邻专家共享
+                 → 单专家 3.33×，top-8 并集地板 ≈ 2.3×（**down 不可达 0%**，已决策接受）
+  收窄后每层理想区间 ≈ attn/norm 10.1 + gate/up 13.5 + down 16 ≈ 40 MiB（vs 334 MiB）
+
+================================================================================
+2. 装置
+================================================================================
+主装置（**出判据**）：N1/aarch64 云实例（245GiB；L3 档需放弃专家段驱逐，RSS 会增长到
+  接近全模型，故只有 245GiB 机器能跑 L3）。模型 Qwen3-30B-A3B-q4 VQF。
+  同 boot、每格一个独立进程、flock 单实例、升/降序交替、2 轮取中位。
+  线程：OMP_NUM_THREADS = VLLM_THREADS = 32（decode 最优平台）；测后清空。
+  页缓存：**热**（每格 --warmup + 脚本开头全局丢弃预跑）——本探针的对象是
+  PTE/madvise 成本，冷缓存会把 eMMC I/O 混进来。
+
+复现装置（**只作旁证，不出判据**）：RK3588 15.6GiB 板端仅可跑 L0/L1/L2/L4；
+  L3 在 30B 上不可跑（RSS 超 RAM）。板端结论只能由形态 A 实装后另立项验证。
+
+x86（本机 MinGW）：**只作功能/位级自检**（探针默认关零回归 + 各档 TOKIDS 逐位一致），
+  不得出任何性能结论。
+
+新开关（默认关；未设 = 逐字节现状）：
+  VLLM_STREAM_PROBE=1  L1：只保留整层 DONTNEED(l-keep)，关闭整层 WILLNEED(l+1)
+  VLLM_STREAM_PROBE=2  L2：只保留整层 WILLNEED(l+1)，关闭整层 DONTNEED(l-keep)
+  VLLM_STREAM_PROBE=3  L3：**专家段（q4/q8_gate/up/down 且 MoE 几何成立）不做任何
+                          madvise**（纯按需缺页）；非专家段（attn/norm 等）行为同 L0。
+                          = 「区间→0」乐观地板；RSS 无界（故意）
+  VLLM_STREAM_PROBE=4  L4：区间与 L0 完全相同，但每次调用按 16 片等分发出
+                          （syscall 计数对照，模拟专家粒度调用数）
+自证：每个探针档起动时打一行
+  `[STREAM-PROBE] mode=<n> ...`（未设时无此行）；
+  mode=3 且文件中无 MoE 专家段时额外打 WARN 并声明退化为 L0。
+
+测量：`--stream-test --model <30b-q4-dir> --warmup --stream-ctx 256 --stream-n 32`
+指标：`[STREAM] decoded 32 tokens, X ms/tok`（32-token 均值）。
+      **禁止引单 token [DEC-SINGLE]**（M8）。对照档 F = 不设 VLLM_VQF_STREAM。
+
+================================================================================
+3. 臂与判据（冻结）
+================================================================================
+  F     不设 VLLM_VQF_STREAM                -> decode_full
+  L0    VLLM_VQF_STREAM=1                   -> 现状（整层 WILLNEED + 整层 DONTNEED）
+  L1    VLLM_VQF_STREAM=1 VLLM_STREAM_PROBE=1
+  L2    VLLM_VQF_STREAM=1 VLLM_STREAM_PROBE=2
+  L3    VLLM_VQF_STREAM=1 VLLM_STREAM_PROBE=3   （**核心探针**）
+  L4    VLLM_VQF_STREAM=1 VLLM_STREAM_PROBE=4
+
+  Δ_X := decode_ms(X) - decode_ms(F)      （X ∈ L0..L4）
+
+  G0（validity，否则整轮 VOID）
+    - 各档自证行与 mode 值一致；n=32；decode 段 > 0；两轮同档抖动 <= 3%。
+    - **TOKIDS 门：F 与 L0..L4 全部逐位相同**（只动 PTE/页缓存，浮点序零改动）。
+      任一档 TOKIDS 不同 = VOID（先查是否误触数值路径）。
+    - 零回归自证：不设 VLLM_STREAM_PROBE 时，L0 的 TOKIDS 与本改动前的基线二进制
+      逐位相同（x86 自检承担；见 §6）。
+    - L4 若在 x86 上自检时 mode 不生效（Windows 无 madvise 语义差异）不影响判据，
+      但须在 N1 复验自证行。
+
+  P-EW-1（机制，决策前提）
+      Δ_L3 / Δ_L0 <= 0.35
+        达标 => 机制成立：专家段区间占逐层开销 >= 65%，授权立项形态 A（设计
+                「常驻集有界 + 专家级驱逐」策略，down 按页带、接受 2.3× 地板）。
+        不达标 => **方向关闭**：逐层开销不由专家段区间主导，不再投入实现。
+      （Δ_L3 是乐观地板：真实形态 A 还要付「激活段重新 fault/读回」与驱逐 syscall，
+        故达标只授权立项，不是收益承诺。）
+
+  P-EW-2（syscall 计数控制）
+      Δ_L4 <= 1.05 × Δ_L0
+        达标 => 调用次数（16×）非主导项，专家级多次小调用是安全的。
+        不达标 => 形态 A 的专家级驱逐必须**合并区间**（批量驱逐），不得逐专家调用。
+
+  两判据均在 2 轮中位值上评估；同 boot 复测抖动应 <= 1%（历史口径）。
+  L1/L2 不设阈值，只作归因（分离 WILLNEED 与 DONTNEED 的贡献）。
+
+================================================================================
+4. 已知局限（引用结果时必须同引）
+================================================================================
+(a) Δ_L3 是**乐观地板**：它假设专家段一页都不必碰。真实形态 A 仍需把本 token 激活的
+    专家页 fault 回来（约 1.6GB/token 的按需缺页），且 down 受页共享限制地板 2.3×。
+    故 P-EW-1 达标只授权「立项设计」，不承诺最终收益。
+(b) L3 放弃专家段驱逐 ⇒ RSS 无界（30B 上会涨到接近全模型）。它是**判别实验**，
+    不是可用档；绝不可把 L3 当生产配置发布或在 15.6GiB 板上跑。
+(c) 本探针只覆盖 **decode 单请求串行**（--stream-test 骨架），不含并发服务；
+    prefill 侧逐层 Δ 极小（N1 t32 全层 6.892s vs 逐层 6.981s），本方向不为 prefill。
+(d) 本探针**不采集** sel[] 复用率。复用率采集已在形态 A 预注册
+    （docs/PRE_REG_STREAM_SA.txt，开关 VLLM_SA_SELPROBE=1）定义为**只读诊断项**：
+    它用于解释稳态 |A_{t-1}\A_t| 的实际大小，形态 A/D1 的驱逐策略本身不依赖它
+    （保留集取本 token 真实激活集）。本归档无 sel 落盘，不得臆测 6% 的 i.i.d. 估计。
+(e) 静态热窗路线（VLLM_EW，专家窗口）**不在本探针的授权范围**：其层入口驱逐的参照系是
+    「本层全体非热专家段」，H=8 时 310.5MiB/层（仅 DONTNEED），相对「激活 8 专家段」
+    仍是 23 倍量级。注意：**归档从未实测 EW**（wiki 只记「VLLM_EW* 源文件未给收益数字」，
+    ≠ 实测零收益；且其区间约为现状 W+D 的一半量级，按「成本 ∝ 区间」假设本应有可观收益）。
+    故 EW 的成败是**待证假设**，由本探针 L1/L2/L3（W/D 拆分 + 区间→0 地板）间接裁决；
+    本探针若达标，走的也是「动态激活集」路线，不是静态热窗。
+(f) 逐层驱逐**不减少**每 token 的权重读取总量，只改变数据来源与 madvise 区间
+    （include/model/vqf.h L64-65）。形态 A 同样不减少读取总量，只减少区间。
+    对外表述不得写成「减少了读取量」。
+(g) 待办的实现期检查（本探针不涉及）：EW/PF 的几何自检只验 expB%4096==0，不验张量
+    offset 的页对齐（转换器只保 64B）⇒ 专家段可能多跨 1 页（<=0.46%）。形态 A 实装时
+    须把 offset 页对齐纳入门控。
+(h) down 的 0% 过取在本约束下不可达（页 4096 vs 专家带 1728，页被邻专家共享）。
+    要 0% 只能改 VQF 文件布局（专家-major 连续），属格式级改动，须另立项并走质量门。
+    （VLLM_DN_D2 是匿名内存 repack，+5.2GB 且不可回收，与省 RAM 目标冲突，不可用。）
+
+================================================================================
+5. 红线（本探针必须守住）
+================================================================================
+1. 只改 PTE/页缓存（MADV_WILLNEED/DONTNEED、posix_fadvise），**不触碰任何浮点求和/
+   归约/融合顺序** ⇒ 天然满足位级一致（A≡C），以 TOKIDS 逐位相同为判据。
+2. **禁止对加密 VQF 施加任何逐层/逐专家驱逐**（VQF-Enc 页为脏 COW，DONTNEED 会丢
+   解密数据）。setup 的 REFUSED 分支不得放宽。
+3. 不得与近似轨混同：不加 --sparse-attn、不进 FAST 模式；本方向必须落在精确轨。
+4. 默认关 = 逐字节现状；不得改动既有 VLLM_VQF_STREAM / VLLM_EW / VLLM_DN_D2 语义。
+5. 未经用户显式批准，不得把探针开关转正为生产默认、不得 push/PR。
+
+================================================================================
+6. 本机 x86 功能/位级自检（只证零回归与 A≡C，不出性能结论）
+================================================================================
+基线（改动前二进制）：
+  build-x64-base/vllm_kestrel_x64.exe  sha256 5CA3E7904818F701044200DFDCD75C41D9CC61B882AA63F9A606B8F19B4A989E
+  1,364,495 B
+模型 Qwen3-VL-2B-q8local（本机；稠密非 MoE，故 mode=3 的专家段为空、退化为 L0 —— 预期）
+命令 --stream-test --model <2B-q8local> --stream-ctx 32 --stream-n 8，OMP=VLLM_THREADS=4
+  F  : TOKIDS 100062（full  arm）
+  L0 : TOKIDS 100062（stream=1；[VQF-STREAM] enabled keep=1 nl=28 segs=11
+                      per-layer=51.0MB data=3043.7MB resident~1615.2MB）
+改动后自检（已完成；只证零回归与 A≡C，不出性能结论）：
+  build-x64-probe/vllm_kestrel_x64.exe  sha256 2226F16221C3684002305F8901249B218D649A86B4712876CD8850FF1C43364F
+  1,365,614 B（gcc 16.1.0 MinGW-w64，与基线同命令）
+  命令同上（--stream-ctx 32 --stream-n 8，OMP=VLLM_THREADS=4）：
+    F : TOKIDS 100062  ms=54   rss=1,823,180kB              无 [STREAM-PROBE] 行
+    L0: TOKIDS 100062  ms=374  rss=  412,664kB              （= 基线二进制同值 -> 零回归 PASS）
+    L1: TOKIDS 100062  ms=284  rss=  412,596kB  mode=1 expert_segs=0
+    L2: TOKIDS 100062  ms=112  rss=1,823,140kB  mode=2 expert_segs=0（无驱逐 -> RSS 涨到全层，预期）
+    L3: TOKIDS 100062  ms=368  rss=  412,656kB  mode=3 expert_segs=0 + WARN
+        （稠密 2B 文件无 MoE 专家段 -> 按定义退化为 L0；368 vs 374 在噪声内，符合预期）
+    L4: TOKIDS 100062  ms=382  rss=  412,652kB  mode=4 expert_segs=0（区间同 L0）
+  结论：六档 TOKIDS 全部 100062 -> 零回归 PASS + A≡C PASS；各档自证行与 mode 值一致。
+  复跑 tools/build/check_x64.ps1 -OutDir .\build-x64-probe：--test-l3 16 PASS/0 FAIL、
+  --test-sparse 9/9、X64 CHECK PASSED。
+  边界：本机 x86 的 ms 值无任何性能含义（Windows 无 madvise 异步语义 + 该模型为稠密 2B）；
+  L1/L2/L4 的 ms 差只作机制旁证，判据一律以 N1 为准。
+
+  【MoE 闭环（2026-09-25 追加；原「本机无法覆盖 expert_segs>0」的空白已闭合）】
+  本地用 vqf_convert（build.bat 同参）把 Modl/Qwen3-30B-A3B safetensors 转 q4 VQF：
+    产物 Modl/Qwen3-30B-A3B-q4local/model.vqf = 17,665,601,544 B
+      （与 N1 归档逐字节同尺寸；flags=0x223 = Q8_8X8|Q4_4X4|EMB_F16|MOE；15 tensors）
+    补齐 vocab.bin（md5 207fbf4194ca8ae384b221882a21be2a，与 30B 同源）+ config.json
+  命令：--stream-test --model <30b-q4local> --stream-ctx 32 --stream-n 8，OMP=VLLM_THREADS=8，
+        **VLLM_ACTQ=0 VLLM_ACTQ16=0（必设，见下「x86 默认轨」）**
+    F : TOKIDS 151667  rss=11,168,612kB
+    L0: TOKIDS 151667  rss=  510,736kB  [VQF-STREAM] enabled keep=1 nl=48 segs=11
+                                        per-layer=334.1MB data=16847.2MB resident~808.4MB
+    L1: TOKIDS 151667  rss=  511,888kB  mode=1 expert_segs=3
+    L2: TOKIDS 151667  rss=11,168,592kB mode=2 expert_segs=3
+    L3: TOKIDS 151667  rss=10,680,504kB mode=3 expert_segs=3
+    L4: TOKIDS 151667  rss=  511,860kB  mode=4 expert_segs=3
+  ⇒ 六档 TOKIDS 逐位相同（A≡C 在真实 MoE 上成立）；expert_segs=3 证明专家段分支生效；
+    L3 的 RSS 10.68GB（专家段全不驱逐）符合设计预期（无界为故意）；
+    [VQF-STREAM] 自证行与 N1 归档逐字段相同（per-layer/data/resident~）⇒ 跨机复现口径。
+    边界：x86 的 ms（F107/L0 1228/L1 395/L2 759/L3 199/L4 1255）无性能含义，只作机制旁证。
+
+  【x86 默认轨（必须同引）】x86 的 actq16_env() **默认返回 1**（除非显式 VLLM_ACTQ16=0，
+  vllm_safetensors.c L11403-L11407）⇒ x86 上 MoE q4 的缺省轨是 **s16-dot 近似轨**；
+  ARM 侧是恒 0 的编译期桩（L11534-L11543）。所以：
+    - **x86 上做 MoE 位级对拍必须显式 VLLM_ACTQ16=0（并 VLLM_ACTQ=0）**，否则是近似轨；
+    - **N1/RK3588（ARM）不受影响**，精确轨即缺省（与 README「精确轨日志不含 [ACTQ]/[ACTQ16] 行」一致）。
+
+================================================================================
+7. N1 交接命令（跑前须先确认：模型目录、页缓存热、同 boot）
+================================================================================
+前提：aarch64 原生构建（binary sha256 记入日志头）；模型 30B-A3B-q4 单目录
+      （model.vqf = 17,665,601,544 B）。每格一个独立进程 + flock 单实例；
+      升/降序交替；2 轮取中位；脚本开头另有全局丢弃预跑。
+
+共同前缀：
+  OMP_NUM_THREADS=32 VLLM_THREADS=32 VLLM_TP_SPIN=200000 VLLM_NPU_FORCE_CPU=1 \
+  VLLM_ACTQ=0 \
+  ./vllm_kestrel --stream-test --model <30b-q4-dir> --warmup --stream-ctx 256 --stream-n 32
+  （VLLM_ACTQ=0 用于显式锁精确轨；ARM 侧 actq16 是编译期恒 0 的桩，无需设置，见 §6
+    「x86 默认轨」。每格日志须确认**不含**任何 [ACTQ]/[ACTQ16] 行。）
+
+六格环境变量：
+  F : （不设 VLLM_VQF_STREAM，不设 VLLM_STREAM_PROBE）
+  L0: VLLM_VQF_STREAM=1
+  L1: VLLM_VQF_STREAM=1 VLLM_STREAM_PROBE=1
+  L2: VLLM_VQF_STREAM=1 VLLM_STREAM_PROBE=2
+  L3: VLLM_VQF_STREAM=1 VLLM_STREAM_PROBE=3   # 仅 245GiB 的 N1 可跑（RSS 无界）
+  L4: VLLM_VQF_STREAM=1 VLLM_STREAM_PROBE=4
+
+每格必须落盘自证：
+  - 二进制 sha256 / mtime（与构建日志错误行一并核验；不看返回码）
+  - model.vqf md5
+  - 整机 ENV 头 + load + buff/cache
+  - 逐格采样 /proc/<pid>/status 的 Threads（nlwp_max == 32）
+  - 引擎 stdout 全文（须含 [VQF-STREAM] enabled 行；探针档须含 [STREAM-PROBE] mode 行）
+  - 指标行 `[STREAM] decoded 32 tokens, X ms/tok`
+判据：见 §3（G0 / P-EW-1 / P-EW-2）。不达标即关闭方向，禁止事后回改阈值。
+RK3588 复现（只作旁证）：只跑 F/L0/L1/L2/L4（L3 在 30B 上会 OOM），
+  --threads 4（big.LITTLE 特异），冷/热页缓存档须分别标注，结论不跨机外推。
+
+【板端旁证（2026-09-25 跑前冻结；仅旁证，不构成任何判据）】
+  装置：orangepi5plus（RK3588，8 核 4×A76+4×A55；RAM 15,964MB；swap 7,982MB）；
+        模型 /mnt/VQF/qwen3-30B-A3B-q4（model.vqf 17,665,601,544 B，与 N1 归档同尺寸，
+        板上带 model.vqf.sha256 可核）；构建目录 /mnt/emmc/saprobe（**不动**既有
+        /mnt/emmc/kestrel_pull 与 /mnt/emmc/kestrel_prod_* 两棵树）；
+        跑前磁盘余量：/ 591MB、/mnt/emmc 4.2GB。
+  命令：OMP_NUM_THREADS=4 VLLM_THREADS=4 VLLM_NPU_FORCE_CPU=1 VLLM_ACTQ=0 \
+        ./vllm_kestrel --stream-test --model /mnt/VQF/qwen3-30B-A3B-q4 \
+        --stream-ctx 32 --stream-n 8
+  臂：**L0 / L1 / L2 / L4** —— 只读**臂间相对关系**（Δ'_X := X − L0）；**单轮、不交错**
+      （板端单格分钟级，且本档只作旁证）；此偏离 M1/M2 的「2 轮交错」须与本结论同引。
+      L3 仅允许同参数短跑且 RSS 逼近预算即停；它越出本预注册的臂集，结果一律标
+      「越界旁证、不作为任何判据」。
+  跑前修正记录（2026-09-25，均在跑**判据**臂之前据实调整；判据 P-EW-1/P-EW-2 未动）：
+    · n 由 32 降为 8；撤掉 F 臂（17.67GB 全驻留在 15.6GB 内存上必然由 swap 主导）。
+    · 冒烟（L0, ctx=32, n=2，冷态）：`[VQF-STREAM] enabled keep=1 nl=48 segs=11
+      per-layer=334.1MB data=16847.2MB resident~808.4MB rss=988kB`、TOKIDS 151667
+      （与 N1 归档、本机 x86 三者一致）、**18307 ms/tok** ⇒ 冷态由介质 I/O 主导。
+    · **第 1 轮（暖缓存、按 L0→L1→L2→L4 顺序）判为 VOID**：四臂 **prefill** 时间随执行
+      次序单调下降（L0 96.3s / L1 20.3s / L2 8.3s / L4 16.7s），decode 同向
+      （2308 / 777 / 445 / 883 ms/tok）。prefill 属另一相位却也降 11.5×
+      ⇒ 该轮主要测到**页缓存逐臂变暖**，不是臂语义。**该轮数据禁止用于任何排序或引用**，
+      仅留档为「未控制状态变量的反例」（日志 logs/L{0,1,2,4}.log 仍在板上）。
+    · **第 2 轮（受控；本档唯一可解释的一轮）**：每臂前执行
+      `sync; echo 3 > /proc/sys/vm/drop_caches`，使每臂从**同一冷态**开始
+      （确定性、与执行次序解耦）；顺序固定 L0 → L1 → L4 → L2 →（L3 短跑，RSS 逼近预算即停）。
+      该冷态也是本机**真实用例本态**（17.67GB 模型 > 15.6GB RAM ⇒ 存储受限）。
+    · 仍须同引的边界：本档只能给**臂间相对关系**，不能给 P-EW-1/P-EW-2 的判据值；
+      且「整层 WILLNEED 是否导致整层真实回读」需第 2 轮数据说话（第 1 轮不作证据）。
+  口径边界（引用时必须同引）：
+    (1) 模型 17.67GB > RAM 15.6GB ⇒ **真实介质 I/O 必然混入**（页缓存装不下整模型），
+        本档**无法分离「页表成本」与「I/O 成本」** ⇒ 不得用于 P-EW-1/P-EW-2 的裁决；
+    (2) 存在 swap(7.98GB)：L2（无驱逐）可能触发换页 ⇒ RSS/时间可能失真，照实记录不得修饰；
+    (3) ctx=32（小于 N1 判据档的 256）：madvise 区间与 ctx 无关，对机制**方向**无害，
+        但绝对时间不可与 N1 并列；
+    (4) 与 README「性能」章的板端历史数字**不可混引**（页缓存档位、线程数、模型目录均不同）。
+  自证落盘：console 全文（须含 [VQF-STREAM] / [STREAM-PROBE] / [STREAM] decoded 行）、
+    板端 binary sha256、model.vqf sha256、跑前跑后 free -m、dmesg 无 OOM 记录。
+
+================================================================================
+8. 实测结果与裁决（跑完追加；判据已冻结、不得回改）
+================================================================================
+【状态】**判据档未采集**：P-EW-1/P-EW-2 需在 N1 跑 §7 的六格；本环境无 N1 通道
+  （114.215.207.71 ping 无回应、known_hosts 无记录），须由有通道的一方执行后再填。
+  ~~⇒ 方向 E 的**立项门槛尚未判定**，本文件目前**不放行**任何实现。~~
+  **【2026-09-25 更正】**：该「不放行」在执行层被**用户指示豁免**（N1 不可达 ⇒ 改用板端
+  替代口径），故本文件**已被跨越**：形态 A 与 `VLLM_SA_EVL` 均已实现（全默认关）。
+  **门槛本身仍未判定**，且方向 E 已**收口**——见本文件 **§10** 与
+  [PRE_REG_STREAM_SA.txt](PRE_REG_STREAM_SA.txt) **§9**。
+
+【已完成的板端旁证（RK3588/orangepi5plus，仅旁证、不作判据；协议见 §7 板端块）】
+  受控轮（每臂前 `sync; echo 3 > /proc/sys/vm/drop_caches`；ctx=32, n=8, threads=4,
+  VLLM_ACTQ=0，单轮）：
+    臂    prefill 32tok   decode ms/tok   rss_after_prefill     TOKIDS
+    L0    228.889 s      1992            513,056 kB            151667
+    L1    229.248 s      1979            517,076 kB            151667
+    L4    232.951 s      1841            513,496 kB            151667
+    L2    227.991 s      1500         11,750,152 kB            151667
+    L3*   228.553 s      1520         11,262,536 kB            151667
+    （*L3 越出预注册臂集，按 §7 约定标「越界旁证、不作为判据」）
+  裁决（**只对板端成立，不作任何判据**）：
+    · prefill 各臂 228~233 s（Δ<2%）⇒ **探针不改批式/prefill 路径**，与设计一致；
+    · **L1 ≈ L0（+0.7%）⇒ 整层 WILLNEED 不是板端 decode 的主导项**。第 1 轮表面上的
+      「L1 快 66%（2308→777）」已被证明是页缓存逐臂变暖的伪影（该轮已 VOID，见 §7）；
+    · L4 −7.6%（弱效应，切分调用本身无系统收益）；L2/L3（不驱逐）−24~25%，
+      代价是 RSS 11.3~11.8GB（≈ 全模型）——与逐层档「常驻与模型体积解耦」的目的相悖，
+      在 15.6GB 板上不可持续；
+    · 五臂（含 L3）TOKIDS 全 151667 ⇒ 位级一致在板端亦成立；
+    · 冷 prefill 228 s / 17.67 GB ⇒ ≈77 MB/s，与 microSD 级带宽同量级 ⇒ 板端是**介质受限**；
+      臂间差异 ≤25%，**无法分离「页表成本」与「I/O 成本」** ⇒ 不可用于 P-EW-1/P-EW-2。
+  对 P-EW-1 的含义（须与结论同引）：板端提示「在存储受限端，**少驱逐（保驻留）**比
+    缩小 madvise 区间更有效」；这与形态 A 是两条不同的路（形态 A 保持 RSS 有界）。
+    孰优**只能由 N1 的 P-EW-1 裁决**。
+    ~~在拿到该数据前，形态 A 的 `VLLM_SA` 实现不放行。~~
+    **【2026-09-25 更正】**：该门槛在 N1 不可达时被**用户指示豁免**（改用板端替代口径），
+    形态 A 与层尾驱逐 `VLLM_SA_EVL` **均已实现**（全默认关）并在板端判定为**不转正**。
+    收口账与 7 条硬结论见 [PRE_REG_STREAM_SA.txt](PRE_REG_STREAM_SA.txt) **§9 收口宣告**。
+
+  探索臂（**不在冻结臂集内**；只为回答「只加载激活权重目前可否实现」，同样冷态受控）：
+    xA = VLLM_VQF_STREAM=1 VLLM_STREAM_PROBE=1 VLLM_EW_PREFETCH=1
+         ⇒ 层入口**不做整层 WILLNEED**；预取只发到本 token 激活的 8 个专家的 gate/up 段
+           （expB=0.844MB / 216 页，0% 过取）；down 不预取（靠按需缺页）。
+    自证：`[VQF-PF] enabled nl=48 ne=128 exp=0.844MB(216页) down=0` +
+          `[STREAM-PROBE] mode=1 nl=48 segs=11 expert_segs=3`
+    结果：prefill 198.417s / rss_after_prefill 513,552kB / TOKIDS 151667 / **decode 1844 ms/tok**
+    对照（同一受控轮）：L0 228.889s/1992 · L1 229.248s/1979 · L4 232.951s/1841
+    ⇒ **「只加载激活权重」在 gate/up 上今天即可实现**（既有 `VLLM_EW_PREFETCH` 本就是
+      0% 过取的专家级预取，配 mode=1 关掉整层 WILLNEED 后，预取目标只剩激活专家）。
+      板端收益 decode −7.4% / prefill −13%，**仍不可外推**（介质受限端臂间差异 ≤25%）。
+    已知缺口：① down 无法只加载激活（页共享，1728B 列带 < 4KB 页，地板 ≈2.4×）；
+      ② 驱逐仍是整层（RSS 有界靠整层 DONTNEED，区间成本仍在）
+      ⇒ ①②要等形态 A（①还需格式级重排 D3）。
+
+    ── xA vs L0 **交错双轮 A/B**（2026-09-25；每臂前 drop_caches；轮序 r1=L0→xA、r2=xA→L0）：
+        r1 L0  prefill 229.062s / decode 1963 ms/tok / TOKIDS 151667
+        r1 xA  prefill 198.447s / decode 1840 ms/tok / TOKIDS 151667
+        r2 xA  prefill 198.624s / decode 1835 ms/tok / TOKIDS 151667
+        r2 L0  prefill 228.053s / decode 1958 ms/tok / TOKIDS 151667
+      重复性：L0 两条 1963/1958（0.26%）、xA 两条 1840/1835（0.27%），且**轮序颠倒后方向不变**
+      ⇒ 效应为真，不是次序伪影。
+      中位：decode L0 1960.5 → xA 1837.5 = **−6.3%**（−123 ms/tok）；
+            prefill L0 228.56s → xA 198.54s = **−13.1%**。
+      **归因**：见下方「归因判定轮」——本处原判（「收益来自专家级预取」）**已被推翻**，勿引用。
+      边界：`[VQF-PF] enabled … down=0` ⇒ **down 未预取**，本组合不含 down 的专家级加载；
+      结论只对板端（介质受限）成立；N1（页表主导）仍须 P-EW-1/P-A-1 裁决。
+
+    ── **归因判定轮**（2026-09-25 追加；四臂同轮受控、每臂前 drop_caches，单轮）：
+        L0  prefill 229.040s / decode 1966 ms/tok
+        L1  prefill 229.482s / decode 1931 ms/tok   （真"少加载"：整层 WILLNEED 完全不发）
+        L4  prefill 232.517s / decode 1868 ms/tok   （语义为零：区间与 L0 相同，仅把调用切 16 片）
+        xA  prefill 198.201s / decode 1840 ms/tok   （L1 + 专家级预取）
+      合并此前各轮（L0: 1992/1963/1958/1966；L1: 1979/1931；L4: 1841/1868；xA: 1844/1840/1835/1840）：
+        L1 − L0 ≈ **−0.5%~+0.8%（无收益）**；L4 ≈ xA ≈ **−5.5%~−6.3%**
+      ⇒ **推翻原归因**：−6% **不来自「只加载激活专家」**——
+         · L1（真正不加载非激活：整层 WILLNEED 完全不发）**没有收益**；
+         · **语义为零的 L4（建页量与 L0 完全相同、只把巨区间调用切成 16 片）也拿到 −5.5%**。
+        共同因子是**调用形态**（把一次 ≤334MiB 的巨区间 madvise 换成多次小区间调用），
+        而**不是**「加载了哪些专家的字节」，也**不是**「建页量」（L4 的建页量与 L0 相同）。
+      对本方向的含义：**「只加载激活 → 降低建页成本」这一目标至今没有任何实测覆盖**——
+      它只在 N1（页表主导、245GiB 全缓存）上可测，即 P-EW-1（L3），**尚未采集**；
+      板端（介质受限）无法测该轴，其臂间差异由上述调用形态效应主导。
+      附带线索（与"专家级加载"无关，须独立验证）：板端"把大 madvise 拆小"本身有 −5.5%
+      （零语义改动）；但它把 syscall 数放大 16×，是否在页表主导端也成立须由 P-EW-2 裁决。
+
+================================================================================
+9. 归档位置（板端 / 本机）
+================================================================================
+  板端：/mnt/emmc/saprobe（源码 + build-rk3588/ + vllm_kestrel sha256
+        b93893282288e09255a3aa568cefc946411fd65b9986f76129ae35f24d9829bf，1,060,112 B）；
+        日志 logs/L{0,1,2,4}.log（第 1 轮，VOID）与 logs/r2_L{0,1,4,2,3}.log（受控轮）；
+        模型 /mnt/VQF/qwen3-30B-A3B-q4/model.vqf sha256
+        DAE4CB2605463CF14C0ABC7F2EE410CCB97347341521B98142213752E56FFE93（与其 .sha256 自洽）。
+        旁证不触碰 /mnt/emmc/kestrel_pull 与 /mnt/emmc/kestrel_prod_* 两棵既有树。
+  本机：探针二进制 build-x64-probe/vllm_kestrel_x64.exe sha256 2226F162…364F；
+        自检用 MoE 模型 Modl/Qwen3-30B-A3B-q4local/（17,665,601,544 B，可由
+        vqf_convert 重建，非必需留存）。
+
+================================================================================
+10. 收口（2026-09-25）
+================================================================================
+  **状态：方向 E 已收口**（用户决定：停止推进、记录入档）。
+  · 本文件 §8 的 **P-EW-1 / P-EW-2 仍为「未采集」**，且只可能在 **N1（页表主导端）** 采集；
+    N1 通道当前不可达（`114.215.207.71` 22/443/ping 全不通、本机无凭据）。
+  · 下游形态 A 家族（A1/A1E/A2）**已实现（全默认关）并在板端判否**：
+    P-A-1t FAIL（§7B）、P-E-1 FAIL（§8）；**不转正**。
+  · 上表的归档位置是**收口当时**的板端状态；**收口时**板端 binary 已推进到 `90614b2e…`
+    （含 `VLLM_SA_EVL` 与 `rss_anon/rss_file` 只读拆分探针），证据目录
+    `docs/bench/20260925-rk3588-moe-sa-protocol/`。
+  · **收口账、7 条硬结论、板端缺页模型、N1 的定量预测、不做事项、方法学反思**：
+    全部在 [PRE_REG_STREAM_SA.txt](PRE_REG_STREAM_SA.txt) **§9**。
+  · 除 N1 判据回填外，本文件与 §9 **不再新增判据、不再改阈值**。

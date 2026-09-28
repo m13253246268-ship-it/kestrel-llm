@@ -1,0 +1,1972 @@
+
+ _   .-')                _ .-') _     ('-.             .-')                              _ (`-.    ('-.
+( '.( OO )_             ( (  OO) )  _(  OO)           ( OO ).                           ( (OO  ) _(  OO)
+ ,--.   ,--.).-'),-----. \     .'_ (,------.,--.     (_)---\_)   .-----.  .-'),-----.  _.`     \(,------.
+ |   `.'   |( OO'  .-.  ',`'--..._) |  .---'|  |.-') /    _ |   '  .--./ ( OO'  .-.  '(__...--'' |  .---'
+ |         |/   |  | |  ||  |  \  ' |  |    |  | OO )\  :` `.   |  |('-. /   |  | |  | |  /  | | |  |
+ |  |'.'|  |\_) |  |\|  ||  |   ' |(|  '--. |  |`-' | '..`''.) /_) |OO  )\_) |  |\|  | |  |_.' |(|  '--.
+ |  |   |  |  \ |  | |  ||  |   / : |  .--'(|  '---.'.-._)   \ ||  |`-'|   \ |  | |  | |  .___.' |  .--'
+ |  |   |  |   `'  '-'  '|  '--'  / |  `---.|      | \       /(_'  '--'\    `'  '-'  ' |  |      |  `---.
+ `--'   `--'     `-----' `-------'  `------'`------'  `-----'    `-----'      `-----'  `--'      `------'
+
+2026-09-24 22:11:31,746 | INFO    | modelscope_hub.download | Downloading 17 files from Qwen/Qwen3-VL-8B-Instruct@master
+Downloading snapshot of Qwen/Qwen3-VL-8B-Instruct (model)…
+Downloading:   0%|          | 0/17 [00:00<?, ?file/s]
+README.md:   0%|          | 0.00/7.13k [00:00<?, ?B/s][A
+                                                      [ADownloading:   6%|▌         | 1/17 [00:00<00:09,  1.67file/s]
+config.json:   0%|          | 0.00/1.47k [00:00<?, ?B/s][A
+                                                        [ADownloading:  12%|█▏        | 2/17 [00:00<00:04,  3.01file/s]
+chat_template.json:   0%|          | 0.00/5.50k [00:00<?, ?B/s][A
+                                                               [A
+.gitattributes:   0%|          | 0.00/2.45k [00:00<?, ?B/s][A
+                                                           [A
+configuration.json:   0%|          | 0.00/73.0 [00:00<?, ?B/s][A
+                                                              [ADownloading:  29%|██▉       | 5/17 [00:00<00:01,  7.41file/s]
+generation_config.json:   0%|          | 0.00/269 [00:00<?, ?B/s][A
+                                                                 [A
+merges.txt:   0%|          | 0.00/1.67M [00:00<?, ?B/s][A
+                                                       [ADownloading:  41%|████      | 7/17 [00:01<00:01,  7.66file/s]
+model-00001-of-00004.safetensors:   0%|          | 0.00/4.90G [00:00<?, ?B/s][A
+model-00001-of-00004.safetensors:   0%|          | 18.9M/4.90G [00:00<00:26, 184MB/s][A
+
+model-00002-of-00004.safetensors:   0%|          | 0.00/4.92G [00:00<?, ?B/s][A[A
+
+model-00002-of-00004.safetensors:   0%|          | 21.0M/4.92G [00:00<00:24, 203MB/s][A[A
+model-00001-of-00004.safetensors:   1%|          | 37.7M/4.90G [00:00<00:28, 171MB/s][A
+
+
+model-00003-of-00004.safetensors:   0%|          | 0.00/5.00G [00:00<?, ?B/s][A[A[A
+model-00001-of-00004.safetensors:   1%|          | 58.7M/4.90G [00:00<00:25, 187MB/s][A
+
+
+
+model-00004-of-00004.safetensors:   0%|          | 0.00/2.72G [00:00<?, ?B/s][A[A[A[A
+
+model-00002-of-00004.safetensors:   1%|          | 41.9M/4.92G [00:00<00:31, 157MB/s][A[A
+model-00001-of-00004.safetensors:   2%|▏         | 78.6M/4.90G [00:00<00:25, 190MB/s][A
+
+
+model-00003-of-00004.safetensors:   0%|          | 15.7M/5.00G [00:00<00:41, 121MB/s][A[A[A
+
+
+
+model-00004-of-00004.safetensors:   1%|          | 18.9M/2.72G [00:00<00:14, 188MB/s][A[A[A[A
+
+model-00002-of-00004.safetensors:   1%|          | 58.7M/4.92G [00:00<00:30, 157MB/s][A[A
+
+
+model-00003-of-00004.safetensors:   1%|          | 37.7M/5.00G [00:00<00:28, 171MB/s][A[A[A
+
+
+
+model-00004-of-00004.safetensors:   1%|▏         | 37.7M/2.72G [00:00<00:14, 185MB/s][A[A[A[A
+
+model-00002-of-00004.safetensors:   2%|▏         | 77.6M/4.92G [00:00<00:28, 167MB/s][A[A
+model-00001-of-00004.safetensors:   2%|▏         | 98.6M/4.90G [00:00<00:29, 162MB/s][A
+
+
+model-00003-of-00004.safetensors:   1%|          | 55.6M/5.00G [00:00<00:29, 165MB/s][A[A[A
+
+
+
+model-00004-of-00004.safetensors:   2%|▏         | 56.6M/2.72G [00:00<00:15, 169MB/s][A[A[A[A
+
+model-00002-of-00004.safetensors:   2%|▏         | 99.6M/4.92G [00:00<00:26, 180MB/s][A[A
+model-00001-of-00004.safetensors:   3%|▎         | 123M/4.90G [00:00<00:25, 184MB/s] [A
+
+
+model-00003-of-00004.safetensors:   1%|▏         | 74.4M/5.00G [00:00<00:29, 168MB/s][A[A[A
+
+
+
+model-00004-of-00004.safetensors:   3%|▎         | 75.5M/2.72G [00:00<00:15, 173MB/s][A[A[A[A
+model-00001-of-00004.safetensors:   3%|▎         | 148M/4.90G [00:00<00:23, 202MB/s][A
+
+model-00002-of-00004.safetensors:   2%|▏         | 123M/4.92G [00:00<00:25, 189MB/s] [A[A
+
+
+model-00003-of-00004.safetensors:   2%|▏         | 94.4M/5.00G [00:00<00:27, 178MB/s][A[A[A
+model-00001-of-00004.safetensors:   4%|▎         | 172M/4.90G [00:00<00:22, 213MB/s][A
+
+
+
+model-00004-of-00004.safetensors:   3%|▎         | 93.3M/2.72G [00:00<00:15, 165MB/s][A[A[A[A
+
+model-00002-of-00004.safetensors:   3%|▎         | 143M/4.92G [00:00<00:26, 180MB/s][A[A
+
+
+model-00003-of-00004.safetensors:   2%|▏         | 114M/5.00G [00:00<00:26, 184MB/s] [A[A[A
+model-00001-of-00004.safetensors:   4%|▍         | 195M/4.90G [00:00<00:21, 216MB/s][A
+
+
+
+model-00004-of-00004.safetensors:   4%|▍         | 113M/2.72G [00:00<00:14, 175MB/s] [A[A[A[A
+
+model-00002-of-00004.safetensors:   3%|▎         | 161M/4.92G [00:00<00:27, 174MB/s][A[A
+
+
+model-00003-of-00004.safetensors:   3%|▎         | 133M/5.00G [00:00<00:29, 164MB/s][A[A[A
+
+
+
+model-00004-of-00004.safetensors:   5%|▍         | 133M/2.72G [00:00<00:14, 182MB/s][A[A[A[A
+model-00001-of-00004.safetensors:   4%|▍         | 217M/4.90G [00:01<00:21, 214MB/s][A
+
+model-00002-of-00004.safetensors:   4%|▍         | 185M/4.92G [00:01<00:25, 188MB/s][A[A
+
+
+model-00003-of-00004.safetensors:   3%|▎         | 156M/5.00G [00:00<00:26, 183MB/s][A[A[A
+
+
+
+model-00004-of-00004.safetensors:   6%|▌         | 153M/2.72G [00:00<00:13, 185MB/s][A[A[A[A
+model-00001-of-00004.safetensors:   5%|▍         | 239M/4.90G [00:01<00:23, 198MB/s][A
+
+model-00002-of-00004.safetensors:   4%|▍         | 204M/4.92G [00:01<00:25, 183MB/s][A[A
+
+
+model-00003-of-00004.safetensors:   4%|▎         | 175M/5.00G [00:01<00:26, 181MB/s][A[A[A
+
+
+
+model-00004-of-00004.safetensors:   6%|▋         | 175M/2.72G [00:00<00:13, 191MB/s][A[A[A[A
+
+model-00002-of-00004.safetensors:   5%|▍         | 226M/4.92G [00:01<00:24, 192MB/s][A[A
+model-00001-of-00004.safetensors:   5%|▌         | 260M/4.90G [00:01<00:27, 169MB/s][A
+
+
+model-00003-of-00004.safetensors:   4%|▍         | 194M/5.00G [00:01<00:26, 178MB/s][A[A[A
+
+
+
+model-00004-of-00004.safetensors:   7%|▋         | 195M/2.72G [00:01<00:14, 176MB/s][A[A[A[A
+
+model-00002-of-00004.safetensors:   5%|▌         | 246M/4.92G [00:01<00:24, 193MB/s][A[A
+model-00001-of-00004.safetensors:   6%|▌         | 285M/4.90G [00:01<00:24, 188MB/s][A
+
+
+model-00003-of-00004.safetensors:   4%|▍         | 217M/5.00G [00:01<00:24, 193MB/s][A[A[A
+
+
+
+model-00004-of-00004.safetensors:   8%|▊         | 215M/2.72G [00:01<00:13, 181MB/s][A[A[A[A
+
+model-00002-of-00004.safetensors:   5%|▌         | 266M/4.92G [00:01<00:25, 185MB/s][A[A
+model-00001-of-00004.safetensors:   6%|▌         | 305M/4.90G [00:01<00:24, 187MB/s][A
+
+
+model-00003-of-00004.safetensors:   5%|▍         | 240M/5.00G [00:01<00:23, 202MB/s][A[A[A
+
+
+
+model-00004-of-00004.safetensors:   9%|▊         | 235M/2.72G [00:01<00:13, 185MB/s][A[A[A[A
+
+model-00002-of-00004.safetensors:   6%|▌         | 289M/4.92G [00:01<00:23, 195MB/s][A[A
+
+
+model-00003-of-00004.safetensors:   5%|▌         | 263M/5.00G [00:01<00:22, 210MB/s][A[A[A
+
+
+
+model-00004-of-00004.safetensors:   9%|▉         | 254M/2.72G [00:01<00:14, 175MB/s][A[A[A[A
+
+model-00002-of-00004.safetensors:   6%|▋         | 309M/4.92G [00:01<00:23, 195MB/s][A[A
+
+
+model-00003-of-00004.safetensors:   6%|▌         | 285M/5.00G [00:01<00:23, 203MB/s][A[A[A
+model-00001-of-00004.safetensors:   7%|▋         | 325M/4.90G [00:01<00:33, 137MB/s][A
+
+
+
+model-00004-of-00004.safetensors:  10%|▉         | 272M/2.72G [00:01<00:14, 166MB/s][A[A[A[A
+
+model-00002-of-00004.safetensors:   7%|▋         | 329M/4.92G [00:01<00:25, 179MB/s][A[A
+
+
+model-00003-of-00004.safetensors:   6%|▌         | 311M/5.00G [00:01<00:21, 219MB/s][A[A[A
+
+
+
+model-00004-of-00004.safetensors:  11%|█         | 289M/2.72G [00:01<00:14, 168MB/s][A[A[A[A
+
+model-00002-of-00004.safetensors:   7%|▋         | 352M/4.92G [00:01<00:23, 192MB/s][A[A
+
+
+model-00003-of-00004.safetensors:   7%|▋         | 338M/5.00G [00:01<00:20, 229MB/s][A[A[A
+model-00001-of-00004.safetensors:   7%|▋         | 342M/4.90G [00:02<00:37, 121MB/s][A
+
+
+
+model-00004-of-00004.safetensors:  11%|█▏        | 308M/2.72G [00:01<00:14, 171MB/s][A[A[A[A
+
+model-00002-of-00004.safetensors:   8%|▊         | 376M/4.92G [00:02<00:22, 204MB/s][A[A
+
+
+model-00003-of-00004.safetensors:   7%|▋         | 361M/5.00G [00:01<00:20, 227MB/s][A[A[A
+model-00001-of-00004.safetensors:   7%|▋         | 358M/4.90G [00:02<00:35, 128MB/s][A
+
+
+
+model-00004-of-00004.safetensors:  12%|█▏        | 329M/2.72G [00:01<00:13, 180MB/s][A[A[A[A
+
+model-00002-of-00004.safetensors:   8%|▊         | 397M/4.92G [00:02<00:22, 204MB/s][A[A
+model-00001-of-00004.safetensors:   8%|▊         | 380M/4.90G [00:02<00:30, 148MB/s][A
+
+
+model-00003-of-00004.safetensors:   8%|▊         | 384M/5.00G [00:01<00:22, 209MB/s][A[A[A
+
+
+
+model-00004-of-00004.safetensors:  13%|█▎        | 350M/2.72G [00:01<00:12, 188MB/s][A[A[A[A
+
+model-00002-of-00004.safetensors:   9%|▊         | 418M/4.92G [00:02<00:23, 193MB/s][A[A
+model-00001-of-00004.safetensors:   8%|▊         | 400M/4.90G [00:02<00:29, 155MB/s][A
+
+
+model-00003-of-00004.safetensors:   8%|▊         | 406M/5.00G [00:02<00:22, 207MB/s][A[A[A
+
+
+
+model-00004-of-00004.safetensors:  14%|█▎        | 370M/2.72G [00:02<00:12, 185MB/s][A[A[A[A
+
+model-00002-of-00004.safetensors:   9%|▉         | 441M/4.92G [00:02<00:22, 198MB/s][A[A
+model-00001-of-00004.safetensors:   9%|▊         | 418M/4.90G [00:02<00:27, 163MB/s][A
+
+
+model-00003-of-00004.safetensors:   9%|▊         | 430M/5.00G [00:02<00:21, 215MB/s][A[A[A
+
+
+
+model-00004-of-00004.safetensors:  15%|█▍        | 395M/2.72G [00:02<00:11, 202MB/s][A[A[A[A
+model-00001-of-00004.safetensors:   9%|▉         | 440M/4.90G [00:02<00:25, 178MB/s][A
+
+model-00002-of-00004.safetensors:   9%|▉         | 462M/4.92G [00:02<00:24, 184MB/s][A[A
+
+
+model-00003-of-00004.safetensors:   9%|▉         | 452M/5.00G [00:02<00:22, 201MB/s][A[A[A
+
+
+
+model-00004-of-00004.safetensors:  15%|█▌        | 416M/2.72G [00:02<00:11, 193MB/s][A[A[A[A
+model-00001-of-00004.safetensors:   9%|▉         | 463M/4.90G [00:02<00:23, 191MB/s][A
+
+model-00002-of-00004.safetensors:  10%|▉         | 487M/4.92G [00:02<00:22, 198MB/s][A[A
+
+
+model-00003-of-00004.safetensors:   9%|▉         | 473M/5.00G [00:02<00:22, 201MB/s][A[A[A
+
+
+
+model-00004-of-00004.safetensors:  16%|█▌        | 438M/2.72G [00:02<00:11, 200MB/s][A[A[A[A
+model-00001-of-00004.safetensors:  10%|▉         | 483M/4.90G [00:02<00:23, 185MB/s][A
+
+model-00002-of-00004.safetensors:  10%|█         | 509M/4.92G [00:02<00:21, 202MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  10%|▉         | 494M/5.00G [00:02<00:22, 202MB/s][A[A[A
+
+
+
+model-00004-of-00004.safetensors:  17%|█▋        | 460M/2.72G [00:02<00:11, 203MB/s][A[A[A[A
+model-00001-of-00004.safetensors:  10%|█         | 504M/4.90G [00:02<00:23, 191MB/s][A
+
+model-00002-of-00004.safetensors:  11%|█         | 533M/4.92G [00:02<00:20, 212MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  10%|█         | 515M/5.00G [00:02<00:23, 191MB/s][A[A[A
+
+
+
+model-00004-of-00004.safetensors:  18%|█▊        | 481M/2.72G [00:02<00:11, 201MB/s][A[A[A[A
+model-00001-of-00004.safetensors:  11%|█         | 524M/4.90G [00:02<00:22, 193MB/s][A
+
+model-00002-of-00004.safetensors:  11%|█▏        | 555M/4.92G [00:02<00:21, 198MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  11%|█         | 541M/5.00G [00:02<00:21, 210MB/s][A[A[A
+
+
+
+model-00004-of-00004.safetensors:  18%|█▊        | 502M/2.72G [00:02<00:11, 200MB/s][A[A[A[A
+model-00001-of-00004.safetensors:  11%|█         | 544M/4.90G [00:03<00:24, 182MB/s][A
+
+
+model-00003-of-00004.safetensors:  11%|█▏        | 565M/5.00G [00:02<00:20, 218MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  12%|█▏        | 576M/4.92G [00:03<00:24, 180MB/s][A[A
+
+
+
+model-00004-of-00004.safetensors:  19%|█▉        | 523M/2.72G [00:02<00:11, 183MB/s][A[A[A[A
+model-00001-of-00004.safetensors:  11%|█▏        | 563M/4.90G [00:03<00:24, 176MB/s][A
+
+
+model-00003-of-00004.safetensors:  12%|█▏        | 589M/5.00G [00:02<00:19, 222MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  12%|█▏        | 598M/4.92G [00:03<00:22, 190MB/s][A[A
+
+
+
+model-00004-of-00004.safetensors:  20%|██        | 546M/2.72G [00:02<00:11, 195MB/s][A[A[A[A
+model-00001-of-00004.safetensors:  12%|█▏        | 589M/4.90G [00:03<00:21, 199MB/s][A
+
+
+model-00003-of-00004.safetensors:  12%|█▏        | 612M/5.00G [00:03<00:20, 219MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  13%|█▎        | 618M/4.92G [00:03<00:22, 191MB/s][A[A
+
+
+
+model-00004-of-00004.safetensors:  21%|██        | 566M/2.72G [00:03<00:11, 186MB/s][A[A[A[A
+model-00001-of-00004.safetensors:  13%|█▎        | 613M/4.90G [00:03<00:20, 211MB/s][A
+
+
+model-00003-of-00004.safetensors:  13%|█▎        | 635M/5.00G [00:03<00:19, 222MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  13%|█▎        | 638M/4.92G [00:03<00:22, 191MB/s][A[A
+
+
+
+model-00004-of-00004.safetensors:  22%|██▏       | 589M/2.72G [00:03<00:10, 197MB/s][A[A[A[A
+model-00001-of-00004.safetensors:  13%|█▎        | 635M/4.90G [00:03<00:20, 208MB/s][A
+
+model-00002-of-00004.safetensors:  13%|█▎        | 657M/4.92G [00:03<00:22, 187MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  13%|█▎        | 659M/5.00G [00:03<00:21, 199MB/s][A[A[A
+
+
+
+model-00004-of-00004.safetensors:  23%|██▎       | 614M/2.72G [00:03<00:09, 212MB/s][A[A[A[A
+model-00001-of-00004.safetensors:  13%|█▎        | 657M/4.90G [00:03<00:20, 205MB/s][A
+
+model-00002-of-00004.safetensors:  14%|█▍        | 678M/4.92G [00:03<00:21, 193MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  14%|█▎        | 681M/5.00G [00:03<00:21, 203MB/s][A[A[A
+
+
+
+model-00004-of-00004.safetensors:  24%|██▎       | 641M/2.72G [00:03<00:09, 226MB/s][A[A[A[A
+model-00001-of-00004.safetensors:  14%|█▍        | 678M/4.90G [00:03<00:20, 204MB/s][A
+
+
+model-00003-of-00004.safetensors:  14%|█▍        | 704M/5.00G [00:03<00:20, 209MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  14%|█▍        | 698M/4.92G [00:03<00:23, 177MB/s][A[A
+
+
+
+model-00004-of-00004.safetensors:  24%|██▍       | 664M/2.72G [00:03<00:09, 216MB/s][A[A[A[A
+model-00001-of-00004.safetensors:  14%|█▍        | 699M/4.90G [00:03<00:22, 187MB/s][A
+
+
+model-00003-of-00004.safetensors:  15%|█▍        | 726M/5.00G [00:03<00:21, 202MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  15%|█▍        | 717M/4.92G [00:03<00:23, 176MB/s][A[A
+model-00001-of-00004.safetensors:  15%|█▍        | 721M/4.90G [00:03<00:21, 195MB/s][A
+
+
+
+model-00004-of-00004.safetensors:  25%|██▌       | 686M/2.72G [00:03<00:10, 187MB/s][A[A[A[A
+
+model-00002-of-00004.safetensors:  15%|█▌        | 743M/4.92G [00:03<00:21, 198MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  15%|█▍        | 750M/5.00G [00:03<00:21, 198MB/s][A[A[A
+
+
+
+model-00004-of-00004.safetensors:  26%|██▌       | 709M/2.72G [00:03<00:10, 198MB/s][A[A[A[A
+model-00001-of-00004.safetensors:  15%|█▌        | 741M/4.90G [00:04<00:21, 190MB/s][A
+
+
+model-00003-of-00004.safetensors:  15%|█▌        | 771M/5.00G [00:03<00:21, 200MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  16%|█▌        | 764M/4.92G [00:04<00:22, 187MB/s][A[A
+
+
+
+model-00004-of-00004.safetensors:  27%|██▋       | 731M/2.72G [00:03<00:09, 203MB/s][A[A[A[A
+model-00001-of-00004.safetensors:  16%|█▌        | 761M/4.90G [00:04<00:21, 190MB/s][A
+
+model-00002-of-00004.safetensors:  16%|█▌        | 784M/4.92G [00:04<00:22, 182MB/s][A[A
+
+
+
+model-00004-of-00004.safetensors:  28%|██▊       | 754M/2.72G [00:03<00:09, 210MB/s][A[A[A[A
+model-00001-of-00004.safetensors:  16%|█▌        | 786M/4.90G [00:04<00:19, 207MB/s][A
+
+
+model-00003-of-00004.safetensors:  16%|█▌        | 792M/5.00G [00:04<00:24, 173MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  16%|█▋        | 804M/4.92G [00:04<00:22, 186MB/s][A[A
+
+
+
+model-00004-of-00004.safetensors:  29%|██▊       | 777M/2.72G [00:04<00:09, 213MB/s][A[A[A[A
+
+
+model-00003-of-00004.safetensors:  16%|█▋        | 815M/5.00G [00:04<00:22, 187MB/s][A[A[A
+model-00001-of-00004.safetensors:  16%|█▋        | 807M/4.90G [00:04<00:21, 189MB/s][A
+
+model-00002-of-00004.safetensors:  17%|█▋        | 825M/4.92G [00:04<00:21, 191MB/s][A[A
+
+
+
+model-00004-of-00004.safetensors:  29%|██▉       | 799M/2.72G [00:04<00:08, 214MB/s][A[A[A[A
+
+
+model-00003-of-00004.safetensors:  17%|█▋        | 838M/5.00G [00:04<00:21, 197MB/s][A[A[A
+model-00001-of-00004.safetensors:  17%|█▋        | 830M/4.90G [00:04<00:20, 199MB/s][A
+
+model-00002-of-00004.safetensors:  17%|█▋        | 845M/4.92G [00:04<00:21, 192MB/s][A[A
+
+
+
+model-00004-of-00004.safetensors:  30%|███       | 822M/2.72G [00:04<00:08, 217MB/s][A[A[A[A
+model-00001-of-00004.safetensors:  17%|█▋        | 852M/4.90G [00:04<00:20, 201MB/s][A
+
+model-00002-of-00004.safetensors:  18%|█▊        | 867M/4.92G [00:04<00:20, 199MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  17%|█▋        | 859M/5.00G [00:04<00:24, 168MB/s][A[A[A
+
+
+
+model-00004-of-00004.safetensors:  31%|███       | 844M/2.72G [00:04<00:08, 212MB/s][A[A[A[A
+model-00001-of-00004.safetensors:  18%|█▊        | 873M/4.90G [00:04<00:20, 200MB/s][A
+
+
+model-00003-of-00004.safetensors:  18%|█▊        | 878M/5.00G [00:04<00:23, 172MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  18%|█▊        | 888M/4.92G [00:04<00:20, 194MB/s][A[A
+
+
+
+model-00004-of-00004.safetensors:  32%|███▏      | 867M/2.72G [00:04<00:08, 213MB/s][A[A[A[A
+model-00001-of-00004.safetensors:  18%|█▊        | 895M/4.90G [00:04<00:19, 205MB/s][A
+
+
+model-00003-of-00004.safetensors:  18%|█▊        | 899M/5.00G [00:04<00:22, 180MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  18%|█▊        | 909M/4.92G [00:04<00:20, 197MB/s][A[A
+
+
+
+model-00004-of-00004.safetensors:  33%|███▎      | 889M/2.72G [00:04<00:09, 201MB/s][A[A[A[A
+model-00001-of-00004.safetensors:  19%|█▊        | 916M/4.90G [00:04<00:20, 199MB/s][A
+
+
+model-00003-of-00004.safetensors:  18%|█▊        | 923M/5.00G [00:04<00:20, 195MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  19%|█▉        | 931M/4.92G [00:04<00:19, 202MB/s][A[A
+
+
+
+model-00004-of-00004.safetensors:  34%|███▎      | 913M/2.72G [00:04<00:08, 208MB/s][A[A[A[A
+model-00001-of-00004.safetensors:  19%|█▉        | 940M/4.90G [00:05<00:19, 206MB/s][A
+
+
+model-00003-of-00004.safetensors:  19%|█▉        | 947M/5.00G [00:04<00:19, 207MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  19%|█▉        | 953M/4.92G [00:05<00:19, 206MB/s][A[A
+
+
+
+model-00004-of-00004.safetensors:  34%|███▍      | 934M/2.72G [00:04<00:09, 197MB/s][A[A[A[A
+model-00001-of-00004.safetensors:  20%|█▉        | 964M/4.90G [00:05<00:18, 211MB/s][A
+
+model-00002-of-00004.safetensors:  20%|█▉        | 974M/4.92G [00:05<00:19, 207MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  19%|█▉        | 969M/5.00G [00:04<00:20, 196MB/s][A[A[A
+model-00001-of-00004.safetensors:  20%|██        | 987M/4.90G [00:05<00:18, 214MB/s][A
+
+
+
+model-00004-of-00004.safetensors:  35%|███▌      | 955M/2.72G [00:04<00:08, 197MB/s][A[A[A[A
+
+model-00002-of-00004.safetensors:  20%|██        | 997M/4.92G [00:05<00:18, 212MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  20%|█▉        | 990M/5.00G [00:05<00:20, 195MB/s][A[A[A
+
+
+
+model-00004-of-00004.safetensors:  36%|███▌      | 977M/2.72G [00:05<00:08, 201MB/s][A[A[A[A
+model-00001-of-00004.safetensors:  21%|██        | 1.01G/4.90G [00:05<00:17, 222MB/s][A
+
+model-00002-of-00004.safetensors:  21%|██        | 1.02G/4.92G [00:05<00:19, 204MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  20%|██        | 1.01G/5.00G [00:05<00:21, 189MB/s][A[A[A
+model-00001-of-00004.safetensors:  21%|██        | 1.04G/4.90G [00:05<00:17, 222MB/s][A
+
+
+
+model-00004-of-00004.safetensors:  37%|███▋      | 998M/2.72G [00:05<00:08, 195MB/s][A[A[A[A
+
+model-00002-of-00004.safetensors:  21%|██        | 1.04G/4.92G [00:05<00:20, 193MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  21%|██        | 1.03G/5.00G [00:05<00:21, 183MB/s][A[A[A
+
+
+
+model-00004-of-00004.safetensors:  38%|███▊      | 1.02G/2.72G [00:05<00:08, 198MB/s][A[A[A[A
+
+model-00002-of-00004.safetensors:  22%|██▏       | 1.06G/4.92G [00:05<00:20, 192MB/s][A[A
+model-00001-of-00004.safetensors:  22%|██▏       | 1.06G/4.90G [00:05<00:20, 185MB/s][A
+
+
+model-00003-of-00004.safetensors:  21%|██        | 1.05G/5.00G [00:05<00:21, 183MB/s][A[A[A
+
+
+
+model-00004-of-00004.safetensors:  38%|███▊      | 1.04G/2.72G [00:05<00:09, 179MB/s][A[A[A[A
+
+model-00002-of-00004.safetensors:  22%|██▏       | 1.09G/4.92G [00:05<00:19, 201MB/s][A[A
+model-00001-of-00004.safetensors:  22%|██▏       | 1.08G/4.90G [00:05<00:19, 198MB/s][A
+
+
+model-00003-of-00004.safetensors:  22%|██▏       | 1.08G/5.00G [00:05<00:19, 203MB/s][A[A[A
+
+
+
+model-00004-of-00004.safetensors:  39%|███▉      | 1.07G/2.72G [00:05<00:08, 200MB/s][A[A[A[A
+model-00001-of-00004.safetensors:  23%|██▎       | 1.11G/4.90G [00:05<00:17, 213MB/s][A
+
+model-00002-of-00004.safetensors:  23%|██▎       | 1.11G/4.92G [00:05<00:19, 195MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  22%|██▏       | 1.11G/5.00G [00:05<00:17, 219MB/s][A[A[A
+
+
+
+model-00004-of-00004.safetensors:  40%|████      | 1.09G/2.72G [00:05<00:07, 217MB/s][A[A[A[A
+model-00001-of-00004.safetensors:  23%|██▎       | 1.14G/4.90G [00:05<00:17, 222MB/s][A
+
+model-00002-of-00004.safetensors:  23%|██▎       | 1.13G/4.92G [00:05<00:19, 198MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  23%|██▎       | 1.13G/5.00G [00:05<00:18, 215MB/s][A[A[A
+model-00001-of-00004.safetensors:  24%|██▎       | 1.16G/4.90G [00:06<00:16, 221MB/s][A
+
+model-00002-of-00004.safetensors:  23%|██▎       | 1.15G/4.92G [00:05<00:18, 204MB/s][A[A
+
+
+
+model-00004-of-00004.safetensors:  41%|████      | 1.12G/2.72G [00:05<00:08, 192MB/s][A[A[A[A
+
+
+model-00003-of-00004.safetensors:  23%|██▎       | 1.15G/5.00G [00:05<00:17, 214MB/s][A[A[A
+model-00001-of-00004.safetensors:  24%|██▍       | 1.18G/4.90G [00:06<00:17, 215MB/s][A
+
+
+
+model-00004-of-00004.safetensors:  42%|████▏     | 1.14G/2.72G [00:05<00:07, 203MB/s][A[A[A[A
+
+
+model-00003-of-00004.safetensors:  23%|██▎       | 1.17G/5.00G [00:05<00:18, 210MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  24%|██▍       | 1.17G/4.92G [00:06<00:23, 159MB/s][A[A
+model-00001-of-00004.safetensors:  25%|██▍       | 1.21G/4.90G [00:06<00:16, 222MB/s][A
+
+
+model-00003-of-00004.safetensors:  24%|██▍       | 1.20G/5.00G [00:06<00:17, 221MB/s][A[A[A
+
+
+
+model-00004-of-00004.safetensors:  43%|████▎     | 1.16G/2.72G [00:05<00:08, 191MB/s][A[A[A[A
+
+model-00002-of-00004.safetensors:  24%|██▍       | 1.19G/4.92G [00:06<00:22, 168MB/s][A[A
+model-00001-of-00004.safetensors:  25%|██▌       | 1.23G/4.90G [00:06<00:16, 221MB/s][A
+
+
+
+model-00004-of-00004.safetensors:  44%|████▎     | 1.19G/2.72G [00:06<00:07, 204MB/s][A[A[A[A
+
+
+model-00003-of-00004.safetensors:  24%|██▍       | 1.22G/5.00G [00:06<00:17, 218MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  25%|██▍       | 1.22G/4.92G [00:06<00:19, 190MB/s][A[A
+
+
+
+model-00004-of-00004.safetensors:  44%|████▍     | 1.21G/2.72G [00:06<00:07, 204MB/s][A[A[A[A
+model-00001-of-00004.safetensors:  26%|██▌       | 1.25G/4.90G [00:06<00:18, 198MB/s][A
+
+
+model-00003-of-00004.safetensors:  25%|██▍       | 1.24G/5.00G [00:06<00:18, 204MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  25%|██▌       | 1.24G/4.92G [00:06<00:19, 190MB/s][A[A
+
+
+
+model-00004-of-00004.safetensors:  45%|████▌     | 1.23G/2.72G [00:06<00:07, 211MB/s][A[A[A[A
+model-00001-of-00004.safetensors:  26%|██▌       | 1.27G/4.90G [00:06<00:18, 196MB/s][A
+
+
+model-00003-of-00004.safetensors:  25%|██▌       | 1.27G/5.00G [00:06<00:18, 197MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  26%|██▌       | 1.26G/4.92G [00:06<00:19, 185MB/s][A[A
+
+
+
+model-00004-of-00004.safetensors:  46%|████▌     | 1.25G/2.72G [00:06<00:06, 215MB/s][A[A[A[A
+model-00001-of-00004.safetensors:  26%|██▋       | 1.30G/4.90G [00:06<00:17, 204MB/s][A
+
+
+model-00003-of-00004.safetensors:  26%|██▌       | 1.29G/5.00G [00:06<00:16, 218MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  26%|██▌       | 1.28G/4.92G [00:06<00:20, 178MB/s][A[A
+model-00001-of-00004.safetensors:  27%|██▋       | 1.32G/4.90G [00:06<00:16, 213MB/s][A
+
+
+
+model-00004-of-00004.safetensors:  47%|████▋     | 1.28G/2.72G [00:06<00:07, 193MB/s][A[A[A[A
+
+
+model-00003-of-00004.safetensors:  26%|██▋       | 1.32G/5.00G [00:06<00:16, 220MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  26%|██▋       | 1.30G/4.92G [00:06<00:20, 181MB/s][A[A
+model-00001-of-00004.safetensors:  27%|██▋       | 1.34G/4.90G [00:06<00:16, 214MB/s][A
+
+
+
+model-00004-of-00004.safetensors:  48%|████▊     | 1.30G/2.72G [00:06<00:07, 196MB/s][A[A[A[A
+
+
+model-00003-of-00004.safetensors:  27%|██▋       | 1.34G/5.00G [00:06<00:16, 221MB/s][A[A[A
+model-00001-of-00004.safetensors:  28%|██▊       | 1.37G/4.90G [00:07<00:16, 218MB/s][A
+
+model-00002-of-00004.safetensors:  27%|██▋       | 1.31G/4.92G [00:06<00:21, 168MB/s][A[A
+
+
+
+model-00004-of-00004.safetensors:  48%|████▊     | 1.32G/2.72G [00:06<00:07, 194MB/s][A[A[A[A
+
+
+model-00003-of-00004.safetensors:  27%|██▋       | 1.36G/5.00G [00:06<00:17, 212MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  27%|██▋       | 1.34G/4.92G [00:07<00:18, 189MB/s][A[A
+model-00001-of-00004.safetensors:  28%|██▊       | 1.39G/4.90G [00:07<00:16, 217MB/s][A
+
+
+
+model-00004-of-00004.safetensors:  49%|████▉     | 1.34G/2.72G [00:06<00:07, 188MB/s][A[A[A[A
+
+
+model-00003-of-00004.safetensors:  28%|██▊       | 1.39G/5.00G [00:06<00:15, 229MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  28%|██▊       | 1.36G/4.92G [00:07<00:18, 188MB/s][A[A
+model-00001-of-00004.safetensors:  29%|██▉       | 1.41G/4.90G [00:07<00:16, 217MB/s][A
+
+
+
+model-00004-of-00004.safetensors:  50%|█████     | 1.36G/2.72G [00:06<00:06, 198MB/s][A[A[A[A
+
+
+model-00003-of-00004.safetensors:  28%|██▊       | 1.42G/5.00G [00:07<00:17, 202MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  28%|██▊       | 1.38G/4.92G [00:07<00:17, 199MB/s][A[A
+model-00001-of-00004.safetensors:  29%|██▉       | 1.44G/4.90G [00:07<00:16, 209MB/s][A
+
+
+
+model-00004-of-00004.safetensors:  51%|█████     | 1.38G/2.72G [00:07<00:06, 210MB/s][A[A[A[A
+
+model-00002-of-00004.safetensors:  29%|██▊       | 1.40G/4.92G [00:07<00:17, 196MB/s][A[A
+
+
+
+model-00004-of-00004.safetensors:  52%|█████▏    | 1.41G/2.72G [00:07<00:06, 210MB/s][A[A[A[A
+model-00001-of-00004.safetensors:  30%|██▉       | 1.46G/4.90G [00:07<00:17, 199MB/s][A
+
+
+model-00003-of-00004.safetensors:  29%|██▉       | 1.44G/5.00G [00:07<00:21, 166MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  29%|██▉       | 1.43G/4.92G [00:07<00:17, 205MB/s][A[A
+
+
+
+model-00004-of-00004.safetensors:  53%|█████▎    | 1.43G/2.72G [00:07<00:05, 221MB/s][A[A[A[A
+model-00001-of-00004.safetensors:  30%|███       | 1.48G/4.90G [00:07<00:16, 213MB/s][A
+
+
+model-00003-of-00004.safetensors:  29%|██▉       | 1.46G/5.00G [00:07<00:20, 175MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  29%|██▉       | 1.45G/4.92G [00:07<00:18, 190MB/s][A[A
+model-00001-of-00004.safetensors:  31%|███       | 1.50G/4.90G [00:07<00:16, 212MB/s][A
+
+
+model-00003-of-00004.safetensors:  30%|██▉       | 1.48G/5.00G [00:07<00:20, 173MB/s][A[A[A
+
+
+
+model-00004-of-00004.safetensors:  54%|█████▎    | 1.45G/2.72G [00:07<00:06, 189MB/s][A[A[A[A
+
+model-00002-of-00004.safetensors:  30%|██▉       | 1.47G/4.92G [00:07<00:16, 206MB/s][A[A
+model-00001-of-00004.safetensors:  31%|███       | 1.53G/4.90G [00:07<00:15, 217MB/s][A
+
+
+model-00003-of-00004.safetensors:  30%|███       | 1.50G/5.00G [00:07<00:17, 197MB/s][A[A[A
+
+
+
+model-00004-of-00004.safetensors:  54%|█████▍    | 1.48G/2.72G [00:07<00:06, 198MB/s][A[A[A[A
+model-00001-of-00004.safetensors:  32%|███▏      | 1.55G/4.90G [00:07<00:14, 225MB/s][A
+
+model-00002-of-00004.safetensors:  30%|███       | 1.49G/4.92G [00:07<00:17, 201MB/s][A[A
+
+
+
+model-00004-of-00004.safetensors:  55%|█████▌    | 1.50G/2.72G [00:07<00:06, 200MB/s][A[A[A[A
+
+
+model-00003-of-00004.safetensors:  31%|███       | 1.53G/5.00G [00:07<00:20, 172MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  31%|███       | 1.52G/4.92G [00:07<00:16, 207MB/s][A[A
+model-00001-of-00004.safetensors:  32%|███▏      | 1.58G/4.90G [00:08<00:14, 224MB/s][A
+
+
+
+model-00004-of-00004.safetensors:  56%|█████▌    | 1.52G/2.72G [00:07<00:05, 214MB/s][A[A[A[A
+
+
+model-00003-of-00004.safetensors:  31%|███       | 1.55G/5.00G [00:07<00:18, 188MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  31%|███▏      | 1.54G/4.92G [00:08<00:15, 217MB/s][A[A
+model-00001-of-00004.safetensors:  33%|███▎      | 1.60G/4.90G [00:08<00:14, 228MB/s][A
+
+
+
+model-00004-of-00004.safetensors:  57%|█████▋    | 1.55G/2.72G [00:07<00:05, 213MB/s][A[A[A[A
+
+model-00002-of-00004.safetensors:  32%|███▏      | 1.56G/4.92G [00:08<00:16, 205MB/s][A[A
+model-00001-of-00004.safetensors:  33%|███▎      | 1.63G/4.90G [00:08<00:14, 220MB/s][A
+
+
+
+model-00004-of-00004.safetensors:  58%|█████▊    | 1.57G/2.72G [00:07<00:05, 210MB/s][A[A[A[A
+
+
+model-00003-of-00004.safetensors:  31%|███▏      | 1.57G/5.00G [00:08<00:23, 149MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  32%|███▏      | 1.59G/4.92G [00:08<00:15, 214MB/s][A[A
+model-00001-of-00004.safetensors:  34%|███▎      | 1.65G/4.90G [00:08<00:14, 226MB/s][A
+
+
+
+model-00004-of-00004.safetensors:  59%|█████▊    | 1.59G/2.72G [00:08<00:05, 199MB/s][A[A[A[A
+
+
+model-00003-of-00004.safetensors:  32%|███▏      | 1.59G/5.00G [00:08<00:20, 166MB/s][A[A[A
+model-00001-of-00004.safetensors:  34%|███▍      | 1.68G/4.90G [00:08<00:13, 236MB/s][A
+
+model-00002-of-00004.safetensors:  33%|███▎      | 1.61G/4.92G [00:08<00:15, 213MB/s][A[A
+
+
+
+model-00004-of-00004.safetensors:  59%|█████▉    | 1.61G/2.72G [00:08<00:05, 193MB/s][A[A[A[A
+
+
+model-00003-of-00004.safetensors:  32%|███▏      | 1.62G/5.00G [00:08<00:18, 184MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  33%|███▎      | 1.63G/4.92G [00:08<00:16, 204MB/s][A[A
+model-00001-of-00004.safetensors:  35%|███▍      | 1.70G/4.90G [00:08<00:14, 224MB/s][A
+
+
+
+model-00004-of-00004.safetensors:  60%|██████    | 1.63G/2.72G [00:08<00:05, 188MB/s][A[A[A[A
+
+
+model-00003-of-00004.safetensors:  33%|███▎      | 1.64G/5.00G [00:08<00:18, 184MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  34%|███▎      | 1.65G/4.92G [00:08<00:16, 195MB/s][A[A
+model-00001-of-00004.safetensors:  35%|███▌      | 1.72G/4.90G [00:08<00:16, 194MB/s][A
+
+
+
+model-00004-of-00004.safetensors:  61%|██████    | 1.65G/2.72G [00:08<00:06, 175MB/s][A[A[A[A
+
+
+model-00003-of-00004.safetensors:  33%|███▎      | 1.66G/5.00G [00:08<00:18, 178MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  34%|███▍      | 1.67G/4.92G [00:08<00:16, 201MB/s][A[A
+model-00001-of-00004.safetensors:  36%|███▌      | 1.75G/4.90G [00:08<00:15, 198MB/s][A
+
+
+
+model-00004-of-00004.safetensors:  61%|██████▏   | 1.67G/2.72G [00:08<00:05, 179MB/s][A[A[A[A
+
+
+model-00003-of-00004.safetensors:  34%|███▎      | 1.68G/5.00G [00:08<00:17, 192MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  34%|███▍      | 1.70G/4.92G [00:08<00:16, 198MB/s][A[A
+model-00001-of-00004.safetensors:  36%|███▌      | 1.77G/4.90G [00:08<00:15, 205MB/s][A
+
+
+
+model-00004-of-00004.safetensors:  62%|██████▏   | 1.69G/2.72G [00:08<00:05, 187MB/s][A[A[A[A
+
+
+model-00003-of-00004.safetensors:  34%|███▍      | 1.70G/5.00G [00:08<00:17, 186MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  35%|███▍      | 1.72G/4.92G [00:08<00:16, 191MB/s][A[A
+model-00001-of-00004.safetensors:  37%|███▋      | 1.79G/4.90G [00:09<00:14, 212MB/s][A
+
+
+
+model-00004-of-00004.safetensors:  63%|██████▎   | 1.71G/2.72G [00:08<00:05, 196MB/s][A[A[A[A
+
+
+model-00003-of-00004.safetensors:  35%|███▍      | 1.73G/5.00G [00:08<00:16, 204MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  35%|███▌      | 1.74G/4.92G [00:09<00:16, 190MB/s][A[A
+model-00001-of-00004.safetensors:  37%|███▋      | 1.82G/4.90G [00:09<00:14, 214MB/s][A
+
+
+
+model-00004-of-00004.safetensors:  64%|██████▍   | 1.74G/2.72G [00:08<00:04, 201MB/s][A[A[A[A
+
+
+model-00003-of-00004.safetensors:  35%|███▌      | 1.75G/5.00G [00:08<00:15, 216MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  36%|███▌      | 1.76G/4.92G [00:09<00:16, 194MB/s][A[A
+model-00001-of-00004.safetensors:  37%|███▋      | 1.84G/4.90G [00:09<00:14, 212MB/s][A
+
+
+
+model-00004-of-00004.safetensors:  65%|██████▍   | 1.76G/2.72G [00:08<00:04, 201MB/s][A[A[A[A
+
+
+model-00003-of-00004.safetensors:  36%|███▌      | 1.78G/5.00G [00:09<00:15, 207MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  36%|███▌      | 1.78G/4.92G [00:09<00:16, 191MB/s][A[A
+model-00001-of-00004.safetensors:  38%|███▊      | 1.86G/4.90G [00:09<00:14, 215MB/s][A
+
+
+
+model-00004-of-00004.safetensors:  66%|██████▌   | 1.78G/2.72G [00:09<00:04, 214MB/s][A[A[A[A
+
+
+model-00003-of-00004.safetensors:  36%|███▌      | 1.80G/5.00G [00:09<00:15, 212MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  37%|███▋      | 1.80G/4.92G [00:09<00:15, 201MB/s][A[A
+model-00001-of-00004.safetensors:  38%|███▊      | 1.88G/4.90G [00:09<00:15, 192MB/s][A
+
+
+
+model-00004-of-00004.safetensors:  66%|██████▋   | 1.81G/2.72G [00:09<00:04, 204MB/s][A[A[A[A
+
+
+model-00003-of-00004.safetensors:  36%|███▋      | 1.82G/5.00G [00:09<00:14, 217MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  37%|███▋      | 1.82G/4.92G [00:09<00:15, 194MB/s][A[A
+model-00001-of-00004.safetensors:  39%|███▉      | 1.91G/4.90G [00:09<00:14, 207MB/s][A
+
+
+
+model-00004-of-00004.safetensors:  67%|██████▋   | 1.83G/2.72G [00:09<00:04, 219MB/s][A[A[A[A
+
+
+model-00003-of-00004.safetensors:  37%|███▋      | 1.85G/5.00G [00:09<00:14, 220MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  37%|███▋      | 1.84G/4.92G [00:09<00:18, 167MB/s][A[A
+
+
+
+model-00004-of-00004.safetensors:  68%|██████▊   | 1.85G/2.72G [00:09<00:03, 217MB/s][A[A[A[A
+
+
+model-00003-of-00004.safetensors:  37%|███▋      | 1.87G/5.00G [00:09<00:13, 227MB/s][A[A[A
+model-00001-of-00004.safetensors:  39%|███▉      | 1.93G/4.90G [00:09<00:15, 193MB/s][A
+
+model-00002-of-00004.safetensors:  38%|███▊      | 1.86G/4.92G [00:09<00:18, 165MB/s][A[A
+model-00001-of-00004.safetensors:  40%|███▉      | 1.95G/4.90G [00:09<00:14, 199MB/s][A
+
+
+
+model-00004-of-00004.safetensors:  69%|██████▉   | 1.88G/2.72G [00:09<00:04, 205MB/s][A[A[A[A
+
+
+model-00003-of-00004.safetensors:  38%|███▊      | 1.90G/5.00G [00:09<00:16, 191MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  38%|███▊      | 1.88G/4.92G [00:09<00:18, 162MB/s][A[A
+
+
+
+model-00004-of-00004.safetensors:  70%|██████▉   | 1.90G/2.72G [00:09<00:04, 199MB/s][A[A[A[A
+
+
+model-00003-of-00004.safetensors:  38%|███▊      | 1.92G/5.00G [00:09<00:16, 188MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  39%|███▊      | 1.90G/4.92G [00:09<00:17, 169MB/s][A[A
+
+
+
+model-00004-of-00004.safetensors:  71%|███████   | 1.92G/2.72G [00:09<00:03, 209MB/s][A[A[A[A
+model-00001-of-00004.safetensors:  40%|████      | 1.97G/4.90G [00:10<00:19, 149MB/s][A
+
+
+model-00003-of-00004.safetensors:  39%|███▉      | 1.94G/5.00G [00:09<00:15, 200MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  39%|███▉      | 1.92G/4.92G [00:10<00:17, 171MB/s][A[A
+
+
+
+model-00004-of-00004.safetensors:  72%|███████▏  | 1.95G/2.72G [00:09<00:03, 216MB/s][A[A[A[A
+model-00001-of-00004.safetensors:  41%|████      | 1.99G/4.90G [00:10<00:18, 155MB/s][A
+
+
+model-00003-of-00004.safetensors:  39%|███▉      | 1.96G/5.00G [00:09<00:14, 205MB/s][A[A[A
+
+
+
+model-00004-of-00004.safetensors:  72%|███████▏  | 1.97G/2.72G [00:09<00:03, 216MB/s][A[A[A[A
+
+model-00002-of-00004.safetensors:  39%|███▉      | 1.93G/4.92G [00:10<00:17, 168MB/s][A[A
+model-00001-of-00004.safetensors:  41%|████      | 2.02G/4.90G [00:10<00:16, 176MB/s][A
+
+
+model-00003-of-00004.safetensors:  40%|███▉      | 1.98G/5.00G [00:10<00:15, 198MB/s][A[A[A
+
+
+
+model-00004-of-00004.safetensors:  73%|███████▎  | 2.00G/2.72G [00:10<00:03, 230MB/s][A[A[A[A
+model-00001-of-00004.safetensors:  42%|████▏     | 2.04G/4.90G [00:10<00:15, 187MB/s][A
+
+model-00002-of-00004.safetensors:  40%|███▉      | 1.95G/4.92G [00:10<00:18, 163MB/s][A[A
+
+
+
+model-00004-of-00004.safetensors:  74%|███████▍  | 2.02G/2.72G [00:10<00:03, 230MB/s][A[A[A[A
+model-00001-of-00004.safetensors:  42%|████▏     | 2.06G/4.90G [00:10<00:14, 195MB/s][A
+
+
+model-00003-of-00004.safetensors:  40%|████      | 2.01G/5.00G [00:10<00:16, 179MB/s][A[A[A
+model-00001-of-00004.safetensors:  42%|████▏     | 2.08G/4.90G [00:10<00:14, 194MB/s][A
+
+
+model-00003-of-00004.safetensors:  41%|████      | 2.03G/5.00G [00:10<00:15, 186MB/s][A[A[A
+
+
+
+model-00004-of-00004.safetensors:  75%|███████▌  | 2.04G/2.72G [00:10<00:03, 217MB/s][A[A[A[A
+model-00001-of-00004.safetensors:  43%|████▎     | 2.10G/4.90G [00:10<00:14, 197MB/s][A
+
+
+model-00003-of-00004.safetensors:  41%|████      | 2.05G/5.00G [00:10<00:15, 188MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  40%|████      | 1.97G/4.92G [00:10<00:28, 103MB/s][A[A
+
+
+
+model-00004-of-00004.safetensors:  76%|███████▌  | 2.07G/2.72G [00:10<00:03, 193MB/s][A[A[A[A
+model-00001-of-00004.safetensors:  43%|████▎     | 2.12G/4.90G [00:10<00:13, 201MB/s][A
+
+
+model-00003-of-00004.safetensors:  41%|████▏     | 2.07G/5.00G [00:10<00:15, 195MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  40%|████      | 1.98G/4.92G [00:10<00:25, 115MB/s][A[A
+
+
+
+model-00004-of-00004.safetensors:  77%|███████▋  | 2.09G/2.72G [00:10<00:03, 193MB/s][A[A[A[A
+model-00001-of-00004.safetensors:  44%|████▎     | 2.14G/4.90G [00:10<00:14, 190MB/s][A
+
+
+model-00003-of-00004.safetensors:  42%|████▏     | 2.09G/5.00G [00:10<00:15, 186MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  41%|████      | 2.00G/4.92G [00:10<00:25, 115MB/s][A[A
+
+
+
+model-00004-of-00004.safetensors:  78%|███████▊  | 2.11G/2.72G [00:10<00:03, 187MB/s][A[A[A[A
+
+
+model-00003-of-00004.safetensors:  42%|████▏     | 2.11G/5.00G [00:10<00:14, 197MB/s][A[A[A
+model-00001-of-00004.safetensors:  44%|████▍     | 2.16G/4.90G [00:11<00:15, 171MB/s][A
+
+model-00002-of-00004.safetensors:  41%|████      | 2.01G/4.92G [00:10<00:25, 113MB/s][A[A
+
+
+
+model-00004-of-00004.safetensors:  78%|███████▊  | 2.13G/2.72G [00:10<00:03, 178MB/s][A[A[A[A
+
+
+model-00003-of-00004.safetensors:  43%|████▎     | 2.13G/5.00G [00:10<00:14, 193MB/s][A[A[A
+model-00001-of-00004.safetensors:  45%|████▍     | 2.18G/4.90G [00:11<00:15, 171MB/s][A
+
+
+
+model-00004-of-00004.safetensors:  79%|███████▉  | 2.15G/2.72G [00:10<00:03, 187MB/s][A[A[A[A
+
+model-00002-of-00004.safetensors:  41%|████      | 2.03G/4.92G [00:11<00:26, 108MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  43%|████▎     | 2.15G/5.00G [00:10<00:14, 195MB/s][A[A[A
+model-00001-of-00004.safetensors:  45%|████▍     | 2.20G/4.90G [00:11<00:15, 172MB/s][A
+
+model-00002-of-00004.safetensors:  42%|████▏     | 2.04G/4.92G [00:11<00:23, 121MB/s][A[A
+
+
+
+model-00004-of-00004.safetensors:  80%|███████▉  | 2.17G/2.72G [00:11<00:03, 181MB/s][A[A[A[A
+
+
+model-00003-of-00004.safetensors:  43%|████▎     | 2.17G/5.00G [00:11<00:13, 204MB/s][A[A[A
+model-00001-of-00004.safetensors:  45%|████▌     | 2.22G/4.90G [00:11<00:15, 173MB/s][A
+
+model-00002-of-00004.safetensors:  42%|████▏     | 2.06G/4.92G [00:11<00:21, 131MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  44%|████▍     | 2.20G/5.00G [00:11<00:13, 204MB/s][A[A[A
+
+
+
+model-00004-of-00004.safetensors:  80%|████████  | 2.19G/2.72G [00:11<00:03, 170MB/s][A[A[A[A
+model-00001-of-00004.safetensors:  46%|████▌     | 2.24G/4.90G [00:11<00:16, 164MB/s][A
+
+model-00002-of-00004.safetensors:  42%|████▏     | 2.08G/4.92G [00:11<00:22, 128MB/s][A[A
+
+
+
+model-00004-of-00004.safetensors:  81%|████████▏ | 2.21G/2.72G [00:11<00:02, 184MB/s][A[A[A[A
+
+
+model-00003-of-00004.safetensors:  44%|████▍     | 2.22G/5.00G [00:11<00:14, 187MB/s][A[A[A
+model-00001-of-00004.safetensors:  46%|████▌     | 2.26G/4.90G [00:11<00:15, 176MB/s][A
+
+model-00002-of-00004.safetensors:  43%|████▎     | 2.10G/4.92G [00:11<00:19, 146MB/s][A[A
+
+
+
+model-00004-of-00004.safetensors:  82%|████████▏ | 2.23G/2.72G [00:11<00:02, 192MB/s][A[A[A[A
+
+
+model-00003-of-00004.safetensors:  45%|████▍     | 2.24G/5.00G [00:11<00:14, 195MB/s][A[A[A
+model-00001-of-00004.safetensors:  47%|████▋     | 2.28G/4.90G [00:11<00:14, 185MB/s][A
+
+model-00002-of-00004.safetensors:  43%|████▎     | 2.11G/4.92G [00:11<00:18, 148MB/s][A[A
+
+
+
+model-00004-of-00004.safetensors:  83%|████████▎ | 2.26G/2.72G [00:11<00:02, 217MB/s][A[A[A[A
+
+
+model-00003-of-00004.safetensors:  45%|████▌     | 2.26G/5.00G [00:11<00:13, 200MB/s][A[A[A
+model-00001-of-00004.safetensors:  47%|████▋     | 2.30G/4.90G [00:11<00:14, 182MB/s][A
+
+model-00002-of-00004.safetensors:  43%|████▎     | 2.13G/4.92G [00:11<00:16, 164MB/s][A[A
+
+
+
+model-00004-of-00004.safetensors:  84%|████████▍ | 2.28G/2.72G [00:11<00:01, 219MB/s][A[A[A[A
+
+
+model-00003-of-00004.safetensors:  46%|████▌     | 2.28G/5.00G [00:11<00:13, 207MB/s][A[A[A
+model-00001-of-00004.safetensors:  47%|████▋     | 2.32G/4.90G [00:11<00:13, 192MB/s][A
+
+model-00002-of-00004.safetensors:  44%|████▍     | 2.15G/4.92G [00:11<00:16, 170MB/s][A[A
+
+
+
+model-00004-of-00004.safetensors:  85%|████████▍ | 2.31G/2.72G [00:11<00:01, 221MB/s][A[A[A[A
+
+
+model-00003-of-00004.safetensors:  46%|████▌     | 2.30G/5.00G [00:11<00:13, 203MB/s][A[A[A
+model-00001-of-00004.safetensors:  48%|████▊     | 2.35G/4.90G [00:12<00:12, 200MB/s][A
+
+model-00002-of-00004.safetensors:  44%|████▍     | 2.17G/4.92G [00:11<00:15, 180MB/s][A[A
+
+
+
+model-00004-of-00004.safetensors:  86%|████████▌ | 2.33G/2.72G [00:11<00:01, 209MB/s][A[A[A[A
+
+
+model-00003-of-00004.safetensors:  47%|████▋     | 2.33G/5.00G [00:11<00:14, 190MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  45%|████▍     | 2.19G/4.92G [00:12<00:15, 177MB/s][A[A
+
+
+
+model-00004-of-00004.safetensors:  87%|████████▋ | 2.35G/2.72G [00:11<00:01, 219MB/s][A[A[A[A
+model-00001-of-00004.safetensors:  48%|████▊     | 2.37G/4.90G [00:12<00:15, 163MB/s][A
+
+
+model-00003-of-00004.safetensors:  47%|████▋     | 2.35G/5.00G [00:11<00:13, 190MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  45%|████▌     | 2.21G/4.92G [00:12<00:14, 183MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  47%|████▋     | 2.37G/5.00G [00:12<00:13, 195MB/s][A[A[A
+model-00001-of-00004.safetensors:  49%|████▊     | 2.39G/4.90G [00:12<00:14, 176MB/s][A
+
+model-00002-of-00004.safetensors:  45%|████▌     | 2.23G/4.92G [00:12<00:14, 182MB/s][A[A
+model-00001-of-00004.safetensors:  49%|████▉     | 2.41G/4.90G [00:12<00:12, 197MB/s][A
+
+
+model-00003-of-00004.safetensors:  48%|████▊     | 2.39G/5.00G [00:12<00:13, 197MB/s][A[A[A
+
+
+
+model-00004-of-00004.safetensors:  88%|████████▊ | 2.38G/2.72G [00:12<00:02, 157MB/s][A[A[A[A
+
+model-00002-of-00004.safetensors:  46%|████▌     | 2.25G/4.92G [00:12<00:14, 182MB/s][A[A
+
+
+
+model-00004-of-00004.safetensors:  88%|████████▊ | 2.40G/2.72G [00:12<00:01, 170MB/s][A[A[A[A
+model-00001-of-00004.safetensors:  50%|████▉     | 2.44G/4.90G [00:12<00:13, 183MB/s][A
+
+model-00002-of-00004.safetensors:  46%|████▌     | 2.27G/4.92G [00:12<00:15, 170MB/s][A[A
+
+
+
+model-00004-of-00004.safetensors:  89%|████████▉ | 2.42G/2.72G [00:12<00:01, 181MB/s][A[A[A[A
+model-00001-of-00004.safetensors:  50%|█████     | 2.46G/4.90G [00:12<00:13, 188MB/s][A
+
+model-00002-of-00004.safetensors:  47%|████▋     | 2.29G/4.92G [00:12<00:15, 171MB/s][A[A
+
+
+
+model-00004-of-00004.safetensors:  90%|████████▉ | 2.44G/2.72G [00:12<00:01, 180MB/s][A[A[A[A
+model-00001-of-00004.safetensors:  51%|█████     | 2.48G/4.90G [00:12<00:12, 188MB/s][A
+
+
+model-00003-of-00004.safetensors:  48%|████▊     | 2.41G/5.00G [00:12<00:22, 114MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  47%|████▋     | 2.31G/4.92G [00:12<00:15, 165MB/s][A[A
+
+
+
+model-00004-of-00004.safetensors:  91%|█████████ | 2.47G/2.72G [00:12<00:01, 191MB/s][A[A[A[A
+
+
+model-00003-of-00004.safetensors:  49%|████▊     | 2.43G/5.00G [00:12<00:19, 133MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  47%|████▋     | 2.32G/4.92G [00:12<00:15, 171MB/s][A[A
+model-00001-of-00004.safetensors:  51%|█████     | 2.50G/4.90G [00:12<00:15, 160MB/s][A
+
+
+
+model-00004-of-00004.safetensors:  92%|█████████▏| 2.49G/2.72G [00:12<00:01, 192MB/s][A[A[A[A
+
+
+model-00003-of-00004.safetensors:  49%|████▉     | 2.45G/5.00G [00:12<00:17, 146MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  48%|████▊     | 2.34G/4.92G [00:12<00:14, 177MB/s][A[A
+model-00001-of-00004.safetensors:  51%|█████▏    | 2.52G/4.90G [00:13<00:14, 160MB/s][A
+
+
+
+model-00004-of-00004.safetensors:  93%|█████████▎| 2.51G/2.72G [00:12<00:00, 213MB/s][A[A[A[A
+
+
+model-00003-of-00004.safetensors:  49%|████▉     | 2.47G/5.00G [00:12<00:17, 148MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  48%|████▊     | 2.36G/4.92G [00:13<00:14, 172MB/s][A[A
+model-00001-of-00004.safetensors:  52%|█████▏    | 2.54G/4.90G [00:13<00:13, 175MB/s][A
+
+
+
+model-00004-of-00004.safetensors:  93%|█████████▎| 2.54G/2.72G [00:12<00:00, 212MB/s][A[A[A[A
+
+
+model-00003-of-00004.safetensors:  50%|████▉     | 2.49G/5.00G [00:12<00:18, 139MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  48%|████▊     | 2.38G/4.92G [00:13<00:16, 158MB/s][A[A
+
+
+
+model-00004-of-00004.safetensors:  94%|█████████▍| 2.56G/2.72G [00:13<00:00, 189MB/s][A[A[A[A
+
+
+model-00003-of-00004.safetensors:  50%|█████     | 2.51G/5.00G [00:13<00:15, 156MB/s][A[A[A
+model-00001-of-00004.safetensors:  52%|█████▏    | 2.56G/4.90G [00:13<00:17, 137MB/s][A
+
+model-00002-of-00004.safetensors:  49%|████▉     | 2.40G/4.92G [00:13<00:14, 170MB/s][A[A
+
+
+
+model-00004-of-00004.safetensors:  95%|█████████▌| 2.58G/2.72G [00:13<00:00, 204MB/s][A[A[A[A
+model-00001-of-00004.safetensors:  53%|█████▎    | 2.58G/4.90G [00:13<00:15, 151MB/s][A
+
+
+model-00003-of-00004.safetensors:  51%|█████     | 2.53G/5.00G [00:13<00:14, 169MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  49%|████▉     | 2.42G/4.92G [00:13<00:14, 175MB/s][A[A
+
+
+
+model-00004-of-00004.safetensors:  96%|█████████▌| 2.60G/2.72G [00:13<00:00, 207MB/s][A[A[A[A
+model-00001-of-00004.safetensors:  53%|█████▎    | 2.60G/4.90G [00:13<00:13, 175MB/s][A
+
+
+model-00003-of-00004.safetensors:  51%|█████     | 2.55G/5.00G [00:13<00:13, 180MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  50%|████▉     | 2.44G/4.92G [00:13<00:13, 184MB/s][A[A
+
+
+
+model-00004-of-00004.safetensors:  97%|█████████▋| 2.63G/2.72G [00:13<00:00, 211MB/s][A[A[A[A
+model-00001-of-00004.safetensors:  54%|█████▎    | 2.62G/4.90G [00:13<00:12, 182MB/s][A
+
+model-00002-of-00004.safetensors:  50%|█████     | 2.46G/4.92G [00:13<00:12, 189MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  51%|█████▏    | 2.57G/5.00G [00:13<00:14, 169MB/s][A[A[A
+
+
+
+model-00004-of-00004.safetensors:  98%|█████████▊| 2.65G/2.72G [00:13<00:00, 214MB/s][A[A[A[A
+model-00001-of-00004.safetensors:  54%|█████▍    | 2.65G/4.90G [00:13<00:11, 191MB/s][A
+
+model-00002-of-00004.safetensors:  51%|█████     | 2.48G/4.92G [00:13<00:12, 188MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  52%|█████▏    | 2.59G/5.00G [00:13<00:13, 175MB/s][A[A[A
+
+
+
+model-00004-of-00004.safetensors:  99%|█████████▊| 2.68G/2.72G [00:13<00:00, 223MB/s][A[A[A[A
+model-00001-of-00004.safetensors:  54%|█████▍    | 2.67G/4.90G [00:13<00:11, 202MB/s][A
+
+model-00002-of-00004.safetensors:  51%|█████     | 2.50G/4.92G [00:13<00:13, 177MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  52%|█████▏    | 2.61G/5.00G [00:13<00:13, 172MB/s][A[A[A
+
+
+
+model-00004-of-00004.safetensors:  99%|█████████▉| 2.70G/2.72G [00:13<00:00, 224MB/s][A[A[A[A
+
+
+
+                                                                                     [A[A[A[A
+
+model-00002-of-00004.safetensors:  51%|█████▏    | 2.52G/4.92G [00:13<00:12, 188MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  53%|█████▎    | 2.63G/5.00G [00:13<00:13, 171MB/s][A[A[A
+model-00001-of-00004.safetensors:  55%|█████▍    | 2.69G/4.90G [00:14<00:12, 181MB/s][A
+
+model-00002-of-00004.safetensors:  52%|█████▏    | 2.54G/4.92G [00:14<00:12, 187MB/s][A[A
+model-00001-of-00004.safetensors:  55%|█████▌    | 2.71G/4.90G [00:14<00:11, 183MB/s][A
+
+
+model-00003-of-00004.safetensors:  53%|█████▎    | 2.65G/5.00G [00:13<00:14, 164MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  52%|█████▏    | 2.57G/4.92G [00:14<00:11, 197MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  53%|█████▎    | 2.67G/5.00G [00:13<00:13, 179MB/s][A[A[A
+model-00001-of-00004.safetensors:  56%|█████▌    | 2.73G/4.90G [00:14<00:14, 147MB/s][A
+
+
+model-00003-of-00004.safetensors:  54%|█████▍    | 2.69G/5.00G [00:14<00:12, 179MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  53%|█████▎    | 2.59G/4.92G [00:14<00:13, 175MB/s][A[A
+model-00001-of-00004.safetensors:  56%|█████▌    | 2.75G/4.90G [00:14<00:13, 157MB/s][A
+
+
+model-00003-of-00004.safetensors:  54%|█████▍    | 2.71G/5.00G [00:14<00:13, 170MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  53%|█████▎    | 2.61G/4.92G [00:14<00:14, 156MB/s][A[A
+model-00001-of-00004.safetensors:  57%|█████▋    | 2.77G/4.90G [00:14<00:14, 145MB/s][A
+
+model-00002-of-00004.safetensors:  54%|█████▎    | 2.63G/4.92G [00:14<00:12, 177MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  55%|█████▍    | 2.73G/5.00G [00:14<00:15, 149MB/s][A[A[A
+model-00001-of-00004.safetensors:  57%|█████▋    | 2.80G/4.90G [00:14<00:12, 170MB/s][A
+
+model-00002-of-00004.safetensors:  54%|█████▍    | 2.66G/4.92G [00:14<00:11, 198MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  55%|█████▍    | 2.75G/5.00G [00:14<00:13, 162MB/s][A[A[A
+model-00001-of-00004.safetensors:  57%|█████▋    | 2.81G/4.90G [00:14<00:12, 163MB/s][A
+
+model-00002-of-00004.safetensors:  54%|█████▍    | 2.68G/4.92G [00:14<00:11, 203MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  55%|█████▌    | 2.76G/5.00G [00:14<00:14, 160MB/s][A[A[A
+model-00001-of-00004.safetensors:  58%|█████▊    | 2.84G/4.90G [00:14<00:10, 189MB/s][A
+
+model-00002-of-00004.safetensors:  55%|█████▍    | 2.70G/4.92G [00:14<00:10, 209MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  56%|█████▌    | 2.78G/5.00G [00:14<00:13, 163MB/s][A[A[A
+model-00001-of-00004.safetensors:  58%|█████▊    | 2.86G/4.90G [00:15<00:10, 192MB/s][A
+
+model-00002-of-00004.safetensors:  55%|█████▌    | 2.72G/4.92G [00:14<00:10, 202MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  56%|█████▌    | 2.80G/5.00G [00:14<00:13, 166MB/s][A[A[A
+model-00001-of-00004.safetensors:  59%|█████▉    | 2.89G/4.90G [00:15<00:09, 205MB/s][A
+
+
+model-00003-of-00004.safetensors:  56%|█████▋    | 2.82G/5.00G [00:14<00:12, 171MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  56%|█████▌    | 2.75G/4.92G [00:15<00:11, 195MB/s][A[A
+model-00001-of-00004.safetensors:  59%|█████▉    | 2.91G/4.90G [00:15<00:09, 207MB/s][A
+
+
+model-00003-of-00004.safetensors:  57%|█████▋    | 2.84G/5.00G [00:15<00:11, 183MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  56%|█████▌    | 2.77G/4.92G [00:15<00:12, 179MB/s][A[A
+model-00001-of-00004.safetensors:  60%|█████▉    | 2.93G/4.90G [00:15<00:10, 183MB/s][A
+
+model-00002-of-00004.safetensors:  57%|█████▋    | 2.79G/4.92G [00:15<00:10, 194MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  57%|█████▋    | 2.86G/5.00G [00:15<00:14, 151MB/s][A[A[A
+model-00001-of-00004.safetensors:  60%|██████    | 2.96G/4.90G [00:15<00:09, 204MB/s][A
+
+model-00002-of-00004.safetensors:  57%|█████▋    | 2.81G/4.92G [00:15<00:11, 190MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  58%|█████▊    | 2.88G/5.00G [00:15<00:13, 156MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  58%|█████▊    | 2.83G/4.92G [00:15<00:10, 197MB/s][A[A
+model-00001-of-00004.safetensors:  61%|██████    | 2.98G/4.90G [00:15<00:10, 179MB/s][A
+
+
+model-00003-of-00004.safetensors:  58%|█████▊    | 2.90G/5.00G [00:15<00:12, 172MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  58%|█████▊    | 2.85G/4.92G [00:15<00:10, 197MB/s][A[ADownloading:  47%|████▋     | 8/17 [00:17<00:33,  3.67s/file]
+
+
+model-00003-of-00004.safetensors:  58%|█████▊    | 2.92G/5.00G [00:15<00:11, 181MB/s][A[A[A
+model-00001-of-00004.safetensors:  61%|██████▏   | 3.01G/4.90G [00:15<00:09, 191MB/s][A
+
+model-00002-of-00004.safetensors:  58%|█████▊    | 2.87G/4.92G [00:15<00:10, 199MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  59%|█████▉    | 2.94G/5.00G [00:15<00:11, 175MB/s][A[A[A
+model-00001-of-00004.safetensors:  62%|██████▏   | 3.03G/4.90G [00:15<00:10, 175MB/s][A
+
+model-00002-of-00004.safetensors:  59%|█████▉    | 2.90G/4.92G [00:15<00:11, 182MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  59%|█████▉    | 2.96G/5.00G [00:15<00:11, 178MB/s][A[A[A
+model-00001-of-00004.safetensors:  62%|██████▏   | 3.05G/4.90G [00:16<00:09, 188MB/s][A
+
+
+
+model.safetensors.index.json:   0%|          | 0.00/67.8k [00:00<?, ?B/s][A[A[A[A
+
+
+
+                                                                         [A[A[A[ADownloading:  53%|█████▎    | 9/17 [00:17<00:22,  2.86s/file]
+
+model-00002-of-00004.safetensors:  59%|█████▉    | 2.91G/4.92G [00:16<00:11, 176MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  60%|█████▉    | 2.98G/5.00G [00:15<00:11, 177MB/s][A[A[A
+model-00001-of-00004.safetensors:  63%|██████▎   | 3.07G/4.90G [00:16<00:09, 185MB/s][A
+
+model-00002-of-00004.safetensors:  60%|█████▉    | 2.93G/4.92G [00:16<00:11, 172MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  60%|██████    | 3.00G/5.00G [00:15<00:11, 180MB/s][A[A[A
+model-00001-of-00004.safetensors:  63%|██████▎   | 3.09G/4.90G [00:16<00:10, 171MB/s][A
+
+model-00002-of-00004.safetensors:  60%|██████    | 2.95G/4.92G [00:16<00:11, 172MB/s][A[A
+
+
+
+preprocessor_config.json:   0%|          | 0.00/390 [00:00<?, ?B/s][A[A[A[A
+
+
+
+                                                                   [A[A[A[ADownloading:  59%|█████▉    | 10/17 [00:17<00:15,  2.19s/file]
+
+
+model-00003-of-00004.safetensors:  60%|██████    | 3.02G/5.00G [00:16<00:11, 171MB/s][A[A[A
+model-00001-of-00004.safetensors:  63%|██████▎   | 3.11G/4.90G [00:16<00:10, 169MB/s][A
+
+model-00002-of-00004.safetensors:  60%|██████    | 2.97G/4.92G [00:16<00:10, 180MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  61%|██████    | 3.04G/5.00G [00:16<00:10, 184MB/s][A[A[A
+model-00001-of-00004.safetensors:  64%|██████▍   | 3.13G/4.90G [00:16<00:10, 173MB/s][A
+
+model-00002-of-00004.safetensors:  61%|██████    | 2.99G/4.92G [00:16<00:10, 178MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  61%|██████▏   | 3.06G/5.00G [00:16<00:10, 191MB/s][A[A[A
+model-00001-of-00004.safetensors:  64%|██████▍   | 3.15G/4.90G [00:16<00:10, 175MB/s][A
+
+model-00002-of-00004.safetensors:  61%|██████▏   | 3.01G/4.92G [00:16<00:10, 190MB/s][A[A
+
+
+
+tokenizer.json:   0%|          | 0.00/7.03M [00:00<?, ?B/s][A[A[A[A
+model-00001-of-00004.safetensors:  65%|██████▍   | 3.16G/4.90G [00:16<00:09, 175MB/s][A
+
+
+
+tokenizer.json:  60%|█████▉    | 4.19M/7.03M [00:00<00:00, 21.8MB/s][A[A[A[A
+
+model-00002-of-00004.safetensors:  62%|██████▏   | 3.03G/4.92G [00:16<00:13, 135MB/s][A[A
+
+
+
+                                                                    [A[A[A[A
+
+
+model-00003-of-00004.safetensors:  62%|██████▏   | 3.08G/5.00G [00:16<00:16, 117MB/s][A[A[ADownloading:  65%|██████▍   | 11/17 [00:18<00:10,  1.74s/file]
+model-00001-of-00004.safetensors:  65%|██████▍   | 3.18G/4.90G [00:16<00:13, 127MB/s][A
+
+model-00002-of-00004.safetensors:  62%|██████▏   | 3.05G/4.92G [00:16<00:13, 140MB/s][A[A
+model-00001-of-00004.safetensors:  65%|██████▌   | 3.20G/4.90G [00:17<00:12, 140MB/s][A
+
+
+model-00003-of-00004.safetensors:  62%|██████▏   | 3.10G/5.00G [00:16<00:15, 120MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  62%|██████▏   | 3.07G/4.92G [00:17<00:12, 148MB/s][A[A
+model-00001-of-00004.safetensors:  66%|██████▌   | 3.22G/4.90G [00:17<00:10, 158MB/s][A
+
+
+model-00003-of-00004.safetensors:  62%|██████▏   | 3.12G/5.00G [00:16<00:15, 124MB/s][A[A[A
+
+
+
+tokenizer_config.json:   0%|          | 0.00/10.9k [00:00<?, ?B/s][A[A[A[A
+
+
+
+                                                                  [A[A[A[ADownloading:  71%|███████   | 12/17 [00:18<00:06,  1.34s/file]
+
+model-00002-of-00004.safetensors:  63%|██████▎   | 3.09G/4.92G [00:17<00:11, 163MB/s][A[A
+model-00001-of-00004.safetensors:  66%|██████▌   | 3.24G/4.90G [00:17<00:09, 170MB/s][A
+
+
+model-00003-of-00004.safetensors:  63%|██████▎   | 3.13G/5.00G [00:16<00:14, 128MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  63%|██████▎   | 3.11G/4.92G [00:17<00:11, 160MB/s][A[A
+model-00001-of-00004.safetensors:  67%|██████▋   | 3.26G/4.90G [00:17<00:09, 174MB/s][A
+
+
+model-00003-of-00004.safetensors:  63%|██████▎   | 3.15G/5.00G [00:17<00:13, 135MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  64%|██████▎   | 3.13G/4.92G [00:17<00:10, 173MB/s][A[A
+
+
+
+video_preprocessor_config.json:   0%|          | 0.00/385 [00:00<?, ?B/s][A[A[A[A
+
+
+
+                                                                         [A[A[A[ADownloading:  76%|███████▋  | 13/17 [00:18<00:04,  1.03s/file]
+
+
+model-00003-of-00004.safetensors:  63%|██████▎   | 3.17G/5.00G [00:17<00:12, 151MB/s][A[A[A
+model-00001-of-00004.safetensors:  67%|██████▋   | 3.28G/4.90G [00:17<00:10, 159MB/s][A
+
+model-00002-of-00004.safetensors:  64%|██████▍   | 3.15G/4.92G [00:17<00:10, 165MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  64%|██████▍   | 3.19G/5.00G [00:17<00:11, 163MB/s][A[A[A
+model-00001-of-00004.safetensors:  67%|██████▋   | 3.30G/4.90G [00:17<00:10, 152MB/s][A
+
+
+model-00003-of-00004.safetensors:  64%|██████▍   | 3.21G/5.00G [00:17<00:09, 184MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  64%|██████▍   | 3.17G/4.92G [00:17<00:10, 166MB/s][A[A
+
+
+
+vocab.json:   0%|          | 0.00/2.78M [00:00<?, ?B/s][A[A[A[A
+
+
+
+                                                       [A[A[A[A
+model-00001-of-00004.safetensors:  68%|██████▊   | 3.32G/4.90G [00:17<00:09, 160MB/s][ADownloading:  82%|████████▏ | 14/17 [00:19<00:02,  1.22file/s]
+
+
+model-00003-of-00004.safetensors:  65%|██████▍   | 3.23G/5.00G [00:17<00:09, 190MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  65%|██████▍   | 3.18G/4.92G [00:17<00:10, 167MB/s][A[A
+model-00001-of-00004.safetensors:  68%|██████▊   | 3.33G/4.90G [00:17<00:10, 156MB/s][A
+
+model-00002-of-00004.safetensors:  65%|██████▌   | 3.21G/4.92G [00:17<00:09, 184MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  65%|██████▌   | 3.26G/5.00G [00:17<00:10, 169MB/s][A[A[A
+model-00001-of-00004.safetensors:  68%|██████▊   | 3.35G/4.90G [00:17<00:09, 167MB/s][A
+
+model-00002-of-00004.safetensors:  66%|██████▌   | 3.23G/4.92G [00:17<00:09, 184MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  66%|██████▌   | 3.28G/5.00G [00:17<00:09, 181MB/s][A[A[A
+model-00001-of-00004.safetensors:  69%|██████▉   | 3.38G/4.90G [00:18<00:08, 172MB/s][A
+
+model-00002-of-00004.safetensors:  66%|██████▌   | 3.25G/4.92G [00:18<00:08, 203MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  66%|██████▌   | 3.30G/5.00G [00:17<00:09, 181MB/s][A[A[A
+model-00001-of-00004.safetensors:  69%|██████▉   | 3.40G/4.90G [00:18<00:08, 182MB/s][A
+
+model-00002-of-00004.safetensors:  67%|██████▋   | 3.27G/4.92G [00:18<00:08, 203MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  66%|██████▋   | 3.32G/5.00G [00:17<00:09, 185MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  67%|██████▋   | 3.30G/4.92G [00:18<00:07, 214MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  67%|██████▋   | 3.34G/5.00G [00:18<00:08, 191MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  68%|██████▊   | 3.32G/4.92G [00:18<00:07, 216MB/s][A[A
+model-00001-of-00004.safetensors:  70%|██████▉   | 3.42G/4.90G [00:18<00:10, 135MB/s][A
+
+
+model-00003-of-00004.safetensors:  67%|██████▋   | 3.36G/5.00G [00:18<00:09, 168MB/s][A[A[A
+model-00001-of-00004.safetensors:  70%|███████   | 3.44G/4.90G [00:18<00:08, 166MB/s][A
+
+model-00002-of-00004.safetensors:  68%|██████▊   | 3.34G/4.92G [00:18<00:07, 213MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  68%|██████▊   | 3.38G/5.00G [00:18<00:09, 173MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  68%|██████▊   | 3.36G/4.92G [00:18<00:07, 211MB/s][A[A
+model-00001-of-00004.safetensors:  71%|███████   | 3.46G/4.90G [00:18<00:09, 147MB/s][A
+
+
+model-00003-of-00004.safetensors:  68%|██████▊   | 3.40G/5.00G [00:18<00:09, 172MB/s][A[A[A
+model-00001-of-00004.safetensors:  71%|███████   | 3.48G/4.90G [00:18<00:08, 163MB/s][A
+
+model-00002-of-00004.safetensors:  69%|██████▉   | 3.39G/4.92G [00:18<00:09, 168MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  68%|██████▊   | 3.42G/5.00G [00:18<00:08, 178MB/s][A[A[A
+model-00001-of-00004.safetensors:  71%|███████▏  | 3.50G/4.90G [00:18<00:09, 151MB/s][A
+
+model-00002-of-00004.safetensors:  69%|██████▉   | 3.40G/4.92G [00:18<00:09, 162MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  69%|██████▊   | 3.44G/5.00G [00:18<00:09, 165MB/s][A[A[A
+model-00001-of-00004.safetensors:  72%|███████▏  | 3.53G/4.90G [00:19<00:07, 172MB/s][A
+
+model-00002-of-00004.safetensors:  70%|██████▉   | 3.43G/4.92G [00:18<00:08, 183MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  69%|██████▉   | 3.45G/5.00G [00:18<00:10, 142MB/s][A[A[A
+model-00001-of-00004.safetensors:  72%|███████▏  | 3.55G/4.90G [00:19<00:07, 179MB/s][A
+
+model-00002-of-00004.safetensors:  70%|███████   | 3.46G/4.92G [00:19<00:07, 202MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  69%|██████▉   | 3.47G/5.00G [00:18<00:09, 158MB/s][A[A[A
+model-00001-of-00004.safetensors:  73%|███████▎  | 3.57G/4.90G [00:19<00:07, 187MB/s][A
+
+model-00002-of-00004.safetensors:  71%|███████   | 3.48G/4.92G [00:19<00:06, 211MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  70%|██████▉   | 3.49G/5.00G [00:19<00:08, 168MB/s][A[A[A
+model-00001-of-00004.safetensors:  73%|███████▎  | 3.59G/4.90G [00:19<00:06, 203MB/s][A
+
+model-00002-of-00004.safetensors:  71%|███████   | 3.50G/4.92G [00:19<00:06, 212MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  70%|███████   | 3.52G/5.00G [00:19<00:07, 186MB/s][A[A[A
+model-00001-of-00004.safetensors:  74%|███████▍  | 3.62G/4.90G [00:19<00:06, 200MB/s][A
+
+model-00002-of-00004.safetensors:  72%|███████▏  | 3.52G/4.92G [00:19<00:06, 205MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  71%|███████   | 3.55G/5.00G [00:19<00:07, 206MB/s][A[A[A
+model-00001-of-00004.safetensors:  74%|███████▍  | 3.64G/4.90G [00:19<00:06, 202MB/s][A
+
+model-00002-of-00004.safetensors:  72%|███████▏  | 3.55G/4.92G [00:19<00:06, 213MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  71%|███████▏  | 3.57G/5.00G [00:19<00:07, 203MB/s][A[A[A
+model-00001-of-00004.safetensors:  75%|███████▍  | 3.66G/4.90G [00:19<00:06, 207MB/s][A
+
+model-00002-of-00004.safetensors:  73%|███████▎  | 3.57G/4.92G [00:19<00:07, 191MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  72%|███████▏  | 3.59G/5.00G [00:19<00:06, 208MB/s][A[A[A
+model-00001-of-00004.safetensors:  75%|███████▌  | 3.68G/4.90G [00:19<00:06, 197MB/s][A
+
+model-00002-of-00004.safetensors:  73%|███████▎  | 3.59G/4.92G [00:19<00:06, 190MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  72%|███████▏  | 3.62G/5.00G [00:19<00:06, 206MB/s][A[A[A
+model-00001-of-00004.safetensors:  76%|███████▌  | 3.70G/4.90G [00:19<00:05, 202MB/s][A
+
+model-00002-of-00004.safetensors:  73%|███████▎  | 3.61G/4.92G [00:19<00:06, 194MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  73%|███████▎  | 3.64G/5.00G [00:19<00:06, 212MB/s][A[A[A
+model-00001-of-00004.safetensors:  76%|███████▌  | 3.73G/4.90G [00:19<00:05, 212MB/s][A
+
+model-00002-of-00004.safetensors:  74%|███████▍  | 3.63G/4.92G [00:19<00:06, 186MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  73%|███████▎  | 3.66G/5.00G [00:19<00:06, 211MB/s][A[A[A
+model-00001-of-00004.safetensors:  76%|███████▋  | 3.75G/4.90G [00:20<00:06, 183MB/s][A
+
+model-00002-of-00004.safetensors:  74%|███████▍  | 3.65G/4.92G [00:20<00:06, 188MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  74%|███████▎  | 3.68G/5.00G [00:19<00:06, 204MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  75%|███████▍  | 3.67G/4.92G [00:20<00:06, 189MB/s][A[A
+model-00001-of-00004.safetensors:  77%|███████▋  | 3.77G/4.90G [00:20<00:06, 179MB/s][A
+
+
+model-00003-of-00004.safetensors:  74%|███████▍  | 3.70G/5.00G [00:20<00:06, 197MB/s][A[A[A
+model-00001-of-00004.safetensors:  77%|███████▋  | 3.79G/4.90G [00:20<00:06, 176MB/s][A
+
+model-00002-of-00004.safetensors:  75%|███████▌  | 3.69G/4.92G [00:20<00:07, 173MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  75%|███████▍  | 3.73G/5.00G [00:20<00:06, 209MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  76%|███████▌  | 3.72G/4.92G [00:20<00:06, 193MB/s][A[A
+model-00001-of-00004.safetensors:  78%|███████▊  | 3.81G/4.90G [00:20<00:06, 168MB/s][A
+
+
+model-00003-of-00004.safetensors:  75%|███████▍  | 3.75G/5.00G [00:20<00:06, 207MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  76%|███████▌  | 3.74G/4.92G [00:20<00:06, 194MB/s][A[A
+model-00001-of-00004.safetensors:  78%|███████▊  | 3.83G/4.90G [00:20<00:06, 167MB/s][A
+
+
+model-00003-of-00004.safetensors:  75%|███████▌  | 3.77G/5.00G [00:20<00:05, 210MB/s][A[A[A
+model-00001-of-00004.safetensors:  78%|███████▊  | 3.84G/4.90G [00:20<00:06, 171MB/s][A
+
+model-00002-of-00004.safetensors:  76%|███████▋  | 3.76G/4.92G [00:20<00:06, 190MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  76%|███████▌  | 3.80G/5.00G [00:20<00:05, 215MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  77%|███████▋  | 3.79G/4.92G [00:20<00:05, 209MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  76%|███████▋  | 3.82G/5.00G [00:20<00:05, 228MB/s][A[A[A
+model-00001-of-00004.safetensors:  79%|███████▉  | 3.86G/4.90G [00:20<00:06, 157MB/s][A
+
+model-00002-of-00004.safetensors:  77%|███████▋  | 3.81G/4.92G [00:20<00:05, 195MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  77%|███████▋  | 3.85G/5.00G [00:20<00:05, 210MB/s][A[A[A
+model-00001-of-00004.safetensors:  79%|███████▉  | 3.88G/4.90G [00:20<00:07, 146MB/s][A
+
+model-00002-of-00004.safetensors:  78%|███████▊  | 3.83G/4.92G [00:20<00:05, 193MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  77%|███████▋  | 3.87G/5.00G [00:20<00:05, 216MB/s][A[A[A
+model-00001-of-00004.safetensors:  80%|███████▉  | 3.90G/4.90G [00:21<00:06, 156MB/s][A
+
+model-00002-of-00004.safetensors:  78%|███████▊  | 3.85G/4.92G [00:21<00:05, 189MB/s][A[A
+model-00001-of-00004.safetensors:  80%|███████▉  | 3.92G/4.90G [00:21<00:06, 162MB/s][A
+
+
+model-00003-of-00004.safetensors:  78%|███████▊  | 3.89G/5.00G [00:20<00:05, 199MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  79%|███████▉  | 3.87G/4.92G [00:21<00:05, 204MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  78%|███████▊  | 3.92G/5.00G [00:21<00:05, 215MB/s][A[A[A
+model-00001-of-00004.safetensors:  80%|████████  | 3.94G/4.90G [00:21<00:05, 178MB/s][A
+
+model-00002-of-00004.safetensors:  79%|███████▉  | 3.90G/4.92G [00:21<00:04, 216MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  79%|███████▉  | 3.94G/5.00G [00:21<00:04, 227MB/s][A[A[A
+model-00001-of-00004.safetensors:  81%|████████  | 3.96G/4.90G [00:21<00:05, 173MB/s][A
+
+model-00002-of-00004.safetensors:  80%|███████▉  | 3.92G/4.92G [00:21<00:04, 216MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  79%|███████▉  | 3.97G/5.00G [00:21<00:04, 248MB/s][A[A[A
+model-00001-of-00004.safetensors:  81%|████████  | 3.98G/4.90G [00:21<00:04, 187MB/s][A
+
+model-00002-of-00004.safetensors:  80%|████████  | 3.94G/4.92G [00:21<00:04, 224MB/s][A[A
+model-00001-of-00004.safetensors:  82%|████████▏ | 4.00G/4.90G [00:21<00:04, 195MB/s][A
+
+
+model-00003-of-00004.safetensors:  80%|███████▉  | 4.00G/5.00G [00:21<00:04, 219MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  81%|████████  | 3.97G/4.92G [00:21<00:04, 227MB/s][A[A
+
+model-00002-of-00004.safetensors:  81%|████████  | 3.99G/4.92G [00:21<00:04, 225MB/s][A[A
+model-00001-of-00004.safetensors:  82%|████████▏ | 4.02G/4.90G [00:22<00:08, 99.4MB/s][A
+
+
+model-00003-of-00004.safetensors:  80%|████████  | 4.02G/5.00G [00:21<00:08, 122MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  82%|████████▏ | 4.01G/4.92G [00:22<00:06, 133MB/s][A[A
+model-00001-of-00004.safetensors:  83%|████████▎ | 4.05G/4.90G [00:22<00:06, 128MB/s] [A
+
+
+model-00003-of-00004.safetensors:  81%|████████  | 4.04G/5.00G [00:21<00:07, 136MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  82%|████████▏ | 4.03G/4.92G [00:22<00:06, 135MB/s][A[A
+model-00001-of-00004.safetensors:  83%|████████▎ | 4.07G/4.90G [00:22<00:05, 146MB/s][A
+
+
+model-00003-of-00004.safetensors:  81%|████████  | 4.06G/5.00G [00:22<00:06, 138MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  82%|████████▏ | 4.05G/4.92G [00:22<00:05, 150MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  82%|████████▏ | 4.08G/5.00G [00:22<00:06, 152MB/s][A[A[A
+model-00001-of-00004.safetensors:  83%|████████▎ | 4.09G/4.90G [00:22<00:05, 145MB/s][A
+
+model-00002-of-00004.safetensors:  83%|████████▎ | 4.08G/4.92G [00:22<00:05, 168MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  82%|████████▏ | 4.10G/5.00G [00:22<00:05, 153MB/s][A[A[A
+model-00001-of-00004.safetensors:  84%|████████▍ | 4.11G/4.90G [00:22<00:05, 149MB/s][A
+
+model-00002-of-00004.safetensors:  83%|████████▎ | 4.10G/4.92G [00:22<00:05, 161MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  83%|████████▎ | 4.13G/5.00G [00:22<00:05, 169MB/s][A[A[A
+model-00001-of-00004.safetensors:  84%|████████▍ | 4.13G/4.90G [00:22<00:05, 151MB/s][A
+
+model-00002-of-00004.safetensors:  84%|████████▍ | 4.12G/4.92G [00:22<00:04, 174MB/s][A[A
+model-00001-of-00004.safetensors:  85%|████████▍ | 4.15G/4.90G [00:22<00:04, 162MB/s][A
+
+
+model-00003-of-00004.safetensors:  83%|████████▎ | 4.15G/5.00G [00:22<00:05, 166MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  84%|████████▍ | 4.15G/4.92G [00:22<00:03, 193MB/s][A[A
+model-00001-of-00004.safetensors:  85%|████████▌ | 4.17G/4.90G [00:22<00:04, 171MB/s][A
+
+
+model-00003-of-00004.safetensors:  83%|████████▎ | 4.17G/5.00G [00:22<00:04, 170MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  85%|████████▍ | 4.17G/4.92G [00:22<00:03, 204MB/s][A[A
+model-00001-of-00004.safetensors:  85%|████████▌ | 4.19G/4.90G [00:22<00:04, 161MB/s][A
+
+
+model-00003-of-00004.safetensors:  84%|████████▎ | 4.19G/5.00G [00:22<00:04, 173MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  85%|████████▌ | 4.19G/4.92G [00:22<00:03, 211MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  84%|████████▍ | 4.21G/5.00G [00:22<00:04, 181MB/s][A[A[A
+model-00001-of-00004.safetensors:  86%|████████▌ | 4.21G/4.90G [00:23<00:04, 158MB/s][A
+
+model-00002-of-00004.safetensors:  86%|████████▌ | 4.21G/4.92G [00:23<00:03, 205MB/s][A[A
+model-00001-of-00004.safetensors:  86%|████████▋ | 4.23G/4.90G [00:23<00:03, 177MB/s][A
+
+model-00002-of-00004.safetensors:  86%|████████▌ | 4.24G/4.92G [00:23<00:03, 206MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  85%|████████▍ | 4.23G/5.00G [00:22<00:04, 162MB/s][A[A[A
+model-00001-of-00004.safetensors:  87%|████████▋ | 4.25G/4.90G [00:23<00:03, 176MB/s][A
+
+model-00002-of-00004.safetensors:  87%|████████▋ | 4.26G/4.92G [00:23<00:03, 208MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  85%|████████▍ | 4.25G/5.00G [00:23<00:04, 173MB/s][A[A[A
+model-00001-of-00004.safetensors:  87%|████████▋ | 4.27G/4.90G [00:23<00:03, 184MB/s][A
+
+model-00002-of-00004.safetensors:  87%|████████▋ | 4.28G/4.92G [00:23<00:02, 215MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  85%|████████▌ | 4.27G/5.00G [00:23<00:03, 187MB/s][A[A[A
+model-00001-of-00004.safetensors:  87%|████████▋ | 4.29G/4.90G [00:23<00:03, 182MB/s][A
+
+
+model-00003-of-00004.safetensors:  86%|████████▌ | 4.29G/5.00G [00:23<00:03, 198MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  88%|████████▊ | 4.30G/4.92G [00:23<00:03, 190MB/s][A[A
+model-00001-of-00004.safetensors:  88%|████████▊ | 4.31G/4.90G [00:23<00:02, 198MB/s][A
+
+
+model-00003-of-00004.safetensors:  86%|████████▋ | 4.32G/5.00G [00:23<00:03, 215MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  88%|████████▊ | 4.32G/4.92G [00:23<00:03, 188MB/s][A[A
+model-00001-of-00004.safetensors:  88%|████████▊ | 4.33G/4.90G [00:23<00:02, 200MB/s][A
+
+
+model-00003-of-00004.safetensors:  87%|████████▋ | 4.34G/5.00G [00:23<00:02, 222MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  88%|████████▊ | 4.35G/4.92G [00:23<00:02, 195MB/s][A[A
+model-00001-of-00004.safetensors:  89%|████████▉ | 4.35G/4.90G [00:23<00:03, 182MB/s][A
+
+
+model-00003-of-00004.safetensors:  87%|████████▋ | 4.37G/5.00G [00:23<00:02, 220MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  89%|████████▉ | 4.37G/4.92G [00:23<00:02, 184MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  88%|████████▊ | 4.39G/5.00G [00:23<00:02, 220MB/s][A[A[A
+model-00001-of-00004.safetensors:  89%|████████▉ | 4.37G/4.90G [00:23<00:02, 182MB/s][A
+
+model-00002-of-00004.safetensors:  89%|████████▉ | 4.39G/4.92G [00:23<00:02, 187MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  88%|████████▊ | 4.41G/5.00G [00:23<00:02, 220MB/s][A[A[A
+model-00001-of-00004.safetensors:  90%|████████▉ | 4.39G/4.90G [00:24<00:02, 170MB/s][A
+
+model-00002-of-00004.safetensors:  90%|████████▉ | 4.41G/4.92G [00:24<00:02, 205MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  89%|████████▊ | 4.44G/5.00G [00:23<00:02, 211MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  90%|█████████ | 4.43G/4.92G [00:24<00:02, 202MB/s][A[A
+model-00001-of-00004.safetensors:  90%|████████▉ | 4.41G/4.90G [00:24<00:03, 139MB/s][A
+
+
+model-00003-of-00004.safetensors:  89%|████████▉ | 4.46G/5.00G [00:24<00:02, 205MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  91%|█████████ | 4.46G/4.92G [00:24<00:02, 207MB/s][A[A
+model-00001-of-00004.safetensors:  90%|█████████ | 4.43G/4.90G [00:24<00:03, 140MB/s][A
+
+
+model-00003-of-00004.safetensors:  90%|████████▉ | 4.48G/5.00G [00:24<00:02, 205MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  91%|█████████ | 4.48G/4.92G [00:24<00:01, 217MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  90%|█████████ | 4.50G/5.00G [00:24<00:02, 218MB/s][A[A[A
+model-00001-of-00004.safetensors:  91%|█████████ | 4.44G/4.90G [00:24<00:03, 135MB/s][A
+
+model-00002-of-00004.safetensors:  92%|█████████▏| 4.51G/4.92G [00:24<00:01, 223MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  91%|█████████ | 4.53G/5.00G [00:24<00:02, 214MB/s][A[A[A
+model-00001-of-00004.safetensors:  91%|█████████ | 4.46G/4.90G [00:24<00:03, 147MB/s][A
+
+model-00002-of-00004.safetensors:  92%|█████████▏| 4.53G/4.92G [00:24<00:01, 223MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  91%|█████████ | 4.55G/5.00G [00:24<00:02, 203MB/s][A[A[A
+model-00001-of-00004.safetensors:  91%|█████████▏| 4.48G/4.90G [00:24<00:02, 164MB/s][A
+
+model-00002-of-00004.safetensors:  93%|█████████▎| 4.55G/4.92G [00:24<00:01, 221MB/s][A[A
+
+model-00002-of-00004.safetensors:  93%|█████████▎| 4.58G/4.92G [00:24<00:01, 222MB/s][A[A
+model-00001-of-00004.safetensors:  92%|█████████▏| 4.50G/4.90G [00:24<00:02, 158MB/s][A
+
+
+model-00003-of-00004.safetensors:  91%|█████████▏| 4.57G/5.00G [00:24<00:02, 185MB/s][A[A[A
+model-00001-of-00004.safetensors:  92%|█████████▏| 4.52G/4.90G [00:24<00:02, 156MB/s][A
+
+model-00002-of-00004.safetensors:  94%|█████████▎| 4.60G/4.92G [00:24<00:01, 210MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  92%|█████████▏| 4.59G/5.00G [00:24<00:02, 174MB/s][A[A[A
+model-00001-of-00004.safetensors:  93%|█████████▎| 4.54G/4.90G [00:25<00:02, 156MB/s][A
+
+model-00002-of-00004.safetensors:  94%|█████████▍| 4.62G/4.92G [00:25<00:01, 201MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  92%|█████████▏| 4.61G/5.00G [00:24<00:02, 167MB/s][A[A[A
+model-00001-of-00004.safetensors:  93%|█████████▎| 4.56G/4.90G [00:25<00:02, 166MB/s][A
+
+model-00002-of-00004.safetensors:  94%|█████████▍| 4.65G/4.92G [00:25<00:01, 210MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  93%|█████████▎| 4.63G/5.00G [00:24<00:02, 181MB/s][A[A[A
+model-00001-of-00004.safetensors:  93%|█████████▎| 4.57G/4.90G [00:25<00:02, 165MB/s][A
+
+model-00002-of-00004.safetensors:  95%|█████████▍| 4.67G/4.92G [00:25<00:01, 211MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  93%|█████████▎| 4.65G/5.00G [00:25<00:01, 190MB/s][A[A[A
+model-00001-of-00004.safetensors:  94%|█████████▎| 4.59G/4.90G [00:25<00:01, 161MB/s][A
+
+model-00002-of-00004.safetensors:  95%|█████████▌| 4.69G/4.92G [00:25<00:01, 218MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  93%|█████████▎| 4.67G/5.00G [00:25<00:01, 197MB/s][A[A[A
+model-00001-of-00004.safetensors:  94%|█████████▍| 4.61G/4.90G [00:25<00:01, 163MB/s][A
+
+model-00002-of-00004.safetensors:  96%|█████████▌| 4.72G/4.92G [00:25<00:00, 226MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  94%|█████████▍| 4.70G/5.00G [00:25<00:01, 215MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  96%|█████████▋| 4.74G/4.92G [00:25<00:00, 231MB/s][A[A
+model-00001-of-00004.safetensors:  94%|█████████▍| 4.63G/4.90G [00:25<00:01, 160MB/s][A
+
+
+model-00003-of-00004.safetensors:  94%|█████████▍| 4.72G/5.00G [00:25<00:01, 216MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  97%|█████████▋| 4.76G/4.92G [00:25<00:00, 230MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  95%|█████████▍| 4.75G/5.00G [00:25<00:01, 219MB/s][A[A[A
+model-00001-of-00004.safetensors:  95%|█████████▍| 4.65G/4.90G [00:25<00:01, 160MB/s][A
+
+model-00002-of-00004.safetensors:  97%|█████████▋| 4.79G/4.92G [00:25<00:00, 219MB/s][A[A
+model-00001-of-00004.safetensors:  95%|█████████▌| 4.67G/4.90G [00:25<00:01, 170MB/s][A
+
+
+model-00003-of-00004.safetensors:  95%|█████████▌| 4.77G/5.00G [00:25<00:01, 179MB/s][A[A[A
+model-00001-of-00004.safetensors:  96%|█████████▌| 4.69G/4.90G [00:25<00:01, 182MB/s][A
+
+
+model-00003-of-00004.safetensors:  96%|█████████▌| 4.79G/5.00G [00:25<00:01, 189MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  98%|█████████▊| 4.81G/4.92G [00:25<00:00, 174MB/s][A[A
+model-00001-of-00004.safetensors:  96%|█████████▌| 4.71G/4.90G [00:26<00:01, 173MB/s][A
+
+
+model-00003-of-00004.safetensors:  96%|█████████▋| 4.81G/5.00G [00:25<00:00, 193MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  98%|█████████▊| 4.83G/4.92G [00:26<00:00, 156MB/s][A[A
+model-00001-of-00004.safetensors:  97%|█████████▋| 4.73G/4.90G [00:26<00:00, 180MB/s][A
+
+
+model-00003-of-00004.safetensors:  97%|█████████▋| 4.83G/5.00G [00:25<00:00, 178MB/s][A[A[A
+
+model-00002-of-00004.safetensors:  99%|█████████▊| 4.85G/4.92G [00:26<00:00, 160MB/s][A[A
+model-00001-of-00004.safetensors:  97%|█████████▋| 4.75G/4.90G [00:26<00:00, 190MB/s][A
+
+
+model-00003-of-00004.safetensors:  97%|█████████▋| 4.85G/5.00G [00:26<00:00, 176MB/s][A[A[A
+model-00001-of-00004.safetensors:  98%|█████████▊| 4.78G/4.90G [00:26<00:00, 215MB/s][A
+
+model-00002-of-00004.safetensors:  99%|█████████▉| 4.87G/4.92G [00:26<00:00, 155MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  97%|█████████▋| 4.87G/5.00G [00:26<00:00, 175MB/s][A[A[A
+model-00001-of-00004.safetensors:  98%|█████████▊| 4.80G/4.90G [00:26<00:00, 209MB/s][A
+
+model-00002-of-00004.safetensors: 100%|█████████▉| 4.89G/4.92G [00:26<00:00, 175MB/s][A[A
+
+
+model-00003-of-00004.safetensors:  98%|█████████▊| 4.89G/5.00G [00:26<00:00, 179MB/s][A[A[A
+model-00001-of-00004.safetensors:  98%|█████████▊| 4.83G/4.90G [00:26<00:00, 204MB/s][A
+
+model-00002-of-00004.safetensors: 100%|█████████▉| 4.91G/4.92G [00:26<00:00, 164MB/s][A[A
+
+                                                                                     [A[A
+
+
+model-00003-of-00004.safetensors:  98%|█████████▊| 4.92G/5.00G [00:26<00:00, 195MB/s][A[A[A
+model-00001-of-00004.safetensors:  99%|█████████▉| 4.85G/4.90G [00:26<00:00, 216MB/s][A
+
+
+model-00003-of-00004.safetensors:  99%|█████████▊| 4.94G/5.00G [00:26<00:00, 145MB/s][A[A[A
+model-00001-of-00004.safetensors:  99%|█████████▉| 4.87G/4.90G [00:26<00:00, 173MB/s][A
+
+
+model-00003-of-00004.safetensors:  99%|█████████▉| 4.95G/5.00G [00:26<00:00, 152MB/s][A[A[A
+model-00001-of-00004.safetensors: 100%|█████████▉| 4.90G/4.90G [00:27<00:00, 184MB/s][A
+                                                                                     [A
+
+
+model-00003-of-00004.safetensors:  99%|█████████▉| 4.97G/5.00G [00:26<00:00, 155MB/s][A[A[A
+
+
+model-00003-of-00004.safetensors: 100%|█████████▉| 4.99G/5.00G [00:26<00:00, 156MB/s][A[A[A
+
+
+                                                                                     [A[A[ADownloading:  88%|████████▊ | 15/17 [00:31<00:08,  4.10s/file]Downloading:  94%|█████████▍| 16/17 [00:31<00:03,  3.01s/file]Downloading: 100%|██████████| 17/17 [00:31<00:00,  2.21s/file]Downloading: 100%|██████████| 17/17 [00:31<00:00,  1.87s/file]
+Snapshot ready at /root/model/qwen3vl8b

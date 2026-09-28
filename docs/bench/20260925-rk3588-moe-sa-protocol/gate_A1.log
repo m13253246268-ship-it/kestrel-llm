@@ -1,0 +1,44 @@
+  vLLM-Kestrel: Axiom-Guided Exact-Attention         
+  Large Language Model Inference Engine          
+
+[DEV] device=arm-rk3588-opi5 arch=arm64 class=embedded model=RK3588 OPi 5 Plus npu=rk3588-direct recommended_wmode=dual
+
+=== [STREAM] layer-resident validation (VQF only) ===
+[VQF] MoE v3: experts=128 top_k=8 moe_ffn=768 shared=0 ffn_dim=98304 router=48.0MB (f32 resident) experts=q4
+[VQF-STREAM] enabled keep=1 nl=48 segs=11 per-layer=334.1MB data=16847.2MB resident~808.4MB rss=984kB
+[VQF-SA] enabled down=whole nl=48 ne=128 exp=0.844MB(216页) res=768B stat=1
+[STREAM] vqf_load OK (0.00s): dim=2048 layers=48 heads=32 kv=4 ffn=98304 vocab=151936 max_seq=8192
+[STREAM] rss_after_load  = 984 kB
+[QWEN] Inference state ready (max_seq=8192).
+[TOK] Loaded 151669 tokens from vocab.bin (max_len=256)
+[TOK] match mode: indexed (slots=524288, 2.0 MB, load=0.29)
+[TOK] Special tokens: bos=151643 eos=151645 im_start=151644 im_end=151645 pad=151643
+[STREAM] tokenizer: 151669 tokens (eos=151645 im_start=151644 im_end=151645)
+[STREAM] rss_after_init  = 21748 kB
+[STREAM] prompt tokens = 32 (--stream-ctx 32)
+[PREFILL] 32/32 tokens done
+[PREFILL-TIMING] n=32 total=220324.7ms | GEMM=220144.4ms(99.9%) ATTN=49.0ms( 0.0%) OTHER=131.3ms( 0.1%)
+[PREFILL-KERNELS] QKV=3884.3ms( 1.8%) O=3048.2ms( 1.4%) GATEUP=213211.9ms(96.9%) DOWN=0.0ms( 0.0%)
+[STREAM] prefill 32 tokens in 228.060s (0 tok/s) [batch]
+[STREAM] rss_after_prefill = 514076 kB
+[STREAM] decode mode: greedy (rep_pen=1.000 win=32)
+[STREAM] TOKIDS: 151667[SA-STAT] tok=1 pages_w=4020474 pages_d=4020474 pages_sum=8040948 minflt_delta=162103
+ t=1 ms=1793 rss=1205564kB
+ 198[SA-STAT] tok=2 pages_w=287994 pages_d=1421562 pages_sum=1709556 minflt_delta=94986
+ t=2 ms=1114 rss=1217980kB
+ 99692[SA-STAT] tok=3 pages_w=213690 pages_d=1513146 pages_sum=1726836 minflt_delta=91354
+ t=3 ms=2076 rss=1228928kB
+ 3837[SA-STAT] tok=4 pages_w=228378 pages_d=1527834 pages_sum=1756212 minflt_delta=92248
+ t=4 ms=1333 rss=1241324kB
+ 20002[SA-STAT] tok=5 pages_w=204186 pages_d=1503642 pages_sum=1707828 minflt_delta=90523
+ t=5 ms=1751 rss=1254240kB
+ 104029[SA-STAT] tok=6 pages_w=219306 pages_d=1518762 pages_sum=1738068 minflt_delta=91609
+ t=6 ms=1707 rss=1262716kB
+ 11622[SA-STAT] tok=7 pages_w=193818 pages_d=1493274 pages_sum=1687092 minflt_delta=89648
+ t=7 ms=1735 rss=1270160kB
+ 104811[SA-STAT] tok=8 pages_w=195978 pages_d=1495434 pages_sum=1691412 minflt_delta=89461
+ t=8 ms=1542 rss=1279796kB
+
+[STREAM] decoded 8 tokens, 1631 ms/tok (0.61 tok/s)
+[STREAM] text: <think>Ċ好的，用户让我用中文
+[STREAM] rss_end = 1279796 kB

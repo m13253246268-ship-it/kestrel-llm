@@ -24,6 +24,10 @@
 #include "vllm_device.h"
 #include "vllm_i18n.h"       /* vllm_tr：少量混排文案按 VLLM_LANG 二选一 */
 #include "embedded_web.h"
+#include "vllm_util.h"       /* st_util_utf8：JSON 写入口的 UTF-8 规整 */
+#include "vllm_rulebook.h"   /* 规则包注册中心（管理面：列表/删除） */
+#include "vllm_session.h"    /* 会话存储（管理面：列表/详情/删除） */
+#include "vllm_audit.h"      /* 管理面审计日志（SM3 哈希链） */
 
 /* VQF 分层驻留运行状态（vqf.c；避免在 serve 侧引入完整 VQF 头） */
 extern int vqf_stream_state(int *keep, int *nl, int *nseg,
@@ -77,6 +81,15 @@ static const char *admin_html_path(void) {
     FILE *f = fopen("./admin.html", "rb");
     if (f) { fclose(f); return "./admin.html"; }
     return "/NewVLLM/admin.html";   /* deployed next to the engine */
+}
+
+/* 审查台独立页（/review）的磁盘候选路径；VLLM_REVIEW_HTML 可覆盖。 */
+static const char *review_html_path(void) {
+    const char *e = getenv("VLLM_REVIEW_HTML");
+    if (e && e[0]) return e;
+    FILE *f = fopen("./review.html", "rb");
+    if (f) { fclose(f); return "./review.html"; }
+    return "/NewVLLM/review.html";
 }
 
 /* ---------- system readings (Linux /proc; null elsewhere) ---------- */
@@ -237,7 +250,12 @@ static void vqf_layout_str(uint32_t flags, uint32_t version,
 }
 
 static void json_put_str(VJson *obj, const char *key, const char *val) {
-    vjson_obj_set(obj, key, vjson_new_string(val ? val : ""));
+    /* 值可能来自 Windows argv（ANSI/GBK，如中文模型路径），直接进 JSON 会让
+     * 整个回包/配置文件不是合法 UTF-8：Python supervisor 的 json.load 与
+     * 审查页都会读不了。写 JSON 前统一转成 UTF-8（已是 UTF-8 的原样通过）。 */
+    char tmp[4096];
+    st_util_utf8(val ? val : "", tmp, sizeof(tmp));
+    vjson_obj_set(obj, key, vjson_new_string(tmp));
 }
 
 /* Build the current effective configuration as JSON. */
@@ -252,8 +270,7 @@ static VJson *build_config_json(const VLLMServerCtx *ctx) {
     vjson_obj_set(o, "l3_evict", vjson_new_bool(g_l3_evict));
     vjson_obj_set(o, "l3_ratio", vjson_new_number((double)g_l3_ratio));
     vjson_obj_set(o, "l3_min_seq", vjson_new_number((double)g_l3_min_seq));
-    vjson_obj_set(o, "l3_path", vjson_new_string(
-        (g_l3_path && g_l3_path[0]) ? g_l3_path : "kv_l3.bin"));
+    json_put_str(o, "l3_path", (g_l3_path && g_l3_path[0]) ? g_l3_path : "kv_l3.bin");
     vjson_obj_set(o, "l3_max_size", vjson_new_number((double)g_l3_max_size));
     vjson_obj_set(o, "l3_user_ttl", vjson_new_number((double)g_l3_user_ttl));
     vjson_obj_set(o, "npu", vjson_new_bool(ctx->npu_enabled));
@@ -274,6 +291,13 @@ static VJson *build_config_json(const VLLMServerCtx *ctx) {
     vjson_obj_set(o, "prefix_kv", vjson_new_bool(ctx->prefix_kv));
     vjson_obj_set(o, "disk_kv", vjson_new_bool(ctx->disk_kv));
     json_put_str(o, "disk_kv_dir", ctx->kvdir);
+    /* 工业边缘：预置命名上下文（规则包）/ 会话存储 / 管理面审计 的目录与上限。
+     * 对应 CLI --rulebook-dir / --session-dir / --session-limit / --audit-log
+     * （由 tools/ops/vllm_mgr.py 组装）；留空 = 关闭该功能。 */
+    json_put_str(o, "rulebook_dir", ctx->rulebook_dir);
+    json_put_str(o, "session_dir", ctx->session_dir);
+    vjson_obj_set(o, "session_limit", vjson_new_number((double)ctx->session_limit));
+    json_put_str(o, "audit_log", ctx->audit_log);
     vjson_obj_set(o, "spec", vjson_new_bool(ctx->spec));
     vjson_obj_set(o, "spec_k", vjson_new_number((double)ctx->spec_k));
     vjson_obj_set(o, "min_p", vjson_new_number(ctx->min_p));
@@ -403,29 +427,47 @@ static void tail_lines(const char *data, size_t n, int max_lines,
 
 /* ---------- handlers ---------- */
 
-static void admin_json_reply(VHttpResponse *resp, VJson *root) {
-    char buf[16384];
-    size_t n = vjson_serialize(root, buf, sizeof(buf));
-    vjson_free(root);
-    if (n == 0 || n >= sizeof(buf)) {
+/* 按需容量的 JSON 回包（会话详情/列表可能远超 16KB 栈缓冲）。 */
+static void admin_json_reply_cap(VHttpResponse *resp, VJson *root, size_t cap) {
+    if (!root) {
         resp->status = 500;
         resp->content_type = "application/json";
-        resp->body = "{\"error\":\"response too large\"}";
+        resp->body = "{\"error\":\"out of memory\"}";
         resp->body_len = strlen(resp->body);
         return;
     }
-    resp->status = 200;
-    resp->content_type = "application/json";
-    resp->body_owned = (char *)malloc(n + 1);
-    if (resp->body_owned) {
-        memcpy(resp->body_owned, buf, n + 1);
-        resp->body = resp->body_owned;
-        resp->body_len = n;
-    } else {
+    if (cap < 4096) cap = 4096;
+    char *buf = (char *)malloc(cap);
+    if (!buf) {
+        vjson_free(root);
         resp->status = 500;
+        resp->content_type = "application/json";
         resp->body = "{\"error\":\"out of memory\"}";
         resp->body_len = strlen(resp->body);
+        return;
     }
+    size_t n = vjson_serialize(root, buf, cap);
+    vjson_free(root);
+    if (n == 0) {
+        free(buf);
+        resp->status = 500;
+        resp->content_type = "application/json";
+        resp->body = "{\"error\":\"response too large (raise the cap)\"}";
+        resp->body_len = strlen(resp->body);
+        return;
+    }
+    /* 保留调用方已显式设置的错误状态：handler 通常先置 400/403/404/500
+     * 再调本函数回包，若在此无条件写 200 会把错误码全部吞掉（客户端只能
+     * 靠 body 里的 "error" 字段判断）。仅在仍是成功态时归一为 200。 */
+    if (resp->status < 400) resp->status = 200;
+    resp->content_type = "application/json";
+    resp->body_owned = buf;
+    resp->body = buf;
+    resp->body_len = n;
+}
+
+static void admin_json_reply(VHttpResponse *resp, VJson *root) {
+    admin_json_reply_cap(resp, root, 16384);
 }
 
 static void handle_admin_status(const VLLMServerCtx *ctx, VHttpResponse *resp) {
@@ -539,8 +581,14 @@ static void handle_admin_status(const VLLMServerCtx *ctx, VHttpResponse *resp) {
         vjson_obj_set(o, "cpu_pct", vjson_new_number(cpu));
     else
         vjson_obj_set(o, "cpu_pct", vjson_new_null());
-    vjson_obj_set(o, "config_path", vjson_new_string(admin_config_path(ctx)));
-    vjson_obj_set(o, "log_path", vjson_new_string(admin_log_path(ctx)));
+    json_put_str(o, "config_path", admin_config_path(ctx));
+    json_put_str(o, "log_path", admin_log_path(ctx));
+    /* 工业边缘：预置命名上下文 / 会话存储 / 审计（审查台 /review 的"审查范围"用） */
+    json_put_str(o, "rulebook_dir", ctx->rulebook_dir);
+    json_put_str(o, "session_dir", ctx->session_dir);
+    json_put_str(o, "audit_log", ctx->audit_log);
+    vjson_obj_set(o, "rulebook_hits", vjson_new_number((double)ctx->rulebook_hits));
+    vjson_obj_set(o, "session_turns", vjson_new_number((double)ctx->session_turns));
     admin_json_reply(resp, o);
 }
 
@@ -631,7 +679,7 @@ static void handle_admin_config(const VLLMServerCtx *ctx, VHttpResponse *resp) {
     VJson *o = vjson_new_object();
     vjson_obj_set(o, "config", build_config_json(ctx));
     add_device_info(o, ctx);
-    vjson_obj_set(o, "config_path", vjson_new_string(admin_config_path(ctx)));
+    json_put_str(o, "config_path", admin_config_path(ctx));
     admin_json_reply(resp, o);
 }
 
@@ -1013,12 +1061,14 @@ static void handle_admin_policy_set(VLLMServerCtx *ctx,
     admin_json_reply(resp, o);
 }
 
-static void handle_admin_page(VHttpResponse *resp) {
-    /* Embedded admin.html (self-contained exe): used when no file is deployed
-     * next to the engine. VLLM_ADMIN_HTML overrides to a custom file. */
+/* 通用静态页下发：内嵌副本兜底，磁盘副本优先（便于现场改 UI 而不重编）。
+ * emb!=NULL 时用内嵌；path 为磁盘候选（不存在则回退内嵌）。 */
+static void serve_html_page(VHttpResponse *resp, const char *(*emb)(size_t *),
+                            const char *path, const char *name,
+                            const char *env_hint) {
     size_t elen = 0;
-    const char *ehtml = embedded_admin_html(&elen);
-    FILE *f = fopen(admin_html_path(), "rb");
+    const char *ehtml = emb ? emb(&elen) : NULL;
+    FILE *f = fopen(path, "rb");
     if (!f) {
         if (ehtml && elen) {
             resp->status = 200;
@@ -1027,14 +1077,22 @@ static void handle_admin_page(VHttpResponse *resp) {
             resp->body_len = elen;
             return;
         }
+        char *msg = (char *)malloc(768);
+        if (msg) {
+            snprintf(msg, 768,
+                     "<html><body><h3>%s not found</h3>"
+                     "<p>Set %s or deploy %s next to the engine "
+                     "(e.g. /NewVLLM/%s).</p></body></html>",
+                     name, env_hint, name, name);
+            resp->body_owned = msg;
+            resp->body = msg;
+            resp->body_len = strlen(msg);
+        } else {
+            resp->body = "not found";
+            resp->body_len = 9;
+        }
         resp->status = 500;
         resp->content_type = "text/html; charset=utf-8";
-        const char *msg =
-            "<html><body><h3>admin.html not found</h3>"
-            "<p>Set VLLM_ADMIN_HTML or deploy admin.html next to the engine "
-            "(e.g. /NewVLLM/admin.html).</p></body></html>";
-        resp->body = msg;
-        resp->body_len = strlen(msg);
         return;
     }
     fseek(f, 0, SEEK_END);
@@ -1043,14 +1101,18 @@ static void handle_admin_page(VHttpResponse *resp) {
     if (sz < 0 || sz > 8 * 1024 * 1024) {
         fclose(f);
         resp->status = 500;
-        resp->body = "admin.html too large";
+        resp->content_type = "text/html; charset=utf-8";
+        resp->body = "page too large";
+        resp->body_len = strlen(resp->body);
         return;
     }
     char *html = (char *)malloc((size_t)sz + 1);
     if (!html) {
         fclose(f);
         resp->status = 500;
+        resp->content_type = "text/html; charset=utf-8";
         resp->body = "out of memory";
+        resp->body_len = strlen(resp->body);
         return;
     }
     size_t rd = fread(html, 1, (size_t)sz, f);
@@ -1061,6 +1123,747 @@ static void handle_admin_page(VHttpResponse *resp) {
     resp->body_owned = html;
     resp->body = html;
     resp->body_len = rd;
+}
+
+static void handle_admin_page(VHttpResponse *resp) {
+    serve_html_page(resp, embedded_admin_html, admin_html_path(),
+                    "admin.html", "VLLM_ADMIN_HTML");
+}
+
+/* 审查台独立页（/review）：与 /admin/ 分离；数据仍走 /admin/api/*（同源）。 */
+static void handle_review_page(VHttpResponse *resp) {
+    serve_html_page(resp, embedded_review_html, review_html_path(),
+                    "review.html", "VLLM_REVIEW_HTML");
+}
+
+void vllm_review_page(VHttpResponse *resp) {
+    handle_review_page(resp);
+}
+
+/* ================================================================
+ * 第二步：会话 / 规则包 / 审计 管理面（工业边缘审查）
+ *
+ * 诚实边界（与 SECURITY.md 一致，UI 上也明示）：
+ *   - 本管理面**无身份认证**，前提是"部署在内网/可信网络"。
+ *   - actor/role 取自请求头 X-Audit-User / X-Audit-Role，只用于**审计追溯**与
+ *     粗粒度写权限门（env VLLM_ADMIN_ROLES 逗号白名单）；**不是**真实鉴权。
+ *   - 查看/导出/删除会话均写入 SM3 哈希链审计日志（篡改可发现）。
+ *   - at-rest 加密/home 级脱敏未实现：会话明文落盘，脱敏只是审查视图上的
+ *     掩码（mask=1）并记入审计。需要落盘加密请把会话目录放在加密卷上。
+ * ================================================================ */
+
+static int adm_hexv(int c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+static size_t adm_utf8_enc(unsigned cp, char *out, size_t cap) {
+    if (cp < 0x80) { if (cap < 1) return 0; out[0] = (char)cp; return 1; }
+    if (cp < 0x800) {
+        if (cap < 2) return 0;
+        out[0] = (char)(0xC0 | (cp >> 6)); out[1] = (char)(0x80 | (cp & 0x3F));
+        return 2;
+    }
+    if (cap < 3) return 0;
+    out[0] = (char)(0xE0 | (cp >> 12));
+    out[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
+    out[2] = (char)(0x80 | (cp & 0x3F));
+    return 3;
+}
+
+/* 取 query 参数（支持 %XX 与 '+' 解码）。找到返回 1。 */
+static int adm_qs(const VHttpRequest *req, const char *key, char *out, size_t cap) {
+    if (out && cap) out[0] = '\0';
+    if (!req || !req->query || !req->query[0] || !key || !key[0] || !out || cap < 2)
+        return 0;
+    size_t kl = strlen(key);
+    const char *p = req->query;
+    while (*p) {
+        const char *amp = strchr(p, '&');
+        size_t seg = amp ? (size_t)(amp - p) : strlen(p);
+        if (seg > kl && p[kl] == '=' && strncmp(p, key, kl) == 0) {
+            const char *v = p + kl + 1;
+            size_t vl = seg - kl - 1, w = 0;
+            for (size_t i = 0; i < vl && w + 1 < cap; i++) {
+                if (v[i] == '+') { out[w++] = ' '; }
+                else if (v[i] == '%' && i + 2 < vl) {
+                    int hi = adm_hexv((unsigned char)v[i + 1]);
+                    int lo = adm_hexv((unsigned char)v[i + 2]);
+                    if (hi >= 0 && lo >= 0) { out[w++] = (char)((hi << 4) | lo); i += 2; }
+                    else out[w++] = v[i];
+                } else {
+                    out[w++] = v[i];
+                }
+            }
+            out[w] = '\0';
+            return 1;
+        }
+        if (!amp) break;
+        p = amp + 1;
+    }
+    return 0;
+}
+
+/* 管理面身份（见本段顶部"诚实边界"）：复制到调用方缓冲，避免连续取头时被
+ * vhttp_req_header 的线程局部缓冲互相覆盖。 */
+static void adm_actor(const VHttpRequest *req, char *out, size_t cap) {
+    const char *v = vhttp_req_header(req, "X-Audit-User");
+    snprintf(out, cap, "%s", (v && v[0]) ? v : "anon");
+}
+static void adm_role(const VHttpRequest *req, char *out, size_t cap) {
+    const char *v = vhttp_req_header(req, "X-Audit-Role");
+    snprintf(out, cap, "%s", (v && v[0]) ? v : "");
+}
+
+/* 写操作门：env VLLM_ADMIN_ROLES 未配置 = 放行（内网无鉴权前提）；
+ * 配置后要求 X-Audit-Role ∈ 逗号白名单。 */
+static int adm_write_allowed(const VHttpRequest *req) {
+    const char *env = getenv("VLLM_ADMIN_ROLES");
+    if (!env || !env[0]) return 1;
+    char role[96];
+    adm_role(req, role, sizeof(role));
+    if (!role[0]) return 0;
+    size_t rl = strlen(role);
+    const char *p = env;
+    while (*p) {
+        const char *c = strchr(p, ',');
+        size_t l = c ? (size_t)(c - p) : strlen(p);
+        if (l == rl && strncmp(p, role, l) == 0) return 1;
+        if (!c) break;
+        p = c + 1;
+    }
+    return 0;
+}
+
+/* 会话文件名白名单：sess_<16hex>.json（只允许 ASCII/hex，杜绝路径穿越）。 */
+static int adm_sess_file_ok(const char *f) {
+    if (!f || strncmp(f, "sess_", 5) != 0) return 0;
+    const char *h = f + 5;
+    for (int i = 0; i < 16; i++) if (adm_hexv((unsigned char)h[i]) < 0) return 0;
+    return strcmp(h + 16, ".json") == 0;
+}
+
+/* 预览截断（不切断 UTF-8 字符）；mask=1 时整体掩码。 */
+static void adm_preview(const char *s, char *out, size_t cap, size_t maxb, int mask) {
+    if (!out || cap == 0) return;
+    out[0] = '\0';
+    if (mask) { snprintf(out, cap, "***"); return; }
+    if (!s || !s[0]) return;
+    size_t n = strlen(s);
+    if (n > maxb) {
+        n = maxb;
+        while (n > 0 && ((unsigned char)s[n] & 0xC0) == 0x80) n--;
+    }
+    if (n >= cap) n = cap - 1;
+    memcpy(out, s, n);
+    out[n] = '\0';
+}
+
+/* 在会话 JSON 文本里取字符串字段（我们自己的写入格式是确定的前缀布局）。 */
+static int adm_sess_str(const char *txt, const char *key, char *out, size_t cap) {
+    if (out && cap) out[0] = '\0';
+    if (!txt || !key || !out || cap < 2) return 0;
+    char pat[64];
+    snprintf(pat, sizeof(pat), "\"%s\"", key);
+    const char *p = strstr(txt, pat);
+    if (!p) return 0;
+    p = strchr(p + strlen(pat), ':');
+    if (!p) return 0;
+    p++;
+    while (*p == ' ' || *p == '\t') p++;
+    if (*p != '"') return 0;
+    p++;
+    size_t w = 0;
+    while (*p && *p != '"' && w + 1 < cap) {
+        if (*p == '\\' && p[1]) {
+            p++;
+            switch (*p) {
+            case 'n': out[w++] = '\n'; break;
+            case 'r': out[w++] = '\r'; break;
+            case 't': out[w++] = '\t'; break;
+            case 'b': out[w++] = '\b'; break;
+            case 'f': out[w++] = '\f'; break;
+            case '"': out[w++] = '"'; break;
+            case '\\': out[w++] = '\\'; break;
+            case '/': out[w++] = '/'; break;
+            case 'u': {
+                unsigned cp = 0; int ok = 1;
+                for (int i = 0; i < 4; i++) {
+                    int hv = adm_hexv((unsigned char)p[1 + i]);
+                    if (hv < 0) { ok = 0; break; }
+                    cp = (cp << 4) | (unsigned)hv;
+                }
+                if (ok) { p += 4; w += adm_utf8_enc(cp, out + w, cap - w); }
+                else out[w++] = '?';
+                break;
+            }
+            default: out[w++] = *p;
+            }
+            p++;
+        } else {
+            out[w++] = *p++;
+        }
+    }
+    out[w] = '\0';
+    return 1;
+}
+
+static long adm_sess_num(const char *txt, const char *key) {
+    if (!txt || !key) return 0;
+    char pat[64];
+    snprintf(pat, sizeof(pat), "\"%s\"", key);
+    const char *p = strstr(txt, pat);
+    if (!p) return 0;
+    p = strchr(p + strlen(pat), ':');
+    if (!p) return 0;
+    return atol(p + 1);
+}
+
+#define ADM_SESS_HEAD 65536   /* 会话文件仅需前 64KB 即可取全元数据（messages 在尾部） */
+
+typedef struct {
+    char file[64];
+    char sid[VLLM_SESS_ID_MAX];
+    char tenant[VLLM_SESS_PART_MAX];
+    char user[VLLM_SESS_PART_MAX];
+    char rb[VLLM_RB_ID_MAX];
+    long created, updated, size;
+    int  n_msgs, n_tokens;
+    int  have_preview;
+    char first_user[200];
+    char last_asst[200];
+} AdmSessRow;
+
+static int adm_sess_cmp(const void *a, const void *b) {
+    const AdmSessRow *x = (const AdmSessRow *)a, *y = (const AdmSessRow *)b;
+    if (x->updated != y->updated) return (x->updated < y->updated) ? 1 : -1;
+    return strcmp(x->sid, y->sid);
+}
+
+static void handle_admin_sessions(VLLMServerCtx *ctx, const VHttpRequest *req,
+                                  VHttpResponse *resp) {
+    VJson *o = vjson_new_object();
+    json_put_str(o, "dir", ctx->session_dir);
+    vjson_obj_set(o, "enabled",
+                  vjson_new_bool(ctx->session_on && ctx->session_dir[0]));
+    if (!ctx->session_on || !ctx->session_dir[0]) {
+        json_put_str(o, "error", "session dir not configured (--session-dir)");
+        admin_json_reply(resp, o);
+        return;
+    }
+
+    char f_tenant[VLLM_SESS_PART_MAX] = "", f_user[VLLM_SESS_PART_MAX] = "";
+    char f_rb[VLLM_RB_ID_MAX] = "", f_q[192] = "", tmp[64] = "";
+    adm_qs(req, "tenant", f_tenant, sizeof(f_tenant));
+    adm_qs(req, "user", f_user, sizeof(f_user));
+    adm_qs(req, "rulebook", f_rb, sizeof(f_rb));
+    adm_qs(req, "q", f_q, sizeof(f_q));
+    long since = 0, until = 0;
+    if (adm_qs(req, "since", tmp, sizeof(tmp))) since = atol(tmp);
+    if (adm_qs(req, "until", tmp, sizeof(tmp))) until = atol(tmp);
+    int limit = 100, mask = 0;
+    if (adm_qs(req, "limit", tmp, sizeof(tmp))) {
+        limit = atoi(tmp);
+        if (limit < 1) limit = 1;
+        if (limit > 1000) limit = 1000;
+    }
+    if (adm_qs(req, "mask", tmp, sizeof(tmp))) mask = (tmp[0] == '1');
+
+    int cap = 128, n = 0, scanned = 0;
+    AdmSessRow *rows = (AdmSessRow *)malloc((size_t)cap * sizeof(AdmSessRow));
+    if (!rows) { json_put_str(o, "error", "out of memory"); admin_json_reply(resp, o); return; }
+
+    DIR *d = opendir(ctx->session_dir);
+    if (d) {
+        struct dirent *de;
+        while ((de = readdir(d)) != NULL) {
+            if (!adm_sess_file_ok(de->d_name)) continue;
+            char path[1600];
+            snprintf(path, sizeof(path), "%s/%s", ctx->session_dir, de->d_name);
+            struct stat sb;
+            if (stat(path, &sb) != 0 || !S_ISREG(sb.st_mode)) continue;
+            scanned++;
+            if (scanned > 5000) break;   /* 单次管理请求的扫描上限 */
+
+            long size = (long)sb.st_size;
+            size_t want = (size > ADM_SESS_HEAD) ? ADM_SESS_HEAD : (size_t)size;
+            FILE *f = fopen(path, "rb");
+            if (!f) continue;
+            char *txt = (char *)malloc(want + 1);
+            if (!txt) { fclose(f); continue; }
+            size_t got = fread(txt, 1, want, f);
+            fclose(f);
+            txt[got] = '\0';
+            int fully = (got == (size_t)size);
+
+            AdmSessRow r;
+            memset(&r, 0, sizeof(r));
+            snprintf(r.file, sizeof(r.file), "%s", de->d_name);
+            adm_sess_str(txt, "session_id", r.sid, sizeof(r.sid));
+            adm_sess_str(txt, "tenant_id", r.tenant, sizeof(r.tenant));
+            adm_sess_str(txt, "user_id", r.user, sizeof(r.user));
+            adm_sess_str(txt, "rulebook_id", r.rb, sizeof(r.rb));
+            r.created = adm_sess_num(txt, "created_s");
+            r.updated = adm_sess_num(txt, "updated_s");
+            r.n_msgs  = (int)adm_sess_num(txt, "n_messages");
+            r.n_tokens = (int)adm_sess_num(txt, "n_tokens");
+            r.size = size;
+
+            if (fully) {   /* 完整读入：用真解析取首/末轮预览 */
+                VJson *root = vjson_parse(txt);
+                const VJson *msgs = root ? vjson_obj_get(root, "messages") : NULL;
+                size_t nm = vjson_array_len(msgs);
+                for (size_t i = 0; i < nm; i++) {
+                    const VJson *m = vjson_array_get(msgs, i);
+                    const char *role = vjson_str(vjson_obj_get(m, "role"));
+                    const char *ct = vjson_str(vjson_obj_get(m, "content"));
+                    if (!role) continue;
+                    if (strcmp(role, "user") == 0) {
+                        adm_preview(ct, r.first_user, sizeof(r.first_user), 120, mask);
+                        r.have_preview = 1;
+                        break;
+                    }
+                }
+                for (size_t i = nm; i-- > 0; ) {
+                    const VJson *m = vjson_array_get(msgs, i);
+                    const char *role = vjson_str(vjson_obj_get(m, "role"));
+                    const char *ct = vjson_str(vjson_obj_get(m, "content"));
+                    if (!role) continue;
+                    if (strcmp(role, "assistant") == 0) {
+                        adm_preview(ct, r.last_asst, sizeof(r.last_asst), 120, mask);
+                        break;
+                    }
+                }
+                vjson_free(root);
+            }
+            free(txt);
+
+            /* 过滤 */
+            if (f_tenant[0] && strcmp(f_tenant, r.tenant) != 0) continue;
+            if (f_user[0] && strcmp(f_user, r.user) != 0) continue;
+            if (f_rb[0] && strcmp(f_rb, r.rb) != 0) continue;
+            if (since > 0 && r.updated < since) continue;
+            if (until > 0 && r.updated > until) continue;
+            if (f_q[0] && !strstr(r.sid, f_q) && !strstr(r.tenant, f_q) &&
+                !strstr(r.user, f_q) && !strstr(r.rb, f_q) &&
+                !strstr(r.first_user, f_q) && !strstr(r.last_asst, f_q))
+                continue;
+
+            if (n == cap) {
+                int nc = cap * 2;
+                AdmSessRow *nr = (AdmSessRow *)realloc(rows, (size_t)nc * sizeof(AdmSessRow));
+                if (!nr) break;
+                rows = nr; cap = nc;
+            }
+            rows[n++] = r;
+        }
+        closedir(d);
+    }
+
+    qsort(rows, (size_t)n, sizeof(AdmSessRow), adm_sess_cmp);
+    int shown = n < limit ? n : limit;
+    VJson *arr = vjson_new_array();
+    for (int i = 0; i < shown; i++) {
+        AdmSessRow *r = &rows[i];
+        VJson *e = vjson_new_object();
+        json_put_str(e, "file", r->file);
+        json_put_str(e, "session_id", r->sid);
+        json_put_str(e, "tenant_id", r->tenant);
+        json_put_str(e, "user_id", r->user);
+        json_put_str(e, "rulebook_id", r->rb);
+        vjson_obj_set(e, "created_s", vjson_new_number((double)r->created));
+        vjson_obj_set(e, "updated_s", vjson_new_number((double)r->updated));
+        vjson_obj_set(e, "n_messages", vjson_new_number((double)r->n_msgs));
+        vjson_obj_set(e, "n_tokens", vjson_new_number((double)r->n_tokens));
+        vjson_obj_set(e, "size", vjson_new_number((double)r->size));
+        vjson_obj_set(e, "have_preview", vjson_new_bool(r->have_preview));
+        json_put_str(e, "first_user", r->first_user);
+        json_put_str(e, "last_assistant", r->last_asst);
+        vjson_array_push(arr, e);
+    }
+    free(rows);
+
+    vjson_obj_set(o, "sessions", arr);
+    vjson_obj_set(o, "total", vjson_new_number((double)n));
+    vjson_obj_set(o, "shown", vjson_new_number((double)shown));
+    vjson_obj_set(o, "masked", vjson_new_bool(mask));
+    admin_json_reply_cap(resp, o, 4u << 20);
+}
+
+static void handle_admin_session(VLLMServerCtx *ctx, const VHttpRequest *req,
+                                 VHttpResponse *resp) {
+    char actor[96], role[64], file[64] = "", tmp[64] = "";
+    adm_actor(req, actor, sizeof(actor));
+    adm_role(req, role, sizeof(role));
+    adm_qs(req, "file", file, sizeof(file));
+    int mask = 0, export_it = 0;
+    if (adm_qs(req, "mask", tmp, sizeof(tmp))) mask = (tmp[0] == '1');
+    if (adm_qs(req, "export", tmp, sizeof(tmp))) export_it = (tmp[0] == '1');
+
+    VJson *o = vjson_new_object();
+    if (!ctx->session_on || !ctx->session_dir[0]) {
+        vllm_audit_add(ctx, actor, role, "session_view", file, "error",
+                       "session dir not configured");
+        json_put_str(o, "error", "session dir not configured (--session-dir)");
+        admin_json_reply(resp, o);
+        return;
+    }
+    if (!adm_sess_file_ok(file)) {
+        vllm_audit_add(ctx, actor, role, "session_view", file, "error",
+                       "bad session file name");
+        resp->status = 400;
+        json_put_str(o, "error", "bad 'file' (expect sess_<16hex>.json)");
+        admin_json_reply(resp, o);
+        return;
+    }
+
+    char path[1600];
+    snprintf(path, sizeof(path), "%s/%s", ctx->session_dir, file);
+    struct stat sb;
+    if (stat(path, &sb) != 0 || sb.st_size <= 0 ||
+        (unsigned long long)sb.st_size > (8u << 20)) {
+        vllm_audit_add(ctx, actor, role, "session_view", file, "error",
+                       "not found or too large");
+        resp->status = 404;
+        json_put_str(o, "error", "session not found (or > 8 MB)");
+        admin_json_reply(resp, o);
+        return;
+    }
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        vllm_audit_add(ctx, actor, role, "session_view", file, "error", "open failed");
+        resp->status = 500;
+        json_put_str(o, "error", "cannot open session file");
+        admin_json_reply(resp, o);
+        return;
+    }
+    size_t sz = (size_t)sb.st_size;
+    char *txt = (char *)malloc(sz + 1);
+    if (!txt) { fclose(f); resp->status = 500; json_put_str(o, "error", "out of memory"); admin_json_reply(resp, o); return; }
+    size_t got = fread(txt, 1, sz, f);
+    fclose(f);
+    txt[got] = '\0';
+
+    VJson *root = vjson_parse(txt);
+    free(txt);
+    if (!root) {
+        vllm_audit_add(ctx, actor, role, "session_view", file, "error",
+                       "unparseable session JSON");
+        resp->status = 500;
+        json_put_str(o, "error", "session file is not valid JSON");
+        admin_json_reply(resp, o);
+        return;
+    }
+
+    const VJson *msgs = vjson_obj_get(root, "messages");
+    if (mask && msgs && msgs->type == VJ_ARRAY) {
+        size_t nm = vjson_array_len(msgs);
+        for (size_t i = 0; i < nm; i++) {
+            VJson *m = vjson_array_get(msgs, i);
+            if (m && m->type == VJ_OBJECT)
+                vjson_obj_set(m, "content", vjson_new_string("***"));
+        }
+    }
+
+    vjson_obj_set(o, "file", vjson_new_string(file));
+    vjson_obj_set(o, "masked", vjson_new_bool(mask));
+    vjson_obj_set(o, "export", vjson_new_bool(export_it));
+    const char *keys[] = { "session_id", "tenant_id", "user_id", "rulebook_id" };
+    for (int i = 0; i < 4; i++) {
+        const VJson *v = vjson_obj_get(root, keys[i]);
+        vjson_obj_set(o, keys[i], v ? vjson_clone(v) : vjson_new_string(""));
+    }
+    const char *nums[] = { "created_s", "updated_s", "n_tokens", "n_messages",
+                           "last_ms" };
+    for (int i = 0; i < 5; i++) {
+        const VJson *v = vjson_obj_get(root, nums[i]);
+        vjson_obj_set(o, nums[i], vjson_new_number(v ? vjson_num(v) : 0.0));
+    }
+    vjson_obj_set(o, "messages", msgs ? vjson_clone(msgs) : vjson_new_array());
+    vjson_free(root);
+
+    /* 引擎侧上下文（供审查页对照：模型身份/规则包/前缀复用计数） */
+    json_put_str(o, "engine_model", ctx->model_name[0] ? ctx->model_name
+                                                       : (ctx->model_id ? ctx->model_id : ""));
+    vjson_obj_set(o, "rulebook_hits", vjson_new_number((double)ctx->rulebook_hits));
+    vjson_obj_set(o, "session_turns", vjson_new_number((double)ctx->session_turns));
+
+    vllm_audit_add(ctx, actor, role, export_it ? "session_export" : "session_view",
+                   file, "ok", mask ? "masked=1" : "masked=0");
+    admin_json_reply_cap(resp, o, 16u << 20);
+}
+
+static void handle_admin_session_delete(VLLMServerCtx *ctx, const VHttpRequest *req,
+                                        VHttpResponse *resp) {
+    char actor[96], role[64];
+    adm_actor(req, actor, sizeof(actor));
+    adm_role(req, role, sizeof(role));
+
+    char file[64] = "";
+    char *copy = NULL;
+    if (req->body && req->body_len) {
+        copy = (char *)malloc(req->body_len + 1);
+        if (copy) {
+            memcpy(copy, req->body, req->body_len);
+            copy[req->body_len] = '\0';
+            VJson *b = vjson_parse(copy);
+            if (b) {
+                const char *fv = vjson_str(vjson_obj_get(b, "file"));
+                if (fv) snprintf(file, sizeof(file), "%s", fv);
+                vjson_free(b);
+            }
+        }
+    }
+
+    VJson *o = vjson_new_object();
+    if (!ctx->session_on || !ctx->session_dir[0]) {
+        json_put_str(o, "error", "session dir not configured (--session-dir)");
+        admin_json_reply(resp, o);
+        free(copy);
+        return;
+    }
+    if (!adm_sess_file_ok(file)) {
+        vllm_audit_add(ctx, actor, role, "session_delete", file, "error",
+                       "bad session file name");
+        resp->status = 400;
+        json_put_str(o, "error", "bad 'file' (expect sess_<16hex>.json)");
+        admin_json_reply(resp, o);
+        free(copy);
+        return;
+    }
+    if (!adm_write_allowed(req)) {
+        vllm_audit_add(ctx, actor, role, "session_delete", file, "denied",
+                       "RBAC: role not in VLLM_ADMIN_ROLES");
+        resp->status = 403;
+        json_put_str(o, "error", "forbidden: role not allowed to delete "
+                                 "(set X-Audit-Role / VLLM_ADMIN_ROLES)");
+        admin_json_reply(resp, o);
+        free(copy);
+        return;
+    }
+
+    char path[1600];
+    snprintf(path, sizeof(path), "%s/%s", ctx->session_dir, file);
+    int rc = remove(path);
+    vllm_audit_add(ctx, actor, role, "session_delete", file,
+                   rc == 0 ? "ok" : "error",
+                   rc == 0 ? "deleted" : "remove failed / not found");
+    vjson_obj_set(o, "ok", vjson_new_bool(rc == 0));
+    if (rc != 0) json_put_str(o, "error", "delete failed (not found?)");
+    admin_json_reply(resp, o);
+    free(copy);
+}
+
+static void handle_admin_rulebooks(VLLMServerCtx *ctx, VHttpResponse *resp) {
+    VJson *o = vjson_new_object();
+    json_put_str(o, "dir", ctx->rulebook_dir);
+    vjson_obj_set(o, "enabled", vjson_new_bool(ctx->rulebook_on && ctx->rulebook_dir[0]));
+    if (!ctx->rulebook_on || !ctx->rulebook_dir[0]) {
+        json_put_str(o, "error", "rulebook dir not configured (--rulebook-dir)");
+        admin_json_reply(resp, o);
+        return;
+    }
+    char cur_fp[VLLM_RB_HASH_HEX];
+    vllm_rb_model_fp(ctx, cur_fp);
+
+    VJson *arr = vjson_new_array();
+    DIR *d = opendir(ctx->rulebook_dir);
+    if (d) {
+        struct dirent *de;
+        while ((de = readdir(d)) != NULL) {
+            const char *nm = de->d_name;
+            size_t ln = strlen(nm);
+            if (ln < 9 || strncmp(nm, "rb_", 3) != 0 ||
+                strcmp(nm + ln - 5, ".json") != 0)
+                continue;
+            char id[VLLM_RB_ID_MAX];
+            size_t idl = ln - 5 - 3;
+            if (idl >= sizeof(id)) continue;
+            memcpy(id, nm + 3, idl);
+            id[idl] = '\0';
+
+            VLLMRulebook rb;
+            if (vllm_rb_load_meta(ctx, id, &rb) != 0) continue;
+            VJson *e = vjson_new_object();
+            json_put_str(e, "rulebook_id", rb.id);
+            json_put_str(e, "name", rb.name);
+            json_put_str(e, "version", rb.version);
+            json_put_str(e, "tenant_id", rb.tenant_id);
+            json_put_str(e, "scope", rb.scope);
+            json_put_str(e, "hash", rb.hash);
+            json_put_str(e, "model_fp", rb.model_fp);
+            vjson_obj_set(e, "n_tokens", vjson_new_number((double)rb.n_tokens));
+            vjson_obj_set(e, "n_chunks", vjson_new_number((double)rb.n_chunks));
+            vjson_obj_set(e, "created_s", vjson_new_number((double)rb.created_s));
+            vjson_obj_set(e, "updated_s", vjson_new_number((double)rb.updated_s));
+            /* 模型指纹是否与当前加载的模型一致（不一致 = 快照不参与复用）。 */
+            int fp_match = rb.model_fp[0] && cur_fp[0] &&
+                           strcmp(rb.model_fp, cur_fp) == 0;
+            vjson_obj_set(e, "model_fp_match", vjson_new_bool(fp_match));
+            json_put_str(e, "current_model_fp", cur_fp);
+
+            /* 该规则包的 KV 快照清单 rbk_<id>_*.kv */
+            VJson *snaps = vjson_new_array();
+            char prefix[VLLM_RB_ID_MAX + 16];
+            snprintf(prefix, sizeof(prefix), "rbk_%s_", id);
+            size_t plen = strlen(prefix);
+            DIR *d2 = opendir(ctx->rulebook_dir);
+            if (d2) {
+                struct dirent *de2;
+                while ((de2 = readdir(d2)) != NULL) {
+                    const char *n2 = de2->d_name;
+                    size_t l2 = strlen(n2);
+                    if (l2 < 4 || strcmp(n2 + l2 - 3, ".kv") != 0) continue;
+                    if (strncmp(n2, prefix, plen) != 0) continue;
+                    char p2[1800];
+                    snprintf(p2, sizeof(p2), "%s/%s", ctx->rulebook_dir, n2);
+                    struct stat sb2;
+                    VJson *s = vjson_new_object();
+                    json_put_str(s, "file", n2);
+                    vjson_obj_set(s, "size", vjson_new_number(
+                        (stat(p2, &sb2) == 0) ? (double)sb2.st_size : 0.0));
+                    vjson_array_push(snaps, s);
+                }
+                closedir(d2);
+            }
+            vjson_obj_set(e, "kv_snapshots", snaps);
+            vjson_obj_set(e, "n_kv_snapshots",
+                          vjson_new_number((double)vjson_array_len(snaps)));
+            vjson_array_push(arr, e);
+        }
+        closedir(d);
+    }
+    vjson_obj_set(o, "rulebooks", arr);
+    vjson_obj_set(o, "total", vjson_new_number((double)vjson_array_len(arr)));
+    admin_json_reply_cap(resp, o, 4u << 20);
+}
+
+static void handle_admin_rulebook_delete(VLLMServerCtx *ctx, const VHttpRequest *req,
+                                         VHttpResponse *resp) {
+    char actor[96], role[64], id[VLLM_RB_ID_MAX] = "";
+    adm_actor(req, actor, sizeof(actor));
+    adm_role(req, role, sizeof(role));
+    char *copy = NULL;
+    if (req->body && req->body_len) {
+        copy = (char *)malloc(req->body_len + 1);
+        if (copy) {
+            memcpy(copy, req->body, req->body_len);
+            copy[req->body_len] = '\0';
+            VJson *b = vjson_parse(copy);
+            if (b) {
+                const char *v = vjson_str(vjson_obj_get(b, "rulebook_id"));
+                if (v) snprintf(id, sizeof(id), "%s", v);
+                vjson_free(b);
+            }
+        }
+    }
+
+    VJson *o = vjson_new_object();
+    if (!ctx->rulebook_on || !ctx->rulebook_dir[0]) {
+        json_put_str(o, "error", "rulebook dir not configured (--rulebook-dir)");
+        admin_json_reply(resp, o);
+        free(copy);
+        return;
+    }
+    if (!id[0]) {
+        vllm_audit_add(ctx, actor, role, "rulebook_delete", "", "error",
+                       "missing rulebook_id");
+        resp->status = 400;
+        json_put_str(o, "error", "'rulebook_id' is required");
+        admin_json_reply(resp, o);
+        free(copy);
+        return;
+    }
+    if (!adm_write_allowed(req)) {
+        vllm_audit_add(ctx, actor, role, "rulebook_delete", id, "denied",
+                       "RBAC: role not in VLLM_ADMIN_ROLES");
+        resp->status = 403;
+        json_put_str(o, "error", "forbidden: role not allowed to delete "
+                                 "(set X-Audit-Role / VLLM_ADMIN_ROLES)");
+        admin_json_reply(resp, o);
+        free(copy);
+        return;
+    }
+    /* ID 白名单门：与 sessions/delete 的文件名门对称，把"非法 ID"（客户端
+     * 缺陷）与"不存在的 ID"分开，避免 200 + ok:false 让调用方无法归因。 */
+    if (!vllm_rb_id_ok(id)) {
+        vllm_audit_add(ctx, actor, role, "rulebook_delete", id, "error",
+                       "bad rulebook id");
+        resp->status = 400;
+        json_put_str(o, "error", "bad 'rulebook_id' (expect [A-Za-z0-9._-])");
+        admin_json_reply(resp, o);
+        free(copy);
+        return;
+    }
+    int removed = vllm_rb_delete(ctx, id);
+    vllm_audit_add(ctx, actor, role, "rulebook_delete", id,
+                   removed > 0 ? "ok" : "error",
+                   removed > 0 ? "files removed" : "nothing removed (not found)");
+    vjson_obj_set(o, "ok", vjson_new_bool(removed > 0));
+    vjson_obj_set(o, "removed", vjson_new_number((double)removed));
+    if (removed <= 0) {
+        resp->status = 404;
+        json_put_str(o, "error", "rulebook not found");
+    }
+    admin_json_reply(resp, o);
+    free(copy);
+}
+
+static void handle_admin_audit(VLLMServerCtx *ctx, const VHttpRequest *req,
+                               VHttpResponse *resp) {
+    char actor[96], role[64], tmp[64] = "";
+    adm_actor(req, actor, sizeof(actor));
+    adm_role(req, role, sizeof(role));
+    int n = 200, do_verify = 1;
+    if (adm_qs(req, "n", tmp, sizeof(tmp))) {
+        n = atoi(tmp);
+        if (n < 1) n = 1;
+        if (n > 2000) n = 2000;
+    }
+    tmp[0] = '\0';
+    if (adm_qs(req, "verify", tmp, sizeof(tmp))) do_verify = (tmp[0] != '0');
+
+    VJson *o = vjson_new_object();
+    vjson_obj_set(o, "enabled", vjson_new_bool(vllm_audit_on(ctx)));
+    json_put_str(o, "path", ctx->audit_log);
+    vjson_obj_set(o, "size", vjson_new_number((double)vllm_audit_size(ctx)));
+
+    int cnt = 0;
+    char *arr = vllm_audit_tail(ctx, n, &cnt);
+    if (arr) {
+        VJson *entries = vjson_parse(arr);
+        vjson_obj_set(o, "entries", entries ? entries : vjson_new_array());
+        free(arr);
+    } else {
+        vjson_obj_set(o, "entries", vjson_new_array());
+    }
+    vjson_obj_set(o, "count", vjson_new_number((double)cnt));
+
+    if (do_verify) {
+        int checked = 0, full = 0, genesis = 0, empty = 0;
+        long bad = 0, first_seq = 0;
+        int ok = vllm_audit_verify(ctx, &checked, &bad, &full, &genesis,
+                                   &first_seq, &empty);
+        VJson *v = vjson_new_object();
+        vjson_obj_set(v, "ok", vjson_new_bool(ok));
+        vjson_obj_set(v, "checked", vjson_new_number((double)checked));
+        vjson_obj_set(v, "bad_seq", vjson_new_number((double)bad));
+        vjson_obj_set(v, "full", vjson_new_bool(full));
+        /* genesis=0 且 full=1：链在文件内自洽，但首行不是 seq=1（前缀被归档/删除，
+         * 与"篡改"不可区分）——UI 必须用黄色提示，不得冒充绿色通过。
+         * empty=1：日志为空/不存在（刚启用或刚轮转），也不是篡改。 */
+        vjson_obj_set(v, "genesis", vjson_new_bool(genesis));
+        vjson_obj_set(v, "first_seq", vjson_new_number((double)first_seq));
+        vjson_obj_set(v, "empty", vjson_new_bool(empty));
+        vjson_obj_set(o, "verify", v);
+    }
+
+    vllm_audit_add(ctx, actor, role, "audit_view", "",
+                   vllm_audit_on(ctx) ? "ok" : "error",
+                   vllm_audit_on(ctx) ? "" : "audit log disabled");
+    admin_json_reply_cap(resp, o, 4u << 20);
 }
 
 /* ---------- router (called from vllm_server.c) ---------- */
@@ -1102,6 +1905,24 @@ void vllm_admin_route(VLLMServerCtx *ctx, const VHttpRequest *req,
     } else if (strcmp(req->method, "POST") == 0 &&
                strcmp(req->path, "/admin/api/policy/set") == 0) {
         handle_admin_policy_set(ctx, req, resp);
+    } else if (strcmp(req->method, "GET") == 0 &&
+               strcmp(req->path, "/admin/api/rulebooks") == 0) {
+        handle_admin_rulebooks(ctx, resp);
+    } else if (strcmp(req->method, "POST") == 0 &&
+               strcmp(req->path, "/admin/api/rulebooks/delete") == 0) {
+        handle_admin_rulebook_delete(ctx, req, resp);
+    } else if (strcmp(req->method, "GET") == 0 &&
+               strcmp(req->path, "/admin/api/sessions") == 0) {
+        handle_admin_sessions(ctx, req, resp);
+    } else if (strcmp(req->method, "GET") == 0 &&
+               strcmp(req->path, "/admin/api/session") == 0) {
+        handle_admin_session(ctx, req, resp);
+    } else if (strcmp(req->method, "POST") == 0 &&
+               strcmp(req->path, "/admin/api/sessions/delete") == 0) {
+        handle_admin_session_delete(ctx, req, resp);
+    } else if (strcmp(req->method, "GET") == 0 &&
+               strcmp(req->path, "/admin/api/audit") == 0) {
+        handle_admin_audit(ctx, req, resp);
     } else {
         static const char nf[] = "{\"error\":\"admin: not found\"}";
         resp->status = 404;

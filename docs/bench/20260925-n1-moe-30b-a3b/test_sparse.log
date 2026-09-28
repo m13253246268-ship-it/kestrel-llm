@@ -1,0 +1,16 @@
+  vLLM-Kestrel: Axiom-Guided Exact-Attention         
+  Large Language Model Inference Engine          
+
+[DEV] device=arm-generic arch=arm64 class=embedded model=- npu=none recommended_wmode=dual
+
+=== Sparse Attention Phase-1 self-test ===
+  [PASS] sparse(all blocks) == exact float (max diff 2.086e-07)
+  [PASS] sparse top-4 deterministic (bitwise)
+  [PASS] sparse top-4 differs from exact (negative, max diff 1.694e-01)
+  [PASS] sparse(all blocks) == exact INT8-KV (max diff 5.492e-05)
+  [PASS] prefill sparse(all blocks) == exact packed (max diff 3.874e-07)
+  [PASS] prefill sparse top-4 deterministic (bitwise)
+  [PASS] prefill sparse top-4 differs from exact (negative, max diff 1.713e-01)
+  [PASS] importance rescues needle in low-probe block (out 0.000 -> 5.000)
+  [PASS] L3 disk-served evicted blocks match RAM exact (max diff 0.0052)
+=== Sparse self-test PASSED (9 checks) ===

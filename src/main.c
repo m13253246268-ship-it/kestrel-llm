@@ -24,6 +24,8 @@
 #include "vllm_npu.h"
 #include "vllm_http.h"
 #include "vllm_server.h"
+#include "vllm_rulebook.h"   /* 规则包注册中心：预置命名上下文（--rulebook-dir） */
+#include "vllm_audit.h"      /* 管理面审计日志（--audit-log，SM3 哈希链） */
 #include "vllm_attest.h"
 #include "vllm_device.h"
 #include "vllm_i18n.h"     /* vllm_tr：引擎侧少量可现文案的中英双语 */
@@ -507,6 +509,32 @@ static int g_longctx_quality = 0;
 static int g_longctx_gen_max = 32;
 static int g_longctx_ctx = 0;
 
+/* 针的位置（Part F 长上下文捞针）。
+ *
+ * 历史行为是把针**写死在填充段的正中**（见 build_needle_prompt 的 1/2）。只验中点
+ * 无法回答"长上下文是只在中间失效、还是整体衰减"，故加这一组开关：
+ *   --needle-sweep   依次跑 0 / 25 / 50 / 75 / 100% 五个位置，**同一次模型加载内**
+ *                    完成（30B-A3B 权重 17.7 GB，一次加载极贵，绝不重复加载）。
+ *   --needle-pos P   只跑 P%（0..100）。
+ *   --longctx-corpus FILE  用真实文本语料替换模板 filler（可重复）。
+ * 三者都隐含 --longctx-quality。都不给时沿用中点与模板 filler，输出与加参数前逐位一致。 */
+static int g_needle_sweep = 0;
+static int g_needle_pos   = -1;   /* -1 = 未指定 → 沿用历史的中点行为 */
+/* --longctx-corpus <file>（可重复）：把 needle 测试的 filler 从模板句换成**真实
+ * 文本语料**。模板 filler 是 32 个人名/8 种颜色的循环拼接，高度重复，用它测出的
+ * "稀疏注意力是否可用"对真实语料未必成立。不给本参数时走模板路径，输出与加参数
+ * 前逐位一致。 */
+static const char *g_longctx_corpus[8];
+static int g_n_longctx_corpus = 0;
+static int *g_corpus_ids = NULL;   /* 语料 token 流（lazy 构建，只读） */
+static int  g_corpus_n   = 0;
+static int  g_corpus_bad = 0;
+
+/* 引擎侧针块选块追踪（VLLM_NEEDLE_TRACE=1 时启用，见 vllm_safetensors.c）。
+ * reset 必须在 prefill 之前调用，否则 prefill 稀疏核的账记不到。 */
+extern void st_ndl_trace_reset(int needle_pos);
+extern void st_ndl_trace_report(void);
+
 /* OpenAI-compatible HTTP server mode (--serve). -1 = disabled. */
 static int  g_serve_port = -1;
 static int  g_serve_port_explicit = 0;  /* set only by --port (no interactive prompt) */
@@ -581,6 +609,29 @@ static int    g_serve_top_k = 0;
  * conversations survive process restarts; see vllm_server.c / st_kv_disk_*. */
 static int    g_disk_kv = 0;
 static char   g_disk_kv_dir[512] = {0};
+
+/* serve: 工业边缘定位的"预置命名上下文 + 会话分区"。
+ *   --rulebook-dir DIR  规则包注册中心目录（rb_<id>.json/.txt/rbk_*.kv）；
+ *                       请求体带 rulebook_id 即可借用该上下文（默认关）。
+ *   --rulebook-build F  离线预处理一次性模式：加载模型后把文件 F 构建为规则包
+ *                       并退出（配合 --rulebook-id/--rulebook-name/...）。
+ *   --session-dir DIR   服务端会话目录（sess_<hash>.json，含消息时间线，供
+ *                       管理页审查；默认关）。
+ *   --session-limit N   会话文件数上限（LRU，默认 1024）。 */
+static int    g_rulebook_on = 0;
+static char   g_rulebook_dir[1024] = {0};
+static char   g_rulebook_build[1024] = {0};
+static char   g_rb_id[VLLM_RB_ID_MAX] = {0};
+static char   g_rb_name[VLLM_RB_NAME_MAX] = {0};
+static char   g_rb_version[VLLM_RB_VER_MAX] = {0};
+static char   g_rb_tenant[VLLM_RB_TENANT_MAX] = {0};
+static char   g_rb_scope[VLLM_RB_SCOPE_MAX] = {0};
+static int    g_session_on = 0;
+static char   g_session_dir[1024] = {0};
+static int    g_session_limit = 0;
+/* --audit-log PATH：管理面审计日志（追加写 + SM3 哈希链）。
+ * 未指定时默认 <session_dir>/admin_audit.jsonl；env VLLM_AUDIT_LOG 优先。 */
+static char   g_audit_log[1024] = {0};
 
 /* serve: speculative decode (--spec), n-gram draft + batched verification.
  * Greedy-only and text-only; default draft length 4 (--spec-k). */
@@ -722,13 +773,55 @@ static const char *G_JOBS[] = {
 #define REFERENCE_TEXT  "Zara's favorite food is ramen, and her favorite color is teal."
 #define REFERENCE_KEY   "ramen"
 
+/* --longctx-corpus 的 lazy 构建：把指定文件按顺序 tokenize 成一条连续 token 流。
+ * 打不开/为空则置 g_corpus_bad，调用方回退模板路径（不静默产出错误结果）。 */
+#define LONGCTX_CORPUS_MAX_TOKENS (1 << 20)
+static void longctx_corpus_build(QwenTokenizer *tok) {
+    if (g_corpus_n > 0 || g_corpus_bad || g_n_longctx_corpus == 0) return;
+    g_corpus_ids = (int *)malloc((size_t)LONGCTX_CORPUS_MAX_TOKENS * sizeof(int));
+    if (!g_corpus_ids) { g_corpus_bad = 1; return; }
+    for (int f = 0; f < g_n_longctx_corpus; f++) {
+        FILE *fp = fopen(g_longctx_corpus[f], "rb");
+        if (!fp) {
+            fprintf(stderr, "[LONGCTX] corpus open fail: %s\n", g_longctx_corpus[f]);
+            continue;
+        }
+        fseek(fp, 0, SEEK_END);
+        long sz = ftell(fp);
+        fseek(fp, 0, SEEK_SET);
+        if (sz <= 0) { fclose(fp); continue; }
+        char *buf = (char *)malloc((size_t)sz + 1);
+        if (!buf) { fclose(fp); continue; }
+        size_t rd = fread(buf, 1, (size_t)sz, fp);
+        buf[rd] = '\0';
+        fclose(fp);
+        int room = LONGCTX_CORPUS_MAX_TOKENS - g_corpus_n;
+        if (room <= 0) { free(buf); break; }
+        int n = qwen_tokenizer_encode(tok, buf, g_corpus_ids + g_corpus_n, room);
+        if (n > 0) g_corpus_n += n;
+        free(buf);
+    }
+    if (g_corpus_n <= 0) {
+        g_corpus_bad = 1;
+        fprintf(stderr, "[LONGCTX] corpus empty -> fall back to template filler\n");
+    } else {
+        fprintf(stderr, "[LONGCTX] corpus: %d file(s) -> %d tokens (plain text, no filler loop)\n",
+                g_n_longctx_corpus, g_corpus_n);
+    }
+}
+
 /* Build a ~`S`-token plain completion:
  *   {filler}\n ... {needle}\n ... {filler}\n {question}
- * The needle is inserted ~half-way through the filler (the collapsed region),
- * the question sits at the very end so greedy decode yields the answer. Returns
- * total token count and records the token index where the needle starts. */
-static int build_needle_prompt(QwenTokenizer *tok, int S,
-                               int *ids, int max_ids, int *needle_start_out) {
+ * The needle is inserted at a caller-chosen fraction of the filler (historically
+ * half-way — the collapsed region), the question sits at the very end so greedy
+ * decode yields the answer. Returns total token count and records the token index
+ * where the needle starts.
+ *
+ * 位置用分数 pos_num/pos_den 表达：0 → 紧接 intro 之后，pos_den → 填充段末尾
+ * （走函数末尾的 fallback 分支）。pos_den<=0 或越界退回 1/2，即历史中点行为。 */
+static int build_needle_prompt_at(QwenTokenizer *tok, int S,
+                                  int *ids, int max_ids, int *needle_start_out,
+                                  int pos_num, int pos_den) {
     const int nl = 198;   /* Qwen3 newline token (Ċ) */
     const int n_names  = (int)(sizeof(G_NAMES)  / sizeof(G_NAMES[0]));
     const int n_colors = (int)(sizeof(G_COLORS) / sizeof(G_COLORS[0]));
@@ -752,7 +845,14 @@ static int build_needle_prompt(QwenTokenizer *tok, int S,
     int content_budget = S - overhead;
     if (content_budget < 0) content_budget = 0;
 
-    int needle_at = content_budget / 2; /* needle buried in the collapsed mid-section */
+    /* 针的插入点 = content_budget 的 pos_num/pos_den 处。1/2 与历史写法
+     * content_budget/2 对非负整数完全等价（整数除法），所以不给位置参数时
+     * 输出逐位不变。 */
+    int needle_at;
+    if (pos_den > 0 && pos_num >= 0 && pos_num <= pos_den)
+        needle_at = (int)((long long)content_budget * pos_num / pos_den);
+    else
+        needle_at = content_budget / 2;
     int filled = 0;
     int person = 0;
     int needle_inserted = 0;
@@ -763,6 +863,20 @@ static int build_needle_prompt(QwenTokenizer *tok, int S,
         ids[pos++] = intro_ids[i];
     if (pos < max_ids) ids[pos++] = nl;
 
+    /* 真实语料模式：filler 直接取 g_corpus_ids 的连续切片（不循环重复）。下面模板
+     * 路径整块保持原缩进，使 diff 只多出这一层包裹，便于逐行审阅。 */
+    longctx_corpus_build(tok);
+    if (g_corpus_n > 0 && !g_corpus_bad) {
+        for (int i = 0; i < needle_at && pos < max_ids; i++)
+            ids[pos++] = g_corpus_ids[i % g_corpus_n];
+        *needle_start_out = pos;
+        for (int i = 0; i < n_needle && pos < max_ids; i++)
+            ids[pos++] = needle_ids[i];
+        if (pos < max_ids) ids[pos++] = nl;
+        needle_inserted = 1;
+        for (int i = needle_at; i < content_budget && pos < max_ids; i++)
+            ids[pos++] = g_corpus_ids[i % g_corpus_n];
+    } else {
     while (filled < content_budget && pos < max_ids) {
         if (!needle_inserted && filled >= needle_at) {
             *needle_start_out = pos;
@@ -808,6 +922,7 @@ static int build_needle_prompt(QwenTokenizer *tok, int S,
             ids[pos++] = needle_ids[i];
         if (pos < max_ids) ids[pos++] = nl;
     }
+    }
 
     /* "Question: ...\nAnswer:" — no trailing newline, so greedy decode starts
      * right after the answer prefix (matches the known-good short A/B). */
@@ -818,6 +933,13 @@ static int build_needle_prompt(QwenTokenizer *tok, int S,
         ids[pos++] = a_ids[i];
 
     return pos;
+}
+
+/* 历史入口：针埋在填充段正中（1/2）。保留它，使「不指定位置」的调用路径与加
+ * 位置参数前**同一条源码路径**，默认输出可证逐位不变。 */
+static int build_needle_prompt(QwenTokenizer *tok, int S,
+                               int *ids, int max_ids, int *needle_start_out) {
+    return build_needle_prompt_at(tok, S, ids, max_ids, needle_start_out, 1, 2);
 }
 
 /* VLLM_L3_DIAG=1: evict 段 VmRSS 采样 + mirror 尺寸统计。验证 serve 多轮下
@@ -839,6 +961,20 @@ static long l3_diag_rss_kb(void) {
     long kb = -1;
     while (fgets(line, sizeof(line), f)) {
         if (sscanf(line, "VmRSS: %ld kB", &kb) == 1) break;
+    }
+    fclose(f);
+    return kb;
+}
+/* 峰值常驻（VmHWM）。口径见 wiki/术语与数据口径.md：它是进程**历史最高水位**、
+ * 单调不减，只能当"运行期峰值"读，不能当成单次请求的稳态占用。长上下文测内存
+ * 必须用它——prefill 一结束稳态 RSS 就回落，看不到真正的峰值。 */
+static long proc_peak_rss_kb(void) {
+    FILE *f = fopen("/proc/self/status", "r");
+    if (!f) return -1;
+    char line[256];
+    long kb = -1;
+    while (fgets(line, sizeof(line), f)) {
+        if (sscanf(line, "VmHWM: %ld kB", &kb) == 1) break;
     }
     fclose(f);
     return kb;
@@ -878,6 +1014,7 @@ static long l3_diag_resident_bytes(const void *p, size_t len) {
 }
 #else
 static long l3_diag_rss_kb(void) { (void)0; return -1; }
+static long proc_peak_rss_kb(void) { return -1; }   /* /proc/self/status 仅 Linux */
 static long l3_diag_resident_bytes(const void *p, size_t len) {
     (void)p; (void)len;
     return -1;   /* /proc/self/pagemap 仅 Linux 可用 */
@@ -1209,13 +1346,63 @@ static void test_longctx_quality_ab(STModelWeights *w, const STModelConfig *cfg,
     int *ids = (int *)malloc(ids_cap * sizeof(int));
     if (!ids) { printf("       [FAIL] OOM for prompt ids\n"); return; }
 
+    /* 运行清单：(S, 位置%) 展平成一维。
+     *
+     * 为什么不写两层嵌套循环：那样要把下面 130 行的函数体整体多缩进一级，diff
+     * 会淹没在这次改动里无法逐行审阅。展平后外层仍是**单层**循环，函数体一行不动。
+     * pos_now < 0 表示"没指定位置"，走历史入口 build_needle_prompt()（中点），
+     * 于是默认调用路径与加参数前逐位一致。 */
+    int pos_pct[5] = {0, 25, 50, 75, 100};
+    int n_pos = 1, use_pct = 0;
+    if (g_needle_sweep)         { n_pos = 5;                 use_pct = 1; }
+    else if (g_needle_pos >= 0) { pos_pct[0] = g_needle_pos; use_pct = 1; }
+
+    int run_S[2 * 5], run_pct[2 * 5], n_runs = 0;
     for (int li = 0; li < n_lens; li++) {
-        int S = ctx_lens[li];
+        for (int pi = 0; pi < n_pos; pi++) {
+            run_S[n_runs]   = ctx_lens[li];
+            run_pct[n_runs] = use_pct ? pos_pct[pi] : -1;
+            n_runs++;
+        }
+    }
+
+    for (int ri = 0; ri < n_runs; ri++) {
+        int S = run_S[ri];
+        int pos_now = run_pct[ri];
         int needle_start = -1;
-        int n_tot = build_needle_prompt(tok, S, ids, (int)ids_cap, &needle_start);
+        int n_tot = (pos_now >= 0)
+            ? build_needle_prompt_at(tok, S, ids, (int)ids_cap, &needle_start,
+                                     pos_now, 100)
+            : build_needle_prompt(tok, S, ids, (int)ids_cap, &needle_start);
         if (n_tot < 16) {
             printf("       [S=%d] [FAIL] prompt too short (%d tokens)\n", S, n_tot);
             continue;
+        }
+        /* VLLM_LONGCTX_DUMP_IDS=<path>：把本次 prompt 的 token 序列导出成 int32
+         * 裸文件，供对端引擎（如 llama.cpp）用**同一 token 流**做同口径对照。
+         * 默认关；不加时行为与改前逐位一致。 */
+        {
+            const char *dp = getenv("VLLM_LONGCTX_DUMP_IDS");
+            if (dp && dp[0]) {
+                FILE *df = fopen(dp, "wb");
+                if (df) {
+                    size_t w = fwrite(ids, sizeof(int), (size_t)n_tot, df);
+                    fclose(df);
+                    printf("         [DUMP] prompt ids -> %s (%d tokens, wrote %zu)\n",
+                           dp, n_tot, w);
+                    fflush(stdout);
+                    /* VLLM_LONGCTX_DUMP_ONLY=1：导出后立即退出。导出点位于 prefill
+                     * 之前，故本开关把"取同一 token 流喂对端引擎"的成本从一次完整
+                     * longctx（8k 约 300s）压到一次模型加载。 */
+                    if (getenv("VLLM_LONGCTX_DUMP_ONLY") &&
+                        getenv("VLLM_LONGCTX_DUMP_ONLY")[0] == '1') {
+                        fflush(NULL);
+                        exit(0);
+                    }
+                } else {
+                    printf("         [DUMP] open fail: %s\n", dp);
+                }
+            }
         }
         /* Temporarily raise max_seq_len for the long KV cache. */
         int orig_max_seq = w->cfg.max_seq_len;
@@ -1231,8 +1418,26 @@ static void test_longctx_quality_ab(STModelWeights *w, const STModelConfig *cfg,
         }
         w->cfg.max_seq_len = orig_max_seq;
 
-        printf("\n       [S=%d] prompt=%d tokens (needle @ token %d)\n",
-               S, n_tot, needle_start);
+        if (pos_now >= 0)
+            printf("\n       [S=%d pos=%d%%] prompt=%d tokens (needle @ token %d)\n",
+                   S, pos_now, n_tot, needle_start);
+        else
+            printf("\n       [S=%d] prompt=%d tokens (needle @ token %d)\n",
+                   S, n_tot, needle_start);
+        /* 内存口径：rss 是当前稳态（prefill 完会回落），peak 是 VmHWM 历史高水位。
+         * 长上下文只能用 peak 说话，稳态 RSS 看不到峰值。 */
+        printf("         rss_after_init %ld kB  peak %ld kB\n",
+               l3_diag_rss_kb(), proc_peak_rss_kb());
+        /* VLLM_NEEDLE_TRACE=1：从 prefill 起跟踪针块在稀疏选块中的去向。
+         * 必须在 prefill 之前 set，否则 prefill 稀疏核那一相的账记不到。 */
+        {
+            static int ndl_t_v = -1;
+            if (ndl_t_v < 0) {
+                const char *e = getenv("VLLM_NEEDLE_TRACE");
+                ndl_t_v = (e && e[0] == '1') ? 1 : 0;
+            }
+            st_ndl_trace_reset(ndl_t_v ? needle_start : -1);
+        }
         fflush(stdout);
 
         /* Prefill the whole prompt with exact batched attention.
@@ -1271,6 +1476,101 @@ static void test_longctx_quality_ab(STModelWeights *w, const STModelConfig *cfg,
             fflush(stdout);
         }
 
+        printf("         rss_after_prefill %ld kB  peak %ld kB\n",
+               l3_diag_rss_kb(), proc_peak_rss_kb());
+        fflush(stdout);
+
+        /* VLLM_NEEDLE_TRACE=1：捞针失败的归因诊断（只读公开字段，不动注意力实现）。
+         *
+         * 稀疏 decode 的选块预算 k 有一半（(k+1)/2）是按「prefill 精确注意力质量」
+         * 的块级名次发的（见 sparse_attn_head 的 (1b) 步，与 head 无关）；剩下
+         * 一半才由 decoder 自己的 probe 打分决定（数据相关）。所以针块在质量表里
+         * 的名次是「能不能被看见」的第一道门：名次掉出预算，就只能指望 probe 那
+         * 一半恰好命中——这正好对应观测到的「0% 中、25% 不中」这种非单调召回。
+         *
+         * 这里同时把针的 token 序列解码回文本，确认提示里埋进去的确实是原文
+         * （排除构造/截断类 bug，而不是先假设是注意力的问题）。 */
+        {
+            static int trace_v = -1;
+            if (trace_v < 0) {
+                const char *e = getenv("VLLM_NEEDLE_TRACE");
+                trace_v = (e && e[0] == '1') ? 1 : 0;
+            }
+            if (trace_v && ist.prefill_importance && ist.max_kv_slots > 0) {
+                const int bs = g_sparse_block > 0 ? g_sparse_block : 32;
+                const int nb_tot = (ist.seq_len + bs - 1) / bs;
+                const int k_tot = st_sparse_k_eff(nb_tot);      /* 与 decode 选块同一口径 */
+                const int imp_budget = (k_tot + 1) / 2;         /* (1b) 步的预留量 */
+                int nt_ids[64];
+                int n_needle_tok = qwen_tokenizer_encode(tok, NEEDLE_TEXT, nt_ids, 64);
+
+                printf("         [NDLTRACE] seq=%d bs=%d n_blocks=%d sparse_k=%d "
+                       "ratio=%.3f k_eff=%d imp_budget=%d needle_at=%d\n",
+                       ist.seq_len, bs, nb_tot, g_sparse_k,
+                       (double)g_sparse_ratio, k_tot, imp_budget, needle_start);
+                /* --force-blk 的 [OPT] 回显只在 serve 路径打印，longctx 路径下
+                 * 会静默生效 —— 诊断开关静默是个真隐患（复跑的人不知道实验
+                 * 带了钩子），所以这里补一行。 */
+                if (g_force_blk_n > 0) {
+                    printf("         [NDLTRACE] force_blk=");
+                    for (int fi = 0; fi < g_force_blk_n; fi++)
+                        printf("%s%d", fi ? "," : "", g_force_blk[fi]);
+                    printf("（decode 无条件保留，prefill 选块不受影响）\n");
+                }
+
+                if (nb_tot > 0 && needle_start >= 0) {
+                    const int nb_needle = needle_start / bs;
+                    char nbuf[256];
+                    int np = 0;
+                    nbuf[0] = 0;
+                    for (int i = 0; i < n_needle_tok && i < 32 && needle_start + i < n_tot; i++)
+                        append_tok_str(nbuf, &np, sizeof(nbuf), tok, ids[needle_start + i]);
+                    printf("         [NDLTRACE] needle n_tok=%d blk=%d text=\"%s\"\n",
+                           n_needle_tok, nb_needle, nbuf);
+
+                    float *bi = (float*)malloc((size_t)nb_tot * sizeof(float));
+                    if (bi) {
+                        float max_v = 0.0f, need_v = 0.0f;
+                        int over = 0;
+                        for (int b = 0; b < nb_tot; b++) {
+                            int p0 = b * bs, p1 = p0 + bs;
+                            if (p1 > ist.seq_len) p1 = ist.seq_len;
+                            float acc = 0.0f;
+                            for (int p = p0; p < p1; p++) acc += ist.prefill_importance[p];
+                            bi[b] = acc;
+                            if (acc > max_v) max_v = acc;
+                        }
+                        if (nb_needle < nb_tot) need_v = bi[nb_needle];
+                        for (int b = 0; b < nb_tot; b++) {
+                            if (bi[b] > need_v || (bi[b] == need_v && b < nb_needle)) over++;
+                        }
+                        printf("         [NDLTRACE] imp: needle_blk=%.6g max=%.6g "
+                               "share=%.4f%% rank=%d/%d in_imp_half=%s\n",
+                               need_v, max_v,
+                               max_v > 0.0f ? 100.0 * (double)need_v / (double)max_v : 0.0,
+                               over + 1, nb_tot,
+                               (over + 1 <= imp_budget) ? "YES" : "NO");
+                        /* 预算名次处的门槛值，用来看针块差多远 */
+                        float thr = 0.0f;
+                        for (int it = 0; it < imp_budget; it++) {
+                            int bx = -1;
+                            for (int b = 0; b < nb_tot; b++) {
+                                if (bi[b] < 0.0f) continue;
+                                if (bx < 0 || bi[b] > bi[bx]) bx = b;
+                            }
+                            if (bx < 0) break;
+                            thr = bi[bx];
+                            bi[bx] = -1.0f;
+                        }
+                        printf("         [NDLTRACE] imp: thr@rank%d=%.6g ratio_needle/thr=%.4g\n",
+                               imp_budget, thr, thr > 0.0f ? (double)need_v / (double)thr : 0.0);
+                        free(bi);
+                    }
+                }
+                fflush(stdout);
+            }
+        }
+
         /* Phase 2a: L3 cold-block Q4 disk eviction (--l3-evict). */
         l3_evict_after_prefill(&ist, 0, 0);
 
@@ -1296,6 +1596,7 @@ static void test_longctx_quality_ab(STModelWeights *w, const STModelConfig *cfg,
         float nll = 0.0f, nll_f32 = 0.0f;
         double ms_gen = 0.0;
         int got = 0;
+        int got_at = -1;   /* REFERENCE_KEY 首次出现在第几个生成 token；-1 = 未命中 */
 
         /* Greedy decode (timed, Q4_0 exact attention). */
         {
@@ -1312,6 +1613,11 @@ static void test_longctx_quality_ab(STModelWeights *w, const STModelConfig *cfg,
             for (int t = 0; t < GEN_MAX; t++) {
                 int id = greedy_argmax(ist.logits, vc);
                 append_tok_str(buf_out, &pout, sizeof(buf_out), tok, id);
+                /* 记录首次命中发生在第几个生成 token。第 0 个 token 的 logits 由
+                 * prefill 产出（最后一个 prompt token 的精确注意力），后续才是
+                 * decode 自己捞的 —— 两者混在一起会把"prefill 兜住"误判成
+                 * "decode 选块对"，必须分开报。 */
+                if (got_at < 0 && strstr(buf_out, REFERENCE_KEY)) got_at = t;
                 st_qwen_model_forward(&ist, id);
             }
             QueryPerformanceCounter(&t1);
@@ -1350,6 +1656,7 @@ static void test_longctx_quality_ab(STModelWeights *w, const STModelConfig *cfg,
                 }
             }
         }
+        st_ndl_trace_report();
         got = strstr(buf_out, REFERENCE_KEY) != NULL;
         fprintf(stderr, "[STAGE] greedy done\n"); fflush(stderr);
 
@@ -1384,12 +1691,19 @@ static void test_longctx_quality_ab(STModelWeights *w, const STModelConfig *cfg,
         float ppl = expf(nll / (float)n_ref);
         float ppl_f32 = expf(nll_f32 / (float)n_ref);
 
-        printf("         Needle retrieved  %s\n", got ? "YES" : "NO");
+        printf("         Needle retrieved  %s%s\n", got ? "YES" : "NO",
+               got ? (got_at == 0 ? "  (hit at token 0 = prefill 兜住，非 decode 选块之功)"
+                                  : "  (hit inside decode)") : "");
+        if (got && got_at == 0 && GEN_MAX <= 32)
+            printf("         [WARN] 命中在第 0 个 token 且生成长度仅 %d —— 建议 "
+                   "--longctx-gen 提到 64+ 再看后段是否答得完（判据会高估）\n", GEN_MAX);
         printf("         Answer PPL (teacher-forced)  Q8=%.3f  F32=%.3f  (Q8/F32=%.4f)\n",
                ppl, ppl_f32, ppl_f32 > 0.0f ? ppl / ppl_f32 : 0.0f);
         printf("         Greedy (exact): \"%s\"\n", buf_out);
         printf("         Decode  %.1f ms/tok  (%.1f tok/s)\n",
                ms_gen, (ms_gen > 0.0) ? 1000.0 / ms_gen : 0.0);
+        printf("         rss_end %ld kB  peak %ld kB\n",
+               l3_diag_rss_kb(), proc_peak_rss_kb());
         printf("         L3 disk-served decode tokens: %lld\n", g_l3_disk_hits);
         fflush(stdout);
 
@@ -2767,6 +3081,62 @@ static void mem_dump_regions(const STModelWeights *w) {
 }
 #endif
 
+/* --longctx-quality / --needle-sweep / --needle-pos 的入口：加载模型 + 词表，
+ * 再跑 Part F（长上下文捞针 + PPL）。
+ *
+ * 背景（照实记）：test_longctx_quality_ab() 在本轮之前**从未被任何地方调用** ——
+ * g_longctx_quality 只被赋值、从未被读，所以 --longctx-quality 一直是个只顺带把
+ * perf_only 置 1（跳过自测）的空开关。这个入口把它接上。 */
+static int run_longctx_quality(const char *model_dir) {
+    char vqf_path[1024]; vqf_path[0] = 0;
+    char tok_dir[1024];
+    if (vqf_is_file(model_dir)) {
+        snprintf(vqf_path, sizeof(vqf_path), "%s", model_dir);
+        snprintf(tok_dir, sizeof(tok_dir), "%s", model_dir);
+        char *sl = strrchr(tok_dir, '/');
+        char *bs = strrchr(tok_dir, '\\');
+        char *sep = (bs && (!sl || bs > sl)) ? bs : sl;
+        if (sep) { *sep = '\0'; if (!tok_dir[0]) snprintf(tok_dir, sizeof(tok_dir), "."); }
+        else    snprintf(tok_dir, sizeof(tok_dir), ".");
+    } else {
+        if (!vqf_dir_find(model_dir, vqf_path, sizeof(vqf_path))) {
+            printf("[LONGCTX] FAIL: %s 无 model.vqf\n", model_dir);
+            return 1;
+        }
+        snprintf(tok_dir, sizeof(tok_dir), "%s", model_dir);
+    }
+
+    STModelWeights w; memset(&w, 0, sizeof(w));
+    double t0 = st_now_sec();
+    if (vqf_load(&w, vqf_path) != 0) {
+        printf("[LONGCTX] FAIL: vqf_load %s\n", vqf_path);
+        return 1;
+    }
+    printf("[LONGCTX] vqf_load OK (%.2fs): dim=%d layers=%d heads=%d kv=%d "
+           "ffn=%d vocab=%d max_seq=%d\n",
+           st_now_sec() - t0, w.cfg.dim, w.cfg.n_layers, w.cfg.n_heads,
+           w.cfg.n_kv_heads, w.cfg.ffn_dim, w.cfg.vocab_size, w.cfg.max_seq_len);
+    printf("[LONGCTX] rss_after_load %ld kB  peak %ld kB\n",
+           l3_diag_rss_kb(), proc_peak_rss_kb());
+    fflush(stdout);
+
+    QwenTokenizer tok;
+    if (qwen_tokenizer_load(&tok, tok_dir) != 0 ||
+        qwen_tokenizer_load_special(&tok, tok_dir) != 0) {
+        printf("[LONGCTX] FAIL: tokenizer load from %s\n", tok_dir);
+        st_weights_free(&w);
+        return 1;
+    }
+
+    test_longctx_quality_ab(&w, &w.cfg, &tok);
+
+    qwen_tokenizer_free(&tok);
+    st_weights_free(&w);
+    printf("[LONGCTX] rss_end %ld kB  peak %ld kB\n",
+           l3_diag_rss_kb(), proc_peak_rss_kb());
+    return 0;
+}
+
 static int run_stream_test(const char *model_dir, int n_tokens) {
     printf("\n=== [STREAM] layer-resident validation (VQF only) ===\n");
     fflush(stdout);
@@ -3509,8 +3879,11 @@ static int serve_load_model(ServeModel *m) {
         /* 词表不内嵌在 .vqf 里：从文件所在目录加载 vocab.bin/config.json。
          * （目录式 VQF 的 m->model_dir 本身就是模型目录，无需此处理。） */
         snprintf(vqf_dirbuf, sizeof(vqf_dirbuf), "%s", m->model_dir);
-        char *vslash = strrchr(vqf_dirbuf, '/');
-        if (vslash) *vslash = '\0'; else vqf_dirbuf[0] = '\0';
+        char *vsl = strrchr(vqf_dirbuf, '/');
+        char *vbs = strrchr(vqf_dirbuf, '\\');
+        char *vsep = vsl > vbs ? vsl : vbs;
+        if (vsep) { *vsep = '\0'; if (!vqf_dirbuf[0]) snprintf(vqf_dirbuf, sizeof(vqf_dirbuf), "."); }
+        else snprintf(vqf_dirbuf, sizeof(vqf_dirbuf), ".");
         fprintf(stderr, "[M-A] VQF loaded (file): %s (tok_dir=%s)\n",
                 m->model_dir, vqf_dirbuf[0] ? vqf_dirbuf : "(cwd)");
         fflush(stderr);
@@ -3824,6 +4197,10 @@ static void serve_on_start(int actual_port, void *ud) {
     printf("  [SERVE] %s http://0.0.0.0:%d/chat    (%s)\n",
            vllm_tr("对话入口:", "chat UI:"), actual_port,
            vllm_tr("对话页 chat.html", "chat.html"));
+    printf("  [SERVE] %s http://0.0.0.0:%d/review  (%s)\n",
+           vllm_tr("审查入口:", "review UI:"), actual_port,
+           vllm_tr("会话/规则/审计审查台 review.html（与 /admin/ 分离）",
+                   "session/rulebook/audit review console review.html (separate from /admin/)"));
     printf("          GET  /v1/models\n");
     printf("          GET  /health\n");
     printf("          POST /v1/chat/completions  (stream=true SSE supported)\n");
@@ -3886,6 +4263,20 @@ static int vllm_serve_main(int port, const char *model_dir_arg, int auto_load) {
     ctx.disk_kv = g_disk_kv;
     if (g_disk_kv && g_disk_kv_dir[0])
         snprintf(ctx.kvdir, sizeof(ctx.kvdir), "%s", g_disk_kv_dir);
+    /* 工业边缘：预置命名上下文（规则包注册中心）+ 服务端会话存储（默认关）。 */
+    ctx.rulebook_on = g_rulebook_on;
+    if (g_rulebook_on && g_rulebook_dir[0])
+        snprintf(ctx.rulebook_dir, sizeof(ctx.rulebook_dir), "%s", g_rulebook_dir);
+    ctx.session_on = g_session_on;
+    if (g_session_on && g_session_dir[0])
+        snprintf(ctx.session_dir, sizeof(ctx.session_dir), "%s", g_session_dir);
+    ctx.session_limit = g_session_limit;
+    /* 管理面审计日志：显式 --audit-log 优先，否则落在会话目录内。 */
+    if (g_audit_log[0])
+        snprintf(ctx.audit_log, sizeof(ctx.audit_log), "%s", g_audit_log);
+    else if (ctx.session_on && ctx.session_dir[0])
+        snprintf(ctx.audit_log, sizeof(ctx.audit_log), "%s/admin_audit.jsonl",
+                 ctx.session_dir);
     ctx.spec = g_spec;
     ctx.spec_k = g_spec_k;
     /* 内存驻留策略（档位阶梯）默认值 + CLI 覆盖（管理页运行期可再调） */
@@ -3918,6 +4309,9 @@ static int vllm_serve_main(int port, const char *model_dir_arg, int auto_load) {
      * 须在模型加载前调用：vatt_model_ready 在加载成功后固化模型指纹。 */
     vatt_init(&ctx);
 
+    /* 管理面审计日志初始化（恢复链头；未配置路径则为关闭）。 */
+    vllm_audit_init(&ctx);
+
     if (auto_load) {
         /* Synchronous load before serving (default behavior). */
         fprintf(stderr, "[SERVE] auto-load: loading model %s (wmode=%d)\n",
@@ -3947,6 +4341,57 @@ static int vllm_serve_main(int port, const char *model_dir_arg, int auto_load) {
         printf("[SERVE] model ready: %s (wmode=%d, vision=%d)\n",
                m.model_dir, g_st_wmode, m.has_vision);
         fflush(stdout);
+
+        /* ---- --rulebook-build：规则包离线预处理（一次性，不进入服务循环）----
+         * 把规则手册文件构建成命名上下文（元数据 + 预处理 KV 快照），供后续
+         * 推理请求按 --rulebook-dir 借用。口径：复用为"确定性但近似"。 */
+        if (g_rulebook_build[0]) {
+            FILE *rf = fopen(g_rulebook_build, "rb");
+            if (!rf) {
+                fprintf(stderr, "[RB] cannot open --rulebook-build file: %s\n",
+                        g_rulebook_build);
+                return 1;
+            }
+            fseek(rf, 0, SEEK_END);
+            long rsz = ftell(rf);
+            fseek(rf, 0, SEEK_SET);
+            if (rsz <= 0 || rsz > VLLM_RB_MAX_TEXT) {
+                fprintf(stderr, "[RB] rulebook file size %ld out of range (1..%d)\n",
+                        rsz, VLLM_RB_MAX_TEXT);
+                fclose(rf);
+                return 1;
+            }
+            char *rtext = (char *)malloc((size_t)rsz + 1);
+            if (!rtext) { fclose(rf); return 1; }
+            size_t rd = fread(rtext, 1, (size_t)rsz, rf);
+            fclose(rf);
+            rtext[rd] = '\0';
+
+            VLLMRulebook meta;
+            memset(&meta, 0, sizeof(meta));
+            snprintf(meta.id, sizeof(meta.id), "%s", g_rb_id);
+            snprintf(meta.name, sizeof(meta.name), "%s",
+                     g_rb_name[0] ? g_rb_name
+                                  : (g_rb_id[0] ? g_rb_id : "rulebook"));
+            snprintf(meta.version, sizeof(meta.version), "%s",
+                     g_rb_version[0] ? g_rb_version : "1");
+            snprintf(meta.tenant_id, sizeof(meta.tenant_id), "%s", g_rb_tenant);
+            snprintf(meta.scope, sizeof(meta.scope), "%s", g_rb_scope);
+
+            char rberr[512];
+            int rbrc = vllm_rb_build(&ctx, rtext, &meta, rberr, sizeof(rberr));
+            if (rbrc != 0)
+                fprintf(stderr, "[RB] build FAILED: %s\n", rberr);
+            else if (rberr[0])
+                fprintf(stderr, "[RB] built with note: %s\n", rberr);
+            else
+                printf("[RB] rulebook '%s' v%s ready in %s\n", meta.id,
+                       meta.version, ctx.rulebook_dir);
+            fflush(stderr);
+            fflush(stdout);
+            free(rtext);
+            return rbrc == 0 ? 0 : 1;
+        }
     } else {
         /* Manual-load mode: the HTTP server starts immediately with no model
          * loaded; POST /admin/api/model/load (from the admin page) loads it
@@ -3954,6 +4399,11 @@ static int vllm_serve_main(int port, const char *model_dir_arg, int auto_load) {
         printf("[SERVE] manual-load mode: model NOT loaded yet. Open "
                "http://0.0.0.0:%d/admin/ and press \"加载模型\".\n", port);
         fflush(stdout);
+        if (g_rulebook_build[0]) {
+            fprintf(stderr, "[RB] --rulebook-build needs a synchronously loaded "
+                            "model (do not combine with manual-load / --load-on-use)\n");
+            return 1;
+        }
     }
 
     /* 插桩：一次性打印长上下文链路的**有效**取值。用来把三种情况分开：
@@ -3966,12 +4416,28 @@ static int vllm_serve_main(int port, const char *model_dir_arg, int auto_load) {
         const char *pr = getenv("VLLM_L3_PREFIX_REUSE");
         fprintf(stderr,
                 "[OPT] prefix_kv=%d disk_kv=%d sparse_attn=%d sparse_k=%d "
-                "sparse_block=%d sparse_probe=%d l3_evict=%d "
-                "l3_prefix_reuse=%d | sparse 剪枝阈值: seq_len > %d\n",
+                "sparse_block=%d sparse_probe=%d sparse_min_ctx=%d "
+                "sparse_pf_group=%d "
+                "sparse_pf_k=%d sparse_pf_min_ctx=%d l3_evict=%d "
+                "l3_prefix_reuse=%d | sparse 剪枝阈值: decode>=%d prefill>=%d\n",
                 ctx.prefix_kv, ctx.disk_kv, g_sparse_attn, g_sparse_k,
-                g_sparse_block, g_sparse_probe, g_l3_evict,
+                g_sparse_block, g_sparse_probe, g_sparse_min_ctx, g_sparse_pf_group,
+                g_sparse_pf_k,
+                g_sparse_pf_min_ctx,
+                g_l3_evict,
                 (pr && pr[0] == '1') ? 1 : 0,
-                g_sparse_k * g_sparse_block);
+                g_sparse_min_ctx, g_sparse_pf_min_ctx);
+        if (g_sparse_ratio > 0.0f)
+            fprintf(stderr, "[OPT] sparse_ratio=%.3f（选块预算按块数比例化，"
+                            "sparse_k=%d 退化为下限）\n",
+                    (double)g_sparse_ratio, g_sparse_k);
+        if (g_force_blk_n > 0) {
+            fprintf(stderr, "[OPT] force_blk=");
+            for (int i = 0; i < g_force_blk_n; i++)
+                fprintf(stderr, "%s%d", i ? "," : "", g_force_blk[i]);
+            fprintf(stderr, "（诊断：decode 无条件保留这些 KV 块，"
+                            "prefill 选块不受影响）\n");
+        }
         fflush(stderr);
     }
 
@@ -4042,6 +4508,25 @@ int main(int argc, char **argv) {
         } else if (strcmp(argv[i], "--longctx-ctx") == 0 && i + 1 < argc) {
             g_longctx_ctx = atoi(argv[++i]);
             if (g_longctx_ctx < 1) g_longctx_ctx = 1;
+        } else if (strcmp(argv[i], "--needle-sweep") == 0) {
+            /* 0/25/50/75/100% 五个位置各跑一遍，同一次模型加载内完成 */
+            perf_only = 1;
+            g_longctx_quality = 1;
+            g_needle_sweep = 1;
+        } else if (strcmp(argv[i], "--needle-pos") == 0 && i + 1 < argc) {
+            perf_only = 1;
+            g_longctx_quality = 1;
+            g_needle_pos = atoi(argv[++i]);
+            if (g_needle_pos < 0)   g_needle_pos = 0;
+            if (g_needle_pos > 100) g_needle_pos = 100;
+        } else if (strcmp(argv[i], "--longctx-corpus") == 0 && i + 1 < argc) {
+            /* 真实文本语料替换模板 filler（可重复指定，按顺序拼接） */
+            perf_only = 1;
+            g_longctx_quality = 1;
+            if (g_n_longctx_corpus < (int)(sizeof(g_longctx_corpus) / sizeof(g_longctx_corpus[0])))
+                g_longctx_corpus[g_n_longctx_corpus++] = argv[++i];
+            else
+                ++i;
         } else if (strcmp(argv[i], "--prefix-cache") == 0) {
             perf_only = 1;
             g_prefix_cache = 1;
@@ -4050,6 +4535,29 @@ int main(int argc, char **argv) {
         } else if (strcmp(argv[i], "--disk-kv") == 0 && i + 1 < argc) {
             g_disk_kv = 1;     /* serve: persist KV snapshots across restarts */
             snprintf(g_disk_kv_dir, sizeof(g_disk_kv_dir), "%s", argv[++i]);
+        } else if (strcmp(argv[i], "--rulebook-dir") == 0 && i + 1 < argc) {
+            g_rulebook_on = 1; /* serve: 预置命名上下文（规则包注册中心） */
+            snprintf(g_rulebook_dir, sizeof(g_rulebook_dir), "%s", argv[++i]);
+        } else if (strcmp(argv[i], "--rulebook-build") == 0 && i + 1 < argc) {
+            snprintf(g_rulebook_build, sizeof(g_rulebook_build), "%s", argv[++i]);
+        } else if (strcmp(argv[i], "--rulebook-id") == 0 && i + 1 < argc) {
+            snprintf(g_rb_id, sizeof(g_rb_id), "%s", argv[++i]);
+        } else if (strcmp(argv[i], "--rulebook-name") == 0 && i + 1 < argc) {
+            snprintf(g_rb_name, sizeof(g_rb_name), "%s", argv[++i]);
+        } else if (strcmp(argv[i], "--rulebook-version") == 0 && i + 1 < argc) {
+            snprintf(g_rb_version, sizeof(g_rb_version), "%s", argv[++i]);
+        } else if (strcmp(argv[i], "--rulebook-tenant") == 0 && i + 1 < argc) {
+            snprintf(g_rb_tenant, sizeof(g_rb_tenant), "%s", argv[++i]);
+        } else if (strcmp(argv[i], "--rulebook-scope") == 0 && i + 1 < argc) {
+            snprintf(g_rb_scope, sizeof(g_rb_scope), "%s", argv[++i]);
+        } else if (strcmp(argv[i], "--session-dir") == 0 && i + 1 < argc) {
+            g_session_on = 1;  /* serve: 服务端会话存储（分区 + 历史审查） */
+            snprintf(g_session_dir, sizeof(g_session_dir), "%s", argv[++i]);
+        } else if (strcmp(argv[i], "--session-limit") == 0 && i + 1 < argc) {
+            g_session_limit = atoi(argv[++i]);
+            if (g_session_limit < 1) g_session_limit = 1;
+        } else if (strcmp(argv[i], "--audit-log") == 0 && i + 1 < argc) {
+            snprintf(g_audit_log, sizeof(g_audit_log), "%s", argv[++i]);
         } else if (strcmp(argv[i], "--spec") == 0) {
             g_spec = 1;        /* serve: n-gram speculative decode */
         } else if (strcmp(argv[i], "--spec-k") == 0 && i + 1 < argc) {
@@ -4128,12 +4636,53 @@ int main(int argc, char **argv) {
         } else if (strcmp(argv[i], "--sparse-k") == 0 && i + 1 < argc) {
             g_sparse_k = atoi(argv[++i]);
             if (g_sparse_k < 1) g_sparse_k = 1;
+        } else if (strcmp(argv[i], "--sparse-ratio") == 0 && i + 1 < argc) {
+            /* 选块预算比例化（0 = 关闭，保持 --sparse-k 的固定块数语义）。 */
+            g_sparse_ratio = (float)atof(argv[++i]);
+            if (g_sparse_ratio < 0.0f) g_sparse_ratio = 0.0f;
+            if (g_sparse_ratio > 1.0f) g_sparse_ratio = 1.0f;
+        } else if (strcmp(argv[i], "--force-blk") == 0 && i + 1 < argc) {
+            /* 诊断：**只对 decode** 无条件保留这些 KV 块（逗号分隔，最多
+             * ST_FORCE_BLK_MAX 个）。见 g_force_blk 的注释 —— 用于分离
+             * 「decode 没选中针块」与「prefill 近似注意力损坏了针块的
+             * hidden state」。 */
+            char *sp = argv[++i];
+            g_force_blk_n = 0;
+            while (*sp && g_force_blk_n < ST_FORCE_BLK_MAX) {
+                g_force_blk[g_force_blk_n++] = atoi(sp);
+                while (*sp && *sp != ',') sp++;
+                if (*sp == ',') sp++;
+            }
         } else if (strcmp(argv[i], "--sparse-block") == 0 && i + 1 < argc) {
             g_sparse_block = atoi(argv[++i]);
             if (g_sparse_block < 8) g_sparse_block = 8;
         } else if (strcmp(argv[i], "--sparse-probe") == 0 && i + 1 < argc) {
             g_sparse_probe = atoi(argv[++i]);
             if (g_sparse_probe < 1) g_sparse_probe = 1;
+        } else if (strcmp(argv[i], "--sparse-min-ctx") == 0 && i + 1 < argc) {
+            /* 稀疏 **decode** 的上下文长度下限（默认 1024）。
+             * ctx < 该值时 decode 退回精确核（每个生成 token 的 probe 开销大于省下的
+             * 注意力）。0 = 只用结构性下限 2*block（即改动前行为）。 */
+            g_sparse_min_ctx = atoi(argv[++i]);
+            if (g_sparse_min_ctx < 0) g_sparse_min_ctx = 0;
+        } else if (strcmp(argv[i], "--sparse-pf-group") == 0 && i + 1 < argc) {
+            /* 稀疏 prefill 核的选块粒度：每组 G 个 token 共享一次选块。
+             * 0（默认）= 历史行为：整个 mini-batch 一个代表 query 选块。
+             * G=1 = 每个 token 用自己的 query 选块（针对「写入侧被污染」的根因）。 */
+            g_sparse_pf_group = atoi(argv[++i]);
+            if (g_sparse_pf_group < 0) g_sparse_pf_group = 0;
+        } else if (strcmp(argv[i], "--sparse-pf-k") == 0 && i + 1 < argc) {
+            /* 稀疏 **prefill** 核专用的保留块数（与 decode 的 --sparse-k 分开）。
+             * 0（默认）= 沿用 --sparse-k，逐位保持旧行为。 */
+            g_sparse_pf_k = atoi(argv[++i]);
+            if (g_sparse_pf_k < 0) g_sparse_pf_k = 0;
+        } else if (strcmp(argv[i], "--sparse-pf-min-ctx") == 0 && i + 1 < argc) {
+            /* 稀疏 prefill 的**上下文长度下限**（默认 3072）。
+             * ctx < 该值时稀疏 prefill 是净亏（选块几乎覆盖全上下文却仍付 probe 开销），
+             * 退回精确核。0 = 关闭本门，只用结构性下限 2*block（即改动前行为）。
+             * 仅在 VLLM_SPARSE_PREFILL=1 时参与判定。 */
+            g_sparse_pf_min_ctx = atoi(argv[++i]);
+            if (g_sparse_pf_min_ctx < 0) g_sparse_pf_min_ctx = 0;
         } else if (strcmp(argv[i], "--prefill-batch") == 0 && i + 1 < argc) {
             g_st_prefill_batch = atoi(argv[++i]);
             if (g_st_prefill_batch < 1) g_st_prefill_batch = 1;
@@ -4376,6 +4925,16 @@ int main(int argc, char **argv) {
         setenv("VLLM_ACTQ16", "0", 1);     /* POSIX（Linux / aarch64 板端） */
 #endif
         printf("[MOE-EP] VLLM_ACTQ16 forced 0 (exact track) for EP bit-level identity\n");
+    }
+
+    if (g_longctx_quality) {
+        /* Part F 长上下文捞针（--longctx-quality / --needle-sweep / --needle-pos）。
+         * 需要 --model <含 model.vqf 的目录或 .vqf 文件>。 */
+        if (!g_serve_model_dir) {
+            printf("[LONGCTX] 需要 --model <含 model.vqf 的目录或 .vqf 文件>\n");
+            return 1;
+        }
+        return run_longctx_quality(g_serve_model_dir);
     }
 
     if (g_stream_test) {

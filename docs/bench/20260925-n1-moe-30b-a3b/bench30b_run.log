@@ -1,0 +1,50 @@
+run_pid=64000  started=2026-09-24T23:24:58+08:00
+================ ENV ================
+2026-09-24T23:24:58+08:00
+host    : iZbp16kmws3ej184pk00osZ
+kernel  : 5.15.0-191-generic
+arch    : aarch64
+cpu     : Neoverse-N1
+ncpu    : 64
+boot_id : 043e34da-a3a8-4d40-8c92-f7ee0e1eeb7d
+uptime  :  23:24:58 up  1:33,  0 users,  load average: 3.27, 3.88, 3.82
+governor: cat: /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor: No such file or directory
+thermal : 
+mem     : 245 GiB total, 242 GiB avail
+steal   : steal_ticks=0
+binary  : 3f23dda18d984f85358b7556612b14f72c58ce1c8dbf43d9bed8d39d77d67691  /root/GitHupSRC/build-rk3588/vllm_kestrel
+bin_size: 965848
+model   : 17665601544 bytes
+vqf_md5 : e66a53eb9efc0a8962b81d3516aedf37
+vocab   : 207fbf4194ca8ae384b221882a21be2a
+src_commit: n/a
+=====================================
+
+[warm-global] touching all weights ...
+[warm-global] rc=0 31 lines
+[warm-global] buff/cache=101 GiB
+
+======== ROUND 1 ========
+  env: load average: 3.46, 3.73, 3.77 | buff/cache=101GiB | steal_ticks=0 softirq=3754
+  order: 1 2 4 8 16 32 64
+  r1 t1: rc=0 nlwp_max=1 | prefill 246 tokens in 132.892s | decoded 32 tokens, 950 ms/tok
+  r1 t2: rc=0 nlwp_max=2 | prefill 246 tokens in 79.003s | decoded 32 tokens, 485 ms/tok
+  r1 t4: rc=0 nlwp_max=4 | prefill 246 tokens in 40.986s | decoded 32 tokens, 251 ms/tok
+  r1 t8: rc=0 nlwp_max=8 | prefill 246 tokens in 19.692s | decoded 32 tokens, 135 ms/tok
+  r1 t16: rc=0 nlwp_max=16 | prefill 246 tokens in 11.636s | decoded 32 tokens, 117 ms/tok
+  r1 t32: rc=0 nlwp_max=32 | prefill 246 tokens in 7.177s | decoded 32 tokens, 110 ms/tok
+  r1 t64: rc=0 nlwp_max=64 | prefill 246 tokens in 4.552s | decoded 32 tokens, 129 ms/tok
+======== ROUND 2 ========
+  env: load average: 8.07, 4.49, 3.57 | buff/cache=101GiB | steal_ticks=0 softirq=3754
+  order: 64 32 16 8 4 2 1 
+  r2 t64: rc=0 nlwp_max=64 | prefill 246 tokens in 4.533s | decoded 32 tokens, 130 ms/tok
+  r2 t32: rc=0 nlwp_max=32 | prefill 246 tokens in 7.133s | decoded 32 tokens, 110 ms/tok
+  r2 t16: rc=0 nlwp_max=16 | prefill 246 tokens in 11.487s | decoded 32 tokens, 117 ms/tok
+  r2 t8: rc=0 nlwp_max=8 | prefill 246 tokens in 19.369s | decoded 32 tokens, 135 ms/tok
+  r2 t4: rc=0 nlwp_max=4 | prefill 246 tokens in 39.453s | decoded 32 tokens, 252 ms/tok
+  r2 t2: rc=0 nlwp_max=2 | prefill 246 tokens in 77.181s | decoded 32 tokens, 486 ms/tok
+  r2 t1: rc=0 nlwp_max=1 | prefill 246 tokens in 132.967s | decoded 32 tokens, 953 ms/tok
+======== ROUND 3 ========
+  env: load average: 1.04, 2.15, 3.18 | buff/cache=101GiB | steal_ticks=0 softirq=3754
+  order: 1 2 4 8 16 32 64
+  r3 t1: rc=0 nlwp_max=1 | prefill 246 tokens in 132.283s | decoded 32 tokens, 952 ms/tok

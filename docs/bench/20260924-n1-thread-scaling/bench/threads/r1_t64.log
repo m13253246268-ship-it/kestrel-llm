@@ -1,0 +1,51 @@
+  vLLM-Kestrel: Axiom-Guided Exact-Attention         
+  Large Language Model Inference Engine          
+
+[DEV] device=arm-generic arch=arm64 class=embedded model=- npu=none recommended_wmode=dual
+
+=== [STREAM] layer-resident validation (VQF only) ===
+[STREAM] vqf_load OK (0.00s): dim=4096 layers=36 heads=32 kv=8 ffn=12288 vocab=151936 max_seq=8192
+[STREAM] rss_after_load  = 980 kB
+[TOK] Loaded 151669 tokens from vocab.bin (max_len=256)
+[TOK] match mode: indexed (slots=524288, 2.0 MB, load=0.29)
+[TOK] Special tokens: bos=151643 eos=151645 im_start=151644 im_end=151645 pad=151643
+[STREAM] tokenizer: 151669 tokens (eos=151645 im_start=151644 im_end=151645)
+[STREAM] rss_after_init  = 18580 kB
+[STREAM] prompt tokens = 502 (--stream-ctx 512)
+[STREAM] warmup done in 3.054s (discarded: 1 prefill + 8 decode)
+[STREAM] prefill 502 tokens in 2.494s (201 tok/s) [batch]
+[STREAM] rss_after_prefill = 4303200 kB
+[STREAM] decode mode: greedy (rep_pen=1.000 win=32)
+[STREAM] TOKIDS: 100062 t=1 ms=37 rss=4303200kB
+ 99371 t=2 ms=37 rss=4303200kB
+ 58814 t=3 ms=37 rss=4303200kB
+ 113272 t=4 ms=50 rss=4303200kB
+ 101158 t=5 ms=91 rss=4303200kB
+ 18493 t=6 ms=37 rss=4303200kB
+ 104949 t=7 ms=37 rss=4303200kB
+ 113272 t=8 ms=60 rss=4303200kB
+ 101925 t=9 ms=38 rss=4303520kB
+ 3837 t=10 ms=37 rss=4303844kB
+ 59879 t=11 ms=38 rss=4304432kB
+ 99371 t=12 ms=102 rss=4304696kB
+ 104137 t=13 ms=44 rss=4304960kB
+ 58814 t=14 ms=37 rss=4305224kB
+ 33108 t=15 ms=105 rss=4305812kB
+ 108248 t=16 ms=37 rss=4306460kB
+ 71356 t=17 ms=37 rss=4306784kB
+ 32665 t=18 ms=91 rss=4307108kB
+ 3837 t=19 ms=52 rss=4307636kB
+ 23031 t=20 ms=38 rss=4307960kB
+ 101940 t=21 ms=77 rss=4308284kB
+ 111390 t=22 ms=37 rss=4308608kB
+ 109054 t=23 ms=37 rss=4309196kB
+ 62926 t=24 ms=37 rss=4309784kB
+ 100627 t=25 ms=69 rss=4310108kB
+ 113272 t=26 ms=37 rss=4310372kB
+ 101991 t=27 ms=37 rss=4310960kB
+ 105535 t=28 ms=37 rss=4311284kB
+ 1773 t=29 ms=97 rss=4311548kB
+
+[STREAM] decoded 29 tokens, 52 ms/tok (19.23 tok/s)
+[STREAM] text: 逐层加载推理是一种在模型推理过程中，按层逐步加载和激活网络参数，以减少内存占用并提高推理效率的技术。
+[STREAM] rss_end = 4311548 kB

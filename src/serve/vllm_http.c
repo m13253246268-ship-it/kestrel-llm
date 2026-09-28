@@ -576,10 +576,14 @@ static void find_header(const char *raw, const char *name,
 }
 
 const char *vhttp_req_header(const VHttpRequest *r, const char *name) {
-    /* The route layer does not use headers today; kept for completeness.
-     * Callers must supply their own scratch buffer if needed. */
-    (void)r; (void)name;
-    return "";
+    /* 线程局部缓冲：worker 线程会并发取头（管理面审计用 X-Audit-User/Role），
+     * 共享 static 会被竞争覆盖。raw 在 read_request 中保持完整（未写 NUL），
+     * 故 find_header 可安全扫描。 */
+    static _Thread_local char hdr[1024];
+    hdr[0] = '\0';
+    if (!r || !r->raw || !name || !name[0]) return hdr;
+    find_header(r->raw, name, hdr, sizeof(hdr));
+    return hdr;
 }
 
 /* Read one HTTP request into conn->rbuf. Returns 0 on success. */

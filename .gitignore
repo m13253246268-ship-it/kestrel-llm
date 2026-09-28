@@ -16,6 +16,11 @@ vqf_convert/synth/
 /logs/
 /.attest/
 kv_disk/
+# 工业边缘：预置上下文（规则包注册中心）与会话存储的运行期目录/产物
+rulebooks/
+sessions/
+rbk_*.kv
+sess_*.json
 *.log
 # 例外：docs/bench/ 下的原始基准证据要随仓库分发（引擎日志是行为证据，见各目录 MANIFEST.txt）
 !docs/bench/**/*.log

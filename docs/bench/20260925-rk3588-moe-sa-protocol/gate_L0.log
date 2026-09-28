@@ -1,0 +1,43 @@
+  vLLM-Kestrel: Axiom-Guided Exact-Attention         
+  Large Language Model Inference Engine          
+
+[DEV] device=arm-rk3588-opi5 arch=arm64 class=embedded model=RK3588 OPi 5 Plus npu=rk3588-direct recommended_wmode=dual
+
+=== [STREAM] layer-resident validation (VQF only) ===
+[VQF] MoE v3: experts=128 top_k=8 moe_ffn=768 shared=0 ffn_dim=98304 router=48.0MB (f32 resident) experts=q4
+[VQF-STREAM] enabled keep=1 nl=48 segs=11 per-layer=334.1MB data=16847.2MB resident~808.4MB rss=984kB
+[STREAM] vqf_load OK (0.00s): dim=2048 layers=48 heads=32 kv=4 ffn=98304 vocab=151936 max_seq=8192
+[STREAM] rss_after_load  = 984 kB
+[QWEN] Inference state ready (max_seq=8192).
+[TOK] Loaded 151669 tokens from vocab.bin (max_len=256)
+[TOK] match mode: indexed (slots=524288, 2.0 MB, load=0.29)
+[TOK] Special tokens: bos=151643 eos=151645 im_start=151644 im_end=151645 pad=151643
+[STREAM] tokenizer: 151669 tokens (eos=151645 im_start=151644 im_end=151645)
+[STREAM] rss_after_init  = 21748 kB
+[STREAM] prompt tokens = 32 (--stream-ctx 32)
+[PREFILL] 32/32 tokens done
+[PREFILL-TIMING] n=32 total=220624.5ms | GEMM=220436.7ms(99.9%) ATTN=50.8ms( 0.0%) OTHER=137.1ms( 0.1%)
+[PREFILL-KERNELS] QKV=3872.7ms( 1.8%) O=3066.8ms( 1.4%) GATEUP=213497.2ms(96.9%) DOWN=0.0ms( 0.0%)
+[STREAM] prefill 32 tokens in 228.363s (0 tok/s) [batch]
+[STREAM] rss_after_prefill = 516884 kB
+[STREAM] decode mode: greedy (rep_pen=1.000 win=32)
+[STREAM] TOKIDS: 151667[SA-STAT] tok=1 pages_w=4020474 pages_d=4020474 pages_sum=8040948 minflt_delta=161981
+ t=1 ms=2212 rss=512356kB
+ 198[SA-STAT] tok=2 pages_w=4020474 pages_d=4020474 pages_sum=8040948 minflt_delta=94959
+ t=2 ms=1245 rss=511092kB
+ 99692[SA-STAT] tok=3 pages_w=4020474 pages_d=4020474 pages_sum=8040948 minflt_delta=96386
+ t=3 ms=2540 rss=518220kB
+ 3837[SA-STAT] tok=4 pages_w=4020474 pages_d=4020474 pages_sum=8040948 minflt_delta=96210
+ t=4 ms=1570 rss=512184kB
+ 20002[SA-STAT] tok=5 pages_w=4020474 pages_d=4020474 pages_sum=8040948 minflt_delta=95943
+ t=5 ms=2133 rss=518584kB
+ 104029[SA-STAT] tok=6 pages_w=4020474 pages_d=4020474 pages_sum=8040948 minflt_delta=96036
+ t=6 ms=2100 rss=514984kB
+ 11622[SA-STAT] tok=7 pages_w=4020474 pages_d=4020474 pages_sum=8040948 minflt_delta=95763
+ t=7 ms=2082 rss=515184kB
+ 104811[SA-STAT] tok=8 pages_w=4020474 pages_d=4020474 pages_sum=8040948 minflt_delta=95434
+ t=8 ms=1844 rss=515440kB
+
+[STREAM] decoded 8 tokens, 1966 ms/tok (0.51 tok/s)
+[STREAM] text: <think>Ċ好的，用户让我用中文
+[STREAM] rss_end = 515440 kB

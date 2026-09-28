@@ -1,0 +1,91 @@
+run_pid=30750  started=2026-09-24T22:40:35+08:00
+================ ENV ================
+2026-09-24T22:40:35+08:00
+host    : iZbp16kmws3ej184pk00osZ
+kernel  : 5.15.0-191-generic
+arch    : aarch64
+cpu     : Neoverse-N1
+ncpu    : 64
+boot_id : 043e34da-a3a8-4d40-8c92-f7ee0e1eeb7d
+uptime  :  22:40:35 up 49 min,  0 users,  load average: 0.19, 3.40, 4.41
+governor: cat: /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor: No such file or directory
+thermal : 
+mem     : 245 GiB total, 242 GiB avail
+steal   : steal_ticks=0
+binary  : 3f23dda18d984f85358b7556612b14f72c58ce1c8dbf43d9bed8d39d77d67691  /root/GitHupSRC/build-rk3588/vllm_kestrel
+bin_size: 965848
+model   : 6601514056 bytes
+vqf_md5 : beacb5e43579b48d34b505a96e8e9a79
+vocab   : 207fbf4194ca8ae384b221882a21be2a
+src_commit: n/a
+=====================================
+
+[warm-global] touching all weights ...
+[warm-global] rc=0 30 lines
+[warm-global] buff/cache=25 GiB
+
+======== ROUND 1 ========
+  env: load average: 0.98, 3.36, 4.38 | buff/cache=25GiB | steal_ticks=0 softirq=1114
+  order: 1 2 4 8 16 32 64
+  r1 t1: rc=0 nlwp_max=1 | prefill 502 tokens in 72.179s | decoded 29 tokens, 614 ms/tok
+  r1 t2: rc=0 nlwp_max=2 | prefill 502 tokens in 36.537s | decoded 29 tokens, 313 ms/tok
+  r1 t4: rc=0 nlwp_max=4 | prefill 502 tokens in 18.726s | decoded 29 tokens, 162 ms/tok
+  r1 t8: rc=0 nlwp_max=8 | prefill 502 tokens in 9.789s | decoded 29 tokens, 85 ms/tok
+  r1 t16: rc=0 nlwp_max=16 | prefill 502 tokens in 5.457s | decoded 29 tokens, 49 ms/tok
+  r1 t32: rc=0 nlwp_max=32 | prefill 502 tokens in 3.337s | decoded 29 tokens, 36 ms/tok
+  r1 t64: rc=0 nlwp_max=64 | prefill 502 tokens in 2.494s | decoded 29 tokens, 52 ms/tok
+======== ROUND 2 ========
+  env: load average: 10.69, 4.47, 4.28 | buff/cache=25GiB | steal_ticks=0 softirq=1121
+  order: 64 32 16 8 4 2 1 
+  r2 t64: rc=0 nlwp_max=64 | prefill 502 tokens in 2.478s | decoded 29 tokens, 54 ms/tok
+  r2 t32: rc=0 nlwp_max=32 | prefill 502 tokens in 3.335s | decoded 29 tokens, 36 ms/tok
+  r2 t16: rc=0 nlwp_max=16 | prefill 502 tokens in 5.461s | decoded 29 tokens, 49 ms/tok
+  r2 t8: rc=0 nlwp_max=8 | prefill 502 tokens in 9.808s | decoded 29 tokens, 86 ms/tok
+  r2 t4: rc=0 nlwp_max=4 | prefill 502 tokens in 18.725s | decoded 29 tokens, 161 ms/tok
+  r2 t2: rc=0 nlwp_max=2 | prefill 502 tokens in 36.553s | decoded 29 tokens, 313 ms/tok
+  r2 t1: rc=0 nlwp_max=1 | prefill 502 tokens in 72.281s | decoded 29 tokens, 620 ms/tok
+======== ROUND 3 ========
+  env: load average: 1.24, 3.51, 4.17 | buff/cache=25GiB | steal_ticks=0 softirq=1123
+  order: 1 2 4 8 16 32 64
+  r3 t1: rc=0 nlwp_max=1 | prefill 502 tokens in 72.262s | decoded 29 tokens, 619 ms/tok
+  r3 t2: rc=0 nlwp_max=2 | prefill 502 tokens in 36.514s | decoded 29 tokens, 311 ms/tok
+  r3 t4: rc=0 nlwp_max=4 | prefill 502 tokens in 18.714s | decoded 29 tokens, 162 ms/tok
+  r3 t8: rc=0 nlwp_max=8 | prefill 502 tokens in 9.800s | decoded 29 tokens, 86 ms/tok
+  r3 t16: rc=0 nlwp_max=16 | prefill 502 tokens in 5.472s | decoded 29 tokens, 49 ms/tok
+  r3 t32: rc=0 nlwp_max=32 | prefill 502 tokens in 3.354s | decoded 29 tokens, 36 ms/tok
+  r3 t64: rc=0 nlwp_max=64 | prefill 502 tokens in 2.581s | decoded 29 tokens, 64 ms/tok
+
+======== SUMMARY ========
+=== G0 validity gate (per-round TOKIDS bitwise identity) ===
+  round 1: cells=7 ids_n=29 first8=[100062 99371 58814 113272 101158 18493 104949 113272] mismatched_threads=none -> PASS
+  round 2: cells=7 ids_n=29 first8=[100062 99371 58814 113272 101158 18493 104949 113272] mismatched_threads=none -> PASS
+  round 3: cells=7 ids_n=29 first8=[100062 99371 58814 113272 101158 18493 104949 113272] mismatched_threads=none -> PASS
+  cross-round mismatched_threads=none -> PASS
+  G0 overall: PASS
+
+=== RESULT (median of 3 interleaved rounds, one process per cell) ===
+threads | prefill_s median [min~max] | pf speedup | pf tok/s | decode ms/tok median [min~max] | dec speedup | out_tok | prompt_tok | rss_load MB | rss_end MB | n_rounds
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+      1 | 72.262 [72.179~72.281] | 1.00x | 7 | 619.0 [614.0~620.0] | 1.00x | 29 | 502 | 1 | 4320 | 3
+      2 | 36.537 [36.514~36.553] | 1.98x | 14 | 313.0 [311.0~313.0] | 1.98x | 29 | 502 | 1 | 4320 | 3
+      4 | 18.725 [18.714~18.726] | 3.86x | 27 | 162.0 [161.0~162.0] | 3.82x | 29 | 502 | 1 | 4320 | 3
+      8 | 9.800 [9.789~9.808] | 7.37x | 51 | 86.0 [85.0~86.0] | 7.20x | 29 | 502 | 1 | 4319 | 3
+     16 | 5.461 [5.457~5.472] | 13.23x | 92 | 49.0 [49.0~49.0] | 12.63x | 29 | 502 | 1 | 4307 | 3
+     32 | 3.337 [3.335~3.354] | 21.65x | 150 | 36.0 [36.0~36.0] | 17.19x | 29 | 502 | 1 | 4279 | 3
+     64 | 2.494 [2.478~2.581] | 28.97x | 201 | 54.0 [52.0~64.0] | 11.46x | 29 | 502 | 1 | 4210 | 3
+
+=== per-round raw (prefill_s / decode_ms) ===
+  r1: t1=72.179s/614ms  t2=36.537s/313ms  t4=18.726s/162ms  t8=9.789s/85ms  t16=5.457s/49ms  t32=3.337s/36ms  t64=2.494s/52ms
+  r2: t1=72.281s/620ms  t2=36.553s/313ms  t4=18.725s/161ms  t8=9.808s/86ms  t16=5.461s/49ms  t32=3.335s/36ms  t64=2.478s/54ms
+  r3: t1=72.262s/619ms  t2=36.514s/311ms  t4=18.714s/162ms  t8=9.800s/86ms  t16=5.472s/49ms  t32=3.354s/36ms  t64=2.581s/64ms
+
+=== decoded per-token latency first 8 (ms) ===
+  t1   [617, 617, 618, 618, 618, 618, 618, 618]
+  t2   [311, 311, 312, 312, 312, 312, 312, 312]
+  t4   [160, 160, 160, 160, 161, 160, 161, 161]
+  t8   [86, 86, 86, 86, 86, 86, 86, 86]
+  t16  [48, 48, 48, 49, 48, 49, 48, 49]
+  t32  [36, 36, 36, 36, 36, 36, 36, 36]
+  t64  [48, 37, 37, 37, 87, 37, 37, 114]
+
+wrote /root/bench/threads/SUMMARY.tsv

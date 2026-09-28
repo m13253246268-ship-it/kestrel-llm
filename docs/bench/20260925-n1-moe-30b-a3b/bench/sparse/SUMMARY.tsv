@@ -1,0 +1,6 @@
+# config=full
+threads	prefill_s_median	pf_min	pf_max	decode_ms_median	dec_min	dec_max	rss_end_MB
+32	127.334	124.595	130.072	133.0	133.0	133.0	14763
+# config=sparse
+threads	prefill_s_median	pf_min	pf_max	decode_ms_median	dec_min	dec_max	rss_end_MB
+32	130.194	129.362	131.026	127.0	127.0	127.0	14746

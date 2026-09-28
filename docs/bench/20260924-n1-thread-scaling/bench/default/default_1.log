@@ -1,0 +1,60 @@
+  vLLM-Kestrel: Axiom-Guided Exact-Attention         
+  Large Language Model Inference Engine          
+
+[DEV] device=arm-generic arch=arm64 class=embedded model=- npu=none recommended_wmode=dual
+
+=== [STREAM] layer-resident validation (VQF only) ===
+[STREAM] vqf_load OK (0.00s): dim=4096 layers=36 heads=32 kv=8 ffn=12288 vocab=151936 max_seq=8192
+[STREAM] rss_after_load  = 988 kB
+[QWEN] Inference state ready (max_seq=8192).
+[TOK] Loaded 151669 tokens from vocab.bin (max_len=256)
+[TOK] match mode: indexed (slots=524288, 2.0 MB, load=0.29)
+[TOK] Special tokens: bos=151643 eos=151645 im_start=151644 im_end=151645 pad=151643
+[STREAM] tokenizer: 151669 tokens (eos=151645 im_start=151644 im_end=151645)
+[STREAM] rss_after_init  = 18592 kB
+[STREAM] prompt tokens = 502 (--stream-ctx 512)
+[PREFILL] 256/502 tokens done
+[PREFILL] 502/502 tokens done
+[PREFILL-TIMING] n=502 total=2526.8ms | GEMM=2052.4ms(81.2%) ATTN=177.8ms( 7.0%) OTHER=296.6ms(11.7%)
+[PREFILL-KERNELS] QKV=399.9ms(19.5%) O=215.8ms(10.5%) GATEUP=857.1ms(41.8%) DOWN=579.6ms(28.2%)
+[STREAM] warmup done in 2.952s (discarded: 1 prefill + 8 decode)
+[PREFILL] 256/502 tokens done
+[PREFILL] 502/502 tokens done
+[PREFILL-TIMING] n=502 total=2449.4ms | GEMM=2023.3ms(82.6%) ATTN=178.7ms( 7.3%) OTHER=247.4ms(10.1%)
+[PREFILL-KERNELS] QKV=389.3ms(19.2%) O=215.8ms(10.7%) GATEUP=837.9ms(41.4%) DOWN=580.2ms(28.7%)
+[STREAM] prefill 502 tokens in 2.476s (203 tok/s) [batch]
+[STREAM] rss_after_prefill = 4298744 kB
+[STREAM] decode mode: greedy (rep_pen=1.000 win=32)
+[STREAM] TOKIDS: 100062 t=1 ms=36 rss=4298744kB
+ 99371 t=2 ms=59 rss=4298744kB
+ 58814 t=3 ms=147 rss=4298744kB
+ 113272 t=4 ms=79 rss=4298744kB
+ 101158 t=5 ms=36 rss=4298744kB
+ 18493 t=6 ms=99 rss=4298744kB
+ 104949 t=7 ms=70 rss=4298744kB
+ 113272 t=8 ms=36 rss=4298744kB
+ 101925 t=9 ms=59 rss=4299064kB
+ 3837 t=10 ms=77 rss=4299388kB
+ 59879 t=11 ms=36 rss=4299976kB
+ 99371 t=12 ms=37 rss=4300240kB
+ 104137 t=13 ms=100 rss=4300504kB
+ 58814 t=14 ms=147 rss=4300768kB
+ 33108 t=15 ms=37 rss=4301356kB
+ 108248 t=16 ms=36 rss=4302004kB
+ 71356 t=17 ms=37 rss=4302328kB
+ 32665 t=18 ms=111 rss=4302652kB
+ 3837 t=19 ms=36 rss=4303180kB
+ 23031 t=20 ms=92 rss=4303504kB
+ 101940 t=21 ms=36 rss=4303828kB
+ 111390 t=22 ms=36 rss=4304152kB
+ 109054 t=23 ms=37 rss=4304740kB
+ 62926 t=24 ms=89 rss=4305328kB
+ 100627 t=25 ms=36 rss=4305652kB
+ 113272 t=26 ms=36 rss=4305916kB
+ 101991 t=27 ms=95 rss=4306504kB
+ 105535 t=28 ms=36 rss=4306828kB
+ 1773 t=29 ms=36 rss=4307092kB
+
+[STREAM] decoded 29 tokens, 62 ms/tok (16.04 tok/s)
+[STREAM] text: 逐层加载推理是一种在模型推理过程中，按层逐步加载和激活网络参数，以减少内存占用并提高推理效率的技术。
+[STREAM] rss_end = 4307092 kB
