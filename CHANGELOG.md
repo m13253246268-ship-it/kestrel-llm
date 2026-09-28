@@ -5,6 +5,105 @@
 
 ---
 
+## 2026-09-28（下半场）— 工业边缘「预置上下文」：规则包 / 会话存储 / 审计流水
+
+**这一轮要回答的问题**：工业现场的设备上，模型每轮问答都要用到同一份**固定且反复使用**的
+"命名上下文"——现场规程、设备清单、术语表、工艺参数表、安全红线。若把它当普通 prompt 每轮
+重新 prefill，代价随对话轮数**线性叠加**。**能不能把它预置成一份可复用的前缀，让后续请求只付
+"增量"的那部分？**
+
+**结论（先给答案）**：
+
+1. **能，且短手册的收益量级很大 —— 命中 ≈ 82×**。同机同模型（RK3588 / Qwen3-VL-2B），
+   手册 5,791 token：
+
+   | 路径 | 端到端 |
+   |---|---|
+   | 手册全文塞 prompt（每请求全量 prefill） | **194,275 ms** |
+   | 命中规则包（复用落盘 KV 快照） | **2,361 ms**（进程内首次 3,174 ms，需载入快照） |
+   | **收益** | **≈ 82×** |
+
+   快照体积 **59.14 kB / token**（两条独立测量一致）。
+
+2. **适用范围是「短而稳定的手册」，不是长文档**。硬边界来自源码 `DISKKV_MAX_TOKENS = 8192`：
+   ≤ 8192 token 落盘复用；**> 8192 token 不落盘**，每请求退回全量 prefill。实测 200,000 B 手册
+   （75,146 token）：`reused_prefix=false`、分块选段把**注入量**压到 19,467 token（−74%），
+   但**每请求仍要 1,562 s** —— 分块检索解决的是"注入多少"，不解决"能不能复用"。
+
+3. **配套两个模块**：`vllm_session`（会话历史落盘 + 上限）与 `vllm_audit`（追加式审计流水，
+   带哈希链）；管理页补规则包注册中心与命中计数，并新增**审查台** `review.html`。
+
+4. **默认关时与引入前一致**：不带 `rulebook_id` / `session_id` 时，新旧二进制的
+   `history_tokens` 序列**逐 token 完全相同**（token-id 级证据）。
+
+### 1. 改动清单
+
+| 文件 | 改动 |
+|---|---|
+| `include/serve/vllm_rulebook.h` + `src/serve/vllm_rulebook.c` | **新增**：规则包构建 / 加载 / 注册中心；快照命名 `rbk_<id>_<ver>_<asm>.kv`，`<asm>` 只由**实际注入的 token 序列**决定（同包不同选段 ⇒ 不同快照，不互相污染） |
+| `include/serve/vllm_session.h` + `src/serve/vllm_session.c` | **新增**：会话历史落盘与上限（`--session-dir` / `--session-limit`） |
+| `include/serve/vllm_audit.h` + `src/serve/vllm_audit.c` | **新增**：追加式审计流水（`--audit-log`），带哈希链 |
+| `src/serve/review.html` | **新增**：审查台页面 |
+| `src/serve/admin.html` / `vllm_admin.c` | 管理面新增 `GET /admin/api/rulebooks`、`/admin/api/config`、`/admin/api/status`（含 `rulebook_hits`）与删除端点 |
+| `src/main.c` | 新增 `--rulebook-build/-id/-name/-version/-tenant/-scope/-dir`、`--session-dir/-limit`、`--audit-log` 解析 |
+| `src/serve/vllm_server.c` / `vllm_http.c` / `include/serve/vllm_server.h` | 请求体支持 `rulebook_id` / `session_id` / `tenant_id` / `user_id`；响应 metrics 增加 `reused_prefix` / `rulebook_tokens` |
+| `src/serve/embedded_web.c` / `include/serve/embedded_web.h` / `tools/build/gen_embedded_web.py` | 内嵌页面集扩展（含 `review.html`） |
+| `CMakeLists.txt` / `tools/build/build_x64.ps1` | 纳入 3 个新模块 |
+| `.gitignore` | 排除运行期产物：`rulebooks/`、`sessions/`、`rbk_*.kv`、`sess_*.json` |
+| `wiki/规则包与预置上下文.md`（新增页）、`wiki/Home.md`、`wiki/导航.md` | 机制、开关、实测与**诚实边界**成页，并接入导航 |
+
+**落盘产物**（均在 `--rulebook-dir` 下）：`rb_<id>.json`（元信息）、`rb_<id>.txt`（注入文本）、
+`rbk_<id>_<ver>_<asm>.kv`（预置前缀 KV 快照）。
+
+### 2. 验证证据（RK3588 / Qwen3-VL-2B / 2026-09）
+
+**功能正确性（全过）**
+
+| 项 | 结果 |
+|---|---|
+| 离线构建 | 15,000 B → 5,791 token，`chunks=12`，`kv_snapshot=yes`，构建 204.7 s |
+| 借用上下文端到端 | 连续 3 次全部 `reused_prefix=true`，`rulebook_hits` 1→3，答案正确 |
+| 失效隔离 | 不存在的 id / 含 `/` / 含空格 / 超长 id → **404**；版本不符 → **409** |
+| 删除 | 删后请求 404；审计流水记 `rulebook_delete` |
+| 会话隔离 | 两个 session 各答自身内容，无串扰 |
+| 分块检索 | 75,146 token 手册 + 事实置于**后半段** → **仍能检索到** |
+
+**兼容性**
+
+- **默认关时与引入前一致**：不带 `rulebook_id` / `session_id` 时 `history_tokens` 逐 token 相同。
+- **可与稀疏档共存**：`--sparse-attn` + `VLLM_SPARSE_PREFILL=1` 下复用正常、召回正确；快照名的
+  `<asm>` 与不开稀疏档时**相同**。
+- **`--no-prefix-kv` 是逃生舱**：`reused_prefix=false`、每次全量 prefill、`rulebook_hits` 恒 0。
+- **多包 / 多租户**：两个包交替请求，命中计数各自递增，无串扰。
+
+### 3. 口径红线（必须随结论一起给出）
+
+复用路径与"全文重算"的**浮点归约顺序不同**，因此这是 **「确定性但近似」**，
+**不是**全量重算的位级克隆。要回到全量位级结果，用 `--no-prefix-kv`。
+
+### 4. 诚实边界
+
+1. **82× 依赖"手册短"**：在 5,791 token 手册上测得；超过 8,192 token 即失去复用。
+2. **兼容性证据只到 token-id 级**（引擎不暴露 logits），**非位级**。
+3. 性能表的 B 节为 **n=1 单次采样**，未做重复统计与噪声门槛。
+4. `DISKKV_MAX_TOKENS = 8192` 来自源码，板端仅有"超限未落盘"这一条**间接**印证。
+5. **未做并发 / 多租户压力测试**，全部测点为单请求串行。
+6. `--no-prefix-kv` 的"回到位级结果"由 `reused_prefix=false` + 全量 prefill + 源码门条件**推断**，未做逐 token diff。
+7. 体积外推（20K token → 1.18 GB、100K token → 5.91 GB）是**推算，非实测**。
+8. 运行期产物（`rulebooks/`、`sessions/`、`rbk_*.kv`、`sess_*.json`）已进 `.gitignore`，**不随仓库分发**。
+
+### 5. 同批归档的文档与预注册
+
+- `docs/N1_64核_多线程性能基准报告.md`（64 核平台线程扩展性基准）
+- `docs/性能优化方法论.md`、`docs/prefill注意力PV分块优化原理.md`
+- `docs/投机解码瓶颈分析与MTP落地方案.md`、`docs/逐层驻留专家级读取方案.md`
+- **预注册**：`docs/PRE_REG_MOE_LONGCTX_NIAH.txt`、`PRE_REG_Q4_GEMM_PROBE.txt`、
+  `PRE_REG_STREAM_EXPERT_GRAIN_PROBE.txt`、`PRE_REG_STREAM_SA.txt`（先写判据再看数据）
+- `docs/bench/20260924-n1-thread-scaling/`、`docs/bench/20260925-n1-moe-30b-a3b/`：原始产物
+  （日志 / 计时 / SUMMARY.tsv）+ `MANIFEST.txt` md5 留证
+
+---
+
 ## 2026-09-28 — 稀疏注意力的「上下文长度门控」：decode / prefill 两侧解耦
 
 **这一轮要回答的问题**：`--sparse-attn` 与 `VLLM_SPARSE_PREFILL=1` 的启用门都是

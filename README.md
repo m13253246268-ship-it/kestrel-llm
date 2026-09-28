@@ -41,6 +41,8 @@
 |---|---|
 | **逐层推理**（v1 新增） | 权重常驻与模型体积解耦：**8B 权重常驻 4.19 GB → 0.48 GB（8.7×）**，serve 峰值 **0.82 GB**；远程复测热态 **TTFT 1.73 s / tpot 330 ms**（5 次同请求中位数，见「性能」§4） |
 | **长文本与多轮** | 组合①（L3 驱逐 × 前缀复用）追问轮 prefill **−80% ~ −96%**；30B 再叠 MoE 组合⑤后 t2/t3 仅 **4.7 s / 3.2 s** |
+| **规则包（预置上下文）** | 现场规程 / 术语 / 参数这类**反复使用**的固定手册离线构建成可复用前缀：短手册（5,791 token）命中 **≈82×**（194.3 s → 2.4 s）；**>8K token 手册不落盘**，退回全量 prefill（见 wiki「规则包与预置上下文」） |
+| **稀疏注意力长度门控** | `--sparse-min-ctx`（decode，默认 1024）/ `--sparse-pf-min-ctx`（prefill，默认 3072）：旧门恒为 64（≈没门）导致短上下文净亏（ctx 1067 时 **+18.4%**），加门后 4K 起 decode 稀疏稳定快 **1.8×** |
 | **纯自研格式与内核** | 只认自研 VQF v2 单文件；单产物 **≈0.8 MB**，零第三方运行时；手写 NEON 量化 GEMM/GEMV、自研线程池、自研国密 |
 | **可验证推理** | SM2 供应链签名护权重 + 逐请求 attestation 凭证（schema 3），浏览器内 / 离线零依赖验签 |
 
@@ -702,6 +704,12 @@ gcc -O2 -fopenmp -Wno-implicit-function-declaration '-Wl,--stack,33554432' \
 | [docs/优化配置与边界说明.md](docs/优化配置与边界说明.md) | 各优化档机制、收益与诚实边界（含有效组合与 x86 复核口径；**部分数字为 v0/热缓存口径**） |
 | [docs/KV缓存v2-惰性分配与分层驻留方案.md](docs/KV缓存v2-惰性分配与分层驻留方案.md) | KV 惰性分配、L3 分层驻留与 P3 前缀复用共存（L3 驱逐 + 前缀复用） |
 | [docs/权重保护与可验证推理方案.md](docs/权重保护与可验证推理方案.md) | 三道安全防线：VQF 存储态加密、SM2 供应链签名、推理出证（attestation schema=3，含请求原文绑定），含相互关系、端到端用法与统一安全边界 |
+| [docs/N1_64核_多线程性能基准报告.md](docs/N1_64核_多线程性能基准报告.md) | 64 核平台线程扩展性基准（线程数 × 分档），含原始计时与 SUMMARY |
+| [docs/性能优化方法论.md](docs/性能优化方法论.md) | 优化项的测量方法论：同轮交错 A/B、口径先行、预注册判据 |
+| [docs/prefill注意力PV分块优化原理.md](docs/prefill注意力PV分块优化原理.md) | prefill 注意力 PV 分块：原理与探针结论 |
+| [docs/投机解码瓶颈分析与MTP落地方案.md](docs/投机解码瓶颈分析与MTP落地方案.md) | 投机解码瓶颈分析与 MTP 落地路线 |
+| [docs/逐层驻留专家级读取方案.md](docs/逐层驻留专家级读取方案.md) | 逐层驻留下的 MoE 专家级权重读取方案 |
+| [docs/PRE_REG_*.txt](docs/PRE_REG_STREAM_SA.txt) | **预注册**：先写判据再看数据（稀疏 SA / MoE 长上下文 NIAH / Q4 GEMM / 专家粒度探针），原始产物见 `docs/bench/` |
 | [docs/bench/](docs/bench/20260915-rk3588-llama-ab/MANIFEST.txt) | **原始基准归档**：正文各测点的原始产物（各轮响应 json、引擎日志、`summary.txt`、`REPORT.txt`）与产生它们的板端脚本、md5 留证清单；每个测点一个目录，入口见目录内 `MANIFEST.txt` |
 
 > 不想逐篇翻文档？直接看 **[项目 Wiki](https://gitee.com/pei-xiaoguang/kestrel-llm/wikis/Home)**——

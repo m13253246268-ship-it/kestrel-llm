@@ -48,6 +48,8 @@ OpenAI-compatible HTTP API is available immediately.
 |---|---|
 | **Per-layer residency** (new in v1) | Resident memory decoupled from model size: **8B resident weights 4.19 GB → 0.48 GB (8.7×)**, serve peak **0.82 GB**; warm, remotely re-measured **TTFT 1.73 s / tpot 330 ms** (median of 5 identical requests, see "Performance" §4) |
 | **Long text and multi-turn** | Combo ① (L3 eviction × prefix reuse) cuts follow-up-turn prefill by **−80% ~ −96%**; with MoE combo ⑤ the 30B reaches **4.7 s / 3.2 s** for t2/t3 |
+| **Rulebook (pre-set context)** | A fixed, repeatedly used handbook (field SOPs, terminology, process parameters) is built offline into a reusable prefix: short handbooks (5,791 tokens) hit **≈82×** (194.3 s → 2.4 s); handbooks **over 8K tokens are not snapshotted** and fall back to full prefill (see the wiki page 规则包与预置上下文) |
+| **Sparse-attention context gating** | `--sparse-min-ctx` (decode, default 1024) / `--sparse-pf-min-ctx` (prefill, default 3072): the old gate was a constant 64 (i.e. no gate at all), which made sparse a net loss at short context (**+18.4%** at ctx 1067); with the gates in place, decode-sparse is a steady **1.8×** faster from 4K upwards |
 | **In-house format and kernels** | Only the in-house VQF v2 single file; single ~0.8 MB binary, zero third-party runtime; hand-written NEON quantized GEMM/GEMV, own thread pool, own SM2/SM3/SM4 |
 | **Verifiable inference** | SM2 supply-chain signature protects weights + per-request attestation proof (schema 3), verified in-browser or offline with zero dependencies |
 
@@ -740,6 +742,12 @@ third-party project runtime is ever shipped with the engine.
 | [docs/KV缓存v2-惰性分配与分层驻留方案.md](docs/KV缓存v2-惰性分配与分层驻留方案.md) | KV lazy allocation, L3 tiered residency and coexistence with P3 prefix reuse (L3 eviction + prefix reuse) |
 | [docs/权重保护与可验证推理方案.md](docs/权重保护与可验证推理方案.md) | Three lines of defense: VQF at-rest encryption, SM2 supply-chain signature, inference attestation (schema 3, bound to the raw request body) — relationships, end-to-end usage and the unified security boundary |
 | [docs/bench/](docs/bench/20260915-rk3588-llama-ab/MANIFEST.txt) | **Raw benchmark archive**: the raw artifacts behind each measurement in the main text (per-round response json, engine logs, `summary.txt`, `REPORT.txt`) plus the board-side scripts that produced them and the md5 evidence list; one directory per measurement set, entry point is the `MANIFEST.txt` inside |
+| [docs/N1_64核_多线程性能基准报告.md](docs/N1_64核_多线程性能基准报告.md) | Thread-scaling benchmark on a 64-core platform (threads × tiers), with raw timings and SUMMARY |
+| [docs/性能优化方法论.md](docs/性能优化方法论.md) | Measurement methodology for optimizations: same-round interleaved A/B, define the metric first, pre-registered criteria |
+| [docs/prefill注意力PV分块优化原理.md](docs/prefill注意力PV分块优化原理.md) | Prefill attention PV tiling: principles and probe conclusions |
+| [docs/投机解码瓶颈分析与MTP落地方案.md](docs/投机解码瓶颈分析与MTP落地方案.md) | Speculative-decoding bottleneck analysis and the MTP landing plan |
+| [docs/逐层驻留专家级读取方案.md](docs/逐层驻留专家级读取方案.md) | Expert-grained MoE weight reads under per-layer residency |
+| [docs/PRE_REG_*.txt](docs/PRE_REG_STREAM_SA.txt) | **Pre-registrations**: criteria written before looking at the data (sparse SA / MoE long-context NIAH / Q4 GEMM / expert-grain probes); raw artifacts under `docs/bench/` |
 
 ---
 
