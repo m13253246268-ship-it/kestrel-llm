@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: AGPL-3.0-or-later
+/* SPDX-License-Identifier: Apache-2.0
  * Copyright (C) 2026 裴晓光 and contributors */
 /* ================================================================
  * vllm_session.c - 服务端会话存储（工业边缘：会话分区 + 历史审查）

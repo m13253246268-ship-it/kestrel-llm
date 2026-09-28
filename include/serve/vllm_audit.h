@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: AGPL-3.0-or-later
+/* SPDX-License-Identifier: Apache-2.0
  * Copyright (C) 2026 裴晓光 and contributors */
 /* ================================================================
  * vllm_audit.h - 管理面审计日志（追加写 + SM3 哈希链）

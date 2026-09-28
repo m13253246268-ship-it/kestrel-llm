@@ -858,16 +858,21 @@ Full methodology, definitions and raw data:
 
 ## Licence and Compliance
 
-- **Licence: dual licensing (AGPL-3.0-or-later OR commercial, your choice)** — this project is
-  **free software**: you may use, modify and distribute it under the **GNU Affero General Public
-  License v3.0 or later** (SPDX: `AGPL-3.0-or-later`). **If you cannot or do not wish to carry the
-  AGPL source-disclosure obligation** (e.g. embedding in a closed-source product, or offering a
-  closed-source service / SaaS), you **must obtain a commercial licence** first. Full terms are in
-  [LICENSE](LICENSE) (AGPL-3.0 text); dual-licensing terms and commercial authorisation are in [LICENSING.md](LICENSING.md); contribution rules are in [CONTRIBUTING.md](CONTRIBUTING.md).
+- **Licence: Apache License 2.0** (SPDX: `Apache-2.0`) — the code is **fully open**: you may use,
+  modify, distribute and **commercialise it (including closed-source integration and closed-source
+  SaaS)** with no separate authorisation and no obligation to open your own source. The only
+  conditions are to keep the copyright and licence notices and to mark files you changed
+  ([LICENSE](LICENSE) section 4); section 3 also grants an **express patent licence**
+  (with a patent-retaliation clause).
+  > ⚠️ **Historical versions remain AGPL-3.0-or-later.** This project was previously dual-licensed
+  > ("AGPL-3.0-or-later OR commercial"). **From this version onward** it is Apache-2.0. Earlier
+  > commits, already-uploaded release assets and already-distributed copies **stay under
+  > AGPL-3.0-or-later**, and that grant **cannot be revoked**. See [LICENSING.md](LICENSING.md) section 2.
+  Contribution rules are in [CONTRIBUTING.md](CONTRIBUTING.md).
 - Third-party components are retained under their own licences: `stb_image.h` (MIT, Sean
   Barrett) and the 4x4 asm GEMM file extracted from llama.cpp plus its derived kernels (MIT,
   The ggml authors) — copyright and licence text are in the respective file headers, detailed
-  in [LICENSING.md](LICENSING.md) section 3. Both are compatible with AGPL.
+  in [LICENSING.md](LICENSING.md) section 3. Both are compatible with Apache-2.0.
 - **Please report security vulnerabilities privately** (do not open a public issue); see
   [SECURITY.md](SECURITY.md) for the process and our response commitments.
 - The NPU direct backend of this engine interacts only with the OS kernel driver's (stock
@@ -875,9 +880,9 @@ Full methodology, definitions and raw data:
 
 ## Contact
 
-Commercial licensing / research collaboration / reproduction data: **398152090@qq.com**
+Research collaboration / reproduction data / other enquiries: **398152090@qq.com**
 (also via [Issues](https://gitee.com/pei-xiaoguang/kestrel-llm/issues) or Gitee direct message;
-see [LICENSING.md](LICENSING.md) for the commercial agreement and dual-licensing terms)
+see [LICENSING.md](LICENSING.md) for the licence terms)
 
-For commercial licensing / research collaborations / data requests:
+For research collaborations / data requests / other enquiries:
 **398152090@qq.com**, or open an issue at https://gitee.com/pei-xiaoguang/kestrel-llm/issues.

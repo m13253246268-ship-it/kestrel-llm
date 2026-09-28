@@ -121,7 +121,7 @@ ARM（aarch64）CPU LLM 推理引擎，因此对贡献的期待也偏"工程化"
 - 新增文件请在文件头加 SPDX 标识：
 
   ```c
-  /* SPDX-License-Identifier: AGPL-3.0-or-later
+  /* SPDX-License-Identifier: Apache-2.0
    * Copyright (C) 2026 裴晓光 and contributors */
   ```
 
@@ -142,9 +142,10 @@ ARM（aarch64）CPU LLM 推理引擎，因此对贡献的期待也偏"工程化"
 
 ## 六、许可与贡献者条款
 
-本项目采用**双许可**：**AGPL-3.0-or-later** 或**商业许可**（见 [LICENSING.md](LICENSING.md)）。
+本项目采用 **Apache License 2.0**（见 [LICENSE](LICENSE) / [LICENSING.md](LICENSING.md)）。
+**历史版本**（本变更之前的 commit 与已分发副本）仍为 AGPL-3.0-or-later，见 [LICENSING.md](LICENSING.md) 第二节。
 
-提交 PR / 补丁即表示你同意：**你的贡献以本项目的双许可条款发布**，
+提交 PR / 补丁即表示你同意：**你的贡献以 Apache-2.0 条款授权**（Apache-2.0 第 5 条），
 且你确认该贡献为你原创或已获得相应授权（即"开发者原创证书（DCO）"精神：
 你有权提交，且同意按本项目许可分发）。
 
@@ -157,6 +158,6 @@ ARM（aarch64）CPU LLM 推理引擎，因此对贡献的期待也偏"工程化"
 - 复现脚本：`tools/bench/bench_value.sh`（**仅依赖 Python 3 标准库**）
 - 数据口径：`wiki/术语与数据口径.md`
 - 排障手册：`docs/` 五篇（技术文档 / 基准报告 / 优化配置与边界 / KV v2 方案 / 权重保护与可验证推理）
-- 联系邮箱（研究合作 / 复现数据 / 商业授权）：**398152090@qq.com**
+- 联系邮箱（研究合作 / 复现数据 / 其他事宜）：**398152090@qq.com**
 
 再次感谢——**每一个写清口径的 Issue，都在让下一个使用者少踩一次坑。**

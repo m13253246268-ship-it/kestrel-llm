@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: AGPL-3.0-or-later
+/* SPDX-License-Identifier: Apache-2.0
  * Copyright (C) 2026 裴晓光 and contributors */
 /* ================================================================
  * vllm_rulebook.h - 规则包注册中心（工业边缘：预置命名上下文）
