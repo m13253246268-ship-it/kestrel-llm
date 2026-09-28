@@ -7,7 +7,8 @@
 2B/8B 纯文本与图片/视频多模态，OpenAI 兼容 HTTP API 即刻可用。
 
 > 仓库：[kestrel-llm (Gitee)](https://gitee.com/pei-xiaoguang/kestrel-llm)
-> 许可：源码可得双许可（学习与学术研究免费，商业与产品化部署需取得商业授权），详见 [LICENSING.md](../LICENSING.md)
+> 许可：**Apache License 2.0**（可自由使用、修改、分发、**商用，含闭源集成与闭源 SaaS**，无需另行授权）；
+> 历史版本仍为 AGPL-3.0-or-later，详见 [LICENSING.md](../LICENSING.md)
 
 ---
 
@@ -88,7 +89,7 @@ v1 已移除引擎内置的 GGUF / safetensors 加载与引擎内转换、引入
 - [docs/优化配置与边界说明.md](../docs/优化配置与边界说明.md)
 - [docs/KV缓存v2-惰性分配与分层驻留方案.md](../docs/KV缓存v2-惰性分配与分层驻留方案.md)
 - [docs/权重保护与可验证推理方案.md](../docs/权重保护与可验证推理方案.md)
-- [README.md](../README.md) ｜ [README.en.md](../README.en.md)
+- [README.md](../README.md) ｜ [简体中文](../README.zh-CN.md)
 
 ---
 
