@@ -712,7 +712,7 @@ gcc -O2 -fopenmp -Wno-implicit-function-declaration '-Wl,--stack,33554432' \
 | [docs/PRE_REG_*.txt](docs/PRE_REG_STREAM_SA.txt) | **预注册**：先写判据再看数据（稀疏 SA / MoE 长上下文 NIAH / Q4 GEMM / 专家粒度探针），原始产物见 `docs/bench/` |
 | [docs/bench/](docs/bench/20260915-rk3588-llama-ab/MANIFEST.txt) | **原始基准归档**：正文各测点的原始产物（各轮响应 json、引擎日志、`summary.txt`、`REPORT.txt`）与产生它们的板端脚本、md5 留证清单；每个测点一个目录，入口见目录内 `MANIFEST.txt` |
 
-> 不想逐篇翻文档？直接看 **[项目 Wiki](https://gitee.com/pei-xiaoguang/kestrel-llm/wikis/Home)**——
+> 不想逐篇翻文档？直接看 **[项目 Wiki](wiki/Home.md)**——
 > 按「上手 → 原理 → 数据与调优 → 安全」组织的导航页，并统一了**术语与数据口径**
 > （版本分区、冷/热页缓存、纯权重 RSS vs serve 峰值）。Wiki 为中文，由上述 `docs/` 提炼，
 > 细节以原文为准；同一套内容也随仓库分发在 [`wiki/`](wiki/Home.md)（克隆后离线可读）。
