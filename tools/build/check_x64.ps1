@@ -38,9 +38,17 @@ Write-Host '=== [1/3] build x64 ==='
 $buildArgs = @('-ExecutionPolicy','Bypass','-File',(Join-Path $PSScriptRoot 'build_x64.ps1'))
 if ($Gcc)    { $buildArgs += @('-Gcc', $Gcc) }
 if ($OutDir) { $buildArgs += @('-OutDir', $OutDir) }
+$t0 = Get-Date
 & powershell @buildArgs | Out-Host
 if (-not (Test-Path $exe)) {
     Write-Host "X64 CHECK FAILED: build produced no $exe"
+    exit 1
+}
+# 产物必须晚于本次构建开始时刻；否则说明编译/链接其实失败了，只是在跑上一次的旧二进制
+# （2026-09-28 实测踩到：非 ASCII 路径下 ld 报 cannot open output file，脚本仍报 PASS）
+$exeTime = (Get-Item $exe).LastWriteTime
+if ($exeTime -lt $t0) {
+    Write-Host ("X64 CHECK FAILED: {0} 早于本次构建开始时刻（exe={1} / 开始={2}）—— 本次构建未产出新产物" -f $exe, $exeTime, $t0)
     exit 1
 }
 
