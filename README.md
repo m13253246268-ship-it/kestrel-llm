@@ -18,7 +18,7 @@
 | 权重驻留 | 全量常驻（全层） | 新增**逐层推理**（`VLLM_VQF_STREAM=1` 分层驻留）：权重常驻 RSS 与模型体积/层数解耦；但**只对明文 VQF 生效**——VQF-Enc / 内嵌 SM2 签名的权重会被显式拒绝（须全层驻留） |
 | KV 与长上下文 | KV v1 | **KV v2 惰性分配** + L3 分层驻留 + P3（L3 驱逐 × 前缀复用共存） |
 | 安全与合规 | VQF 存储态加密（SM4-CTR + HMAC-SM3）、SM2 供应链签名 | 追加**可验证推理 attestation（schema 3，含请求原文绑定）**，浏览器内 / 离线零依赖验签 |
-| x86-64 | 无 | 随版提供 x86-64 移植层（`tools/build/build_x64.ps1` / `tools/build/check_x64.ps1`），**仅功能自检与位级一致性对照，不作性能基准** |
+| x86-64 | 无 | 随版提供 x86-64 移植层（`tools/build/build_x64.ps1` / `tools/build/check_x64.ps1`），**仅功能自检与数值一致性对照，不作性能基准** |
 | 基准测点 | 2026-09-05：冷启动 / 8K 长上下文 / KV 恢复（含 llama.cpp 同机对照） | **2026-09-12**：逐层 vs 全层 × {2B / 8B / 30B-A3B} × {组合⑧基线, 组合①, 组合①+⑤}，14 个 serve 配置点 |
 
 > 为什么不能混用：v1 移除了 GGUF/safetensors 加载路径并引入逐层推理与 KV v2，
@@ -393,7 +393,7 @@ tpot 中位 330.2 ms**（范围 `1.711~1.796 s` / `328.9~330.6 ms`，70 token �
 - 逐层与专家窗口 `VLLM_EW*` 不并存（EW 接管层入口钩子）。
 - 逐层压缩的是**权重驻留**；KV 底座另由 KV v2 惰性分配约束（配合 `VLLM_KV_NOF32=1` 可把常驻进一步压低，见 [docs/KV缓存v2-惰性分配与分层驻留方案.md](docs/KV缓存v2-惰性分配与分层驻留方案.md)）。
 - **2B 档已从本章移除**：早先使用的 `Qwen3-VL-2B-Instruct` dual 权重（4.16 GB）已不在现役板上；现有的是 `Qwen3-VL-2B-q8fix`（3.19 GB，q8 且非 dual），量化口径不同，不可与旧数字混比。
-- **x86-64 分支仅用于功能自检与位级一致性对照**，不作性能基准。
+- **x86-64 分支仅用于功能自检与数值一致性对照**，不作性能基准。
 
 ---
 
@@ -419,7 +419,9 @@ cmake -B build-rk3588 && cmake --build build-rk3588 -j8
 #### x86_64 原生构建（Windows / MinGW，用于功能与一致性自检）
 
 引擎的**一级目标平台是 aarch64**；x86-64 分支（`vllm_platform.h`）仅用于**功能自检与
-位级一致性对照**，**不作为性能基准**——x86 上跑的绝对吞吐/加速比不能外推到板端。
+数值一致性对照**，**不作为性能基准**——x86 上跑的绝对吞吐/加速比不能外推到板端。
+两侧内核不同（AVX2/标量 vs NEON/dotprod），**跨架构不保证 TOKIDS 逐位一致**（实测边界见
+[wiki/架构总览.md](wiki/架构总览.md)「位级确定性」一节）。
 
 ```powershell
 # Windows / MinGW-w64（gcc 需在 PATH，或用 -Gcc 显式指定）
@@ -729,7 +731,7 @@ gcc -O2 -fopenmp -Wno-implicit-function-declaration '-Wl,--stack,33554432' \
   单产物仍约 0.8 MB；`CMakeLists.txt` 版本号提升至 `VERSION 1.0.0`。
 - **x86_64 分支随版**：`vllm_platform.h` 提供 x86-64（MinGW/MSVC）移植层；新增
   `tools/build/build_x64.ps1` / `tools/build/check_x64.ps1`（已参数化，`VLLM_GCC` /
-  `VLLM_X64_OUTDIR` 可覆盖）。**x86 仅供功能自检与位级一致性对照，不作性能基准。**
+  `VLLM_X64_OUTDIR` 可覆盖）。**x86 仅供功能自检与数值一致性对照，不作性能基准。**
 
 **性能与内存**
 

@@ -57,7 +57,7 @@ v1 已移除引擎内置的 GGUF / safetensors 加载与引擎内转换、引入
 | 你现在的状态 | 建议入口 |
 |---|---|
 | 想尽快跑起来 | [快速上手](https://gitee.com/pei-xiaoguang/kestrel-llm/wikis/快速上手) —— 从裸板到 HTTP 就绪 4 步 |
-| 手边没板子，只有一台 x86 开发机 | [构建与复现](https://gitee.com/pei-xiaoguang/kestrel-llm/wikis/构建与复现) —— x86 分支只作功能自检与位级一致性对照 |
+| 手边没板子，只有一台 x86 开发机 | [构建与复现](https://gitee.com/pei-xiaoguang/kestrel-llm/wikis/构建与复现) —— x86 分支只作功能自检与数值一致性对照 |
 | 想知道它为什么省内存 | [逐层推理与 KV 缓存](https://gitee.com/pei-xiaoguang/kestrel-llm/wikis/逐层推理与KV缓存) |
 | 要核对/引用性能数字 | [性能与基准](https://gitee.com/pei-xiaoguang/kestrel-llm/wikis/性能与基准) —— 先读「测量纪律与口径」 |
 | 要调优 | [优化配置与边界](https://gitee.com/pei-xiaoguang/kestrel-llm/wikis/优化配置与边界) —— 每个开关的机制、收益与代价 |

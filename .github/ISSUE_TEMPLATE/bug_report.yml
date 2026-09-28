@@ -24,7 +24,7 @@ body:
     id: arch
     attributes:
       label: 架构
-      description: x86-64 分支只作功能自检与位级一致性对照，**不作性能基准**
+      description: x86-64 分支只作功能自检与数值一致性对照，**不作性能基准**
       options:
         - aarch64（主力目标）
         - x86-64（仅功能自检）
