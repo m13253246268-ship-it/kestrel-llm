@@ -1,4 +1,4 @@
-﻿﻿# pack_relay.ps1 — 接力者打包：把某一层范围的交接物打成可上传的 zip，供他人验证
+﻿﻿﻿﻿# pack_relay.ps1 — 接力者打包：把某一层范围的交接物打成可上传的 zip，供他人验证
 #
 # 用法（仓库根目录）：
 #   powershell -NoProfile -ExecutionPolicy Bypass -File tools\relay\pack_relay.ps1 -From 5 -To 7 -Id yourname
